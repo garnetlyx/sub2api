@@ -1,7 +1,10 @@
 package routes
 
 import (
+	"bytes"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
@@ -9,6 +12,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 // RegisterGatewayRoutes 注册 API 网关路由（Claude/OpenAI/Gemini 兼容）
@@ -66,14 +70,14 @@ func RegisterGatewayRoutes(
 		gateway.GET("/usage", h.Gateway.Usage)
 		// OpenAI Responses API: auto-route based on group platform
 		gateway.POST("/responses", func(c *gin.Context) {
-			if getGroupPlatform(c) == service.PlatformOpenAI {
+			if shouldRouteToOpenAI(c) {
 				h.OpenAIGateway.Responses(c)
 				return
 			}
 			h.Gateway.Responses(c)
 		})
 		gateway.POST("/responses/*subpath", func(c *gin.Context) {
-			if getGroupPlatform(c) == service.PlatformOpenAI {
+			if shouldRouteToOpenAI(c) {
 				h.OpenAIGateway.Responses(c)
 				return
 			}
@@ -82,7 +86,7 @@ func RegisterGatewayRoutes(
 		gateway.GET("/responses", h.OpenAIGateway.ResponsesWebSocket)
 		// OpenAI Chat Completions API: auto-route based on group platform
 		gateway.POST("/chat/completions", func(c *gin.Context) {
-			if getGroupPlatform(c) == service.PlatformOpenAI {
+			if shouldRouteToOpenAI(c) {
 				h.OpenAIGateway.ChatCompletions(c)
 				return
 			}
@@ -105,9 +109,12 @@ func RegisterGatewayRoutes(
 		gemini.POST("/models/*modelAction", h.Gateway.GeminiV1BetaModels)
 	}
 
-	// OpenAI Responses API（不带v1前缀的别名）— auto-route based on group platform
+	// OpenAI Responses API（不带v1前缀的别名）
+	// Keep alias behavior identical to /v1 routes so ungrouped simple-mode keys
+	// can still use the generic scheduler across both OpenAI and Anthropic-style
+	// request formats.
 	responsesHandler := func(c *gin.Context) {
-		if getGroupPlatform(c) == service.PlatformOpenAI {
+		if shouldRouteToOpenAI(c) {
 			h.OpenAIGateway.Responses(c)
 			return
 		}
@@ -116,9 +123,10 @@ func RegisterGatewayRoutes(
 	r.POST("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, responsesHandler)
 	r.POST("/responses/*subpath", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, responsesHandler)
 	r.GET("/responses", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, h.OpenAIGateway.ResponsesWebSocket)
-	// OpenAI Chat Completions API（不带v1前缀的别名）— auto-route based on group platform
+	// OpenAI Chat Completions API（不带v1前缀的别名）
+	// Mirror /v1/chat/completions behavior for legacy tools like opencode.
 	r.POST("/chat/completions", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
-		if getGroupPlatform(c) == service.PlatformOpenAI {
+		if shouldRouteToOpenAI(c) {
 			h.OpenAIGateway.ChatCompletions(c)
 			return
 		}
@@ -167,4 +175,49 @@ func getGroupPlatform(c *gin.Context) string {
 		return ""
 	}
 	return apiKey.Group.Platform
+}
+
+func shouldRouteToOpenAI(c *gin.Context) bool {
+	if getGroupPlatform(c) == service.PlatformOpenAI {
+		return true
+	}
+	return requestTargetsOpenAIModel(c)
+}
+
+func requestTargetsOpenAIModel(c *gin.Context) bool {
+	if c == nil || c.Request == nil || c.Request.Body == nil {
+		return false
+	}
+
+	bodyBytes, err := c.GetRawData()
+	if err != nil {
+		return false
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+	model := strings.TrimSpace(gjson.GetBytes(bodyBytes, "model").String())
+	return looksLikeOpenAIModel(model)
+}
+
+func looksLikeOpenAIModel(model string) bool {
+	model = strings.TrimSpace(strings.ToLower(model))
+	if model == "" {
+		return false
+	}
+	if strings.HasPrefix(model, "openai/") {
+		return true
+	}
+	if strings.HasPrefix(model, "gpt-") {
+		return true
+	}
+	if strings.HasPrefix(model, "o1") || strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4") {
+		return true
+	}
+	if strings.Contains(model, "codex") {
+		return true
+	}
+	if strings.HasPrefix(model, "chatgpt-") {
+		return true
+	}
+	return false
 }
