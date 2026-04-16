@@ -384,6 +384,30 @@ func TestAccountResolveMappedModel(t *testing.T) {
 			expectedMatch:  true,
 		},
 		{
+			name:     "anthropic platform accepts openai compatibility alias",
+			platform: PlatformAnthropic,
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"anthropic/GLM-5.1": "anthropic/GLM-5.1",
+				},
+			},
+			requestedModel: "openai/GLM-5.1",
+			expectedModel:  "anthropic/GLM-5.1",
+			expectedMatch:  true,
+		},
+		{
+			name:     "openai platform accepts anthropic compatibility alias",
+			platform: PlatformOpenAI,
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"openai/GLM-5.1": "openai/GLM-5.1",
+				},
+			},
+			requestedModel: "anthropic/GLM-5.1",
+			expectedModel:  "openai/GLM-5.1",
+			expectedMatch:  true,
+		},
+		{
 			name: "missing mapping reports unmatched",
 			credentials: map[string]any{
 				"model_mapping": map[string]any{

@@ -520,6 +520,16 @@ func normalizeRequestedModelForLookup(platform, requestedModel string) string {
 	if trimmed == "" {
 		return ""
 	}
+	switch platform {
+	case PlatformAnthropic:
+		if strings.HasPrefix(trimmed, "openai/") {
+			return "anthropic/" + strings.TrimPrefix(trimmed, "openai/")
+		}
+	case PlatformOpenAI:
+		if strings.HasPrefix(trimmed, "anthropic/") {
+			return "openai/" + strings.TrimPrefix(trimmed, "anthropic/")
+		}
+	}
 	if platform != PlatformGemini && platform != PlatformAntigravity {
 		return trimmed
 	}

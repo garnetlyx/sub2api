@@ -50,6 +50,19 @@ func TestGetModelPricing_Gpt53CodexSparkUsesGpt51CodexPricing(t *testing.T) {
 	require.Same(t, sparkPricing, got)
 }
 
+func TestGetModelPricing_StripsProtocolCompatibilityPrefixes(t *testing.T) {
+	glmPricing := &LiteLLMModelPricing{InputCostPerToken: 1}
+
+	svc := &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"glm-5.1": glmPricing,
+		},
+	}
+
+	require.Same(t, glmPricing, svc.GetModelPricing("openai/GLM-5.1"))
+	require.Same(t, glmPricing, svc.GetModelPricing("anthropic/GLM-5.1"))
+}
+
 func TestGetModelPricing_Gpt53CodexFallbackStillUsesGpt52Codex(t *testing.T) {
 	gpt52CodexPricing := &LiteLLMModelPricing{InputCostPerToken: 2}
 

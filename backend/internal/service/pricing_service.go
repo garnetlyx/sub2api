@@ -614,6 +614,8 @@ func normalizeModelNameForPricing(model string) string {
 	// - projects/.../locations/.../publishers/google/models/gemini-2.5-pro
 	model = strings.TrimSpace(model)
 	model = strings.TrimLeft(model, "/")
+	model = strings.TrimPrefix(model, "openai/")
+	model = strings.TrimPrefix(model, "anthropic/")
 	model = strings.TrimPrefix(model, "models/")
 	model = strings.TrimPrefix(model, "publishers/google/models/")
 
