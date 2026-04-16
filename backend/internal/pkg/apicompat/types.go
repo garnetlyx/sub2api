@@ -311,6 +311,7 @@ type ResponsesStreamEvent struct {
 	Delta        string `json:"delta,omitempty"`
 	Text         string `json:"text,omitempty"`
 	ItemID       string `json:"item_id,omitempty"`
+	Part         *ResponsesContentPart `json:"part,omitempty"`
 
 	// response.function_call_arguments.delta / done
 	CallID    string `json:"call_id,omitempty"`

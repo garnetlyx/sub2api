@@ -518,6 +518,150 @@ func TestStreamingEmptyResponse(t *testing.T) {
 	assert.Equal(t, "end_turn", events[0].Delta.StopReason)
 }
 
+func TestAnthropicStreamToResponses_MessageContentPartLifecycle(t *testing.T) {
+	state := NewAnthropicEventToResponsesState()
+
+	events := AnthropicEventToResponsesEvents(&AnthropicStreamEvent{
+		Type: "message_start",
+		Message: &AnthropicResponse{
+			ID:    "msg_test_1",
+			Model: "openai/GLM-5.1",
+		},
+	}, state)
+	require.Len(t, events, 1)
+	assert.Equal(t, "response.created", events[0].Type)
+
+	events = AnthropicEventToResponsesEvents(&AnthropicStreamEvent{
+		Type: "content_block_start",
+		ContentBlock: &AnthropicContentBlock{
+			Type: "text",
+			Text: "",
+		},
+	}, state)
+	require.Len(t, events, 2)
+	assert.Equal(t, "response.output_item.added", events[0].Type)
+	require.NotNil(t, events[0].Item)
+	assert.Equal(t, "message", events[0].Item.Type)
+	assert.Equal(t, "assistant", events[0].Item.Role)
+	require.NotNil(t, events[0].Item.Content)
+	assert.Len(t, events[0].Item.Content, 0)
+	itemID := events[0].Item.ID
+	require.NotEmpty(t, itemID)
+
+	assert.Equal(t, "response.content_part.added", events[1].Type)
+	assert.Equal(t, itemID, events[1].ItemID)
+	assert.Equal(t, 0, events[1].ContentIndex)
+	require.NotNil(t, events[1].Part)
+	assert.Equal(t, "output_text", events[1].Part.Type)
+
+	events = AnthropicEventToResponsesEvents(&AnthropicStreamEvent{
+		Type: "content_block_delta",
+		Delta: &AnthropicDelta{
+			Type:     "thinking_delta",
+			Thinking: "OK",
+		},
+	}, state)
+	require.Len(t, events, 1)
+	assert.Equal(t, "response.output_text.delta", events[0].Type)
+	assert.Equal(t, itemID, events[0].ItemID)
+	assert.Equal(t, "OK", events[0].Delta)
+
+	events = AnthropicEventToResponsesEvents(&AnthropicStreamEvent{
+		Type: "content_block_stop",
+	}, state)
+	require.Len(t, events, 2)
+	assert.Equal(t, "response.output_text.done", events[0].Type)
+	assert.Equal(t, "OK", events[0].Text)
+	assert.Equal(t, "response.content_part.done", events[1].Type)
+	assert.Equal(t, itemID, events[1].ItemID)
+	require.NotNil(t, events[1].Part)
+	assert.Equal(t, "OK", events[1].Part.Text)
+
+	events = AnthropicEventToResponsesEvents(&AnthropicStreamEvent{
+		Type: "message_stop",
+	}, state)
+	require.Len(t, events, 2)
+	assert.Equal(t, "response.output_item.done", events[0].Type)
+	require.NotNil(t, events[0].Item)
+	assert.Equal(t, "message", events[0].Item.Type)
+	assert.Equal(t, itemID, events[0].Item.ID)
+	assert.Equal(t, "assistant", events[0].Item.Role)
+	assert.Equal(t, "completed", events[0].Item.Status)
+	require.Len(t, events[0].Item.Content, 1)
+	assert.Equal(t, "OK", events[0].Item.Content[0].Text)
+
+	assert.Equal(t, "response.completed", events[1].Type)
+	require.NotNil(t, events[1].Response)
+	require.Len(t, events[1].Response.Output, 1)
+	assert.Equal(t, "message", events[1].Response.Output[0].Type)
+	assert.Equal(t, itemID, events[1].Response.Output[0].ID)
+	require.Len(t, events[1].Response.Output[0].Content, 1)
+	assert.Equal(t, "OK", events[1].Response.Output[0].Content[0].Text)
+}
+
+func TestAnthropicStreamToResponses_ThinkingLifecycle(t *testing.T) {
+	state := NewAnthropicEventToResponsesState()
+
+	events := AnthropicEventToResponsesEvents(&AnthropicStreamEvent{
+		Type: "message_start",
+		Message: &AnthropicResponse{
+			ID:    "msg_think_1",
+			Model: "openai/GLM-5.1",
+		},
+	}, state)
+	require.Len(t, events, 1)
+	assert.Equal(t, "response.created", events[0].Type)
+
+	events = AnthropicEventToResponsesEvents(&AnthropicStreamEvent{
+		Type: "content_block_start",
+		ContentBlock: &AnthropicContentBlock{
+			Type: "thinking",
+		},
+	}, state)
+	require.Len(t, events, 1)
+	assert.Equal(t, "response.output_item.added", events[0].Type)
+	require.NotNil(t, events[0].Item)
+	assert.Equal(t, "reasoning", events[0].Item.Type)
+	itemID := events[0].Item.ID
+	require.NotEmpty(t, itemID)
+
+	events = AnthropicEventToResponsesEvents(&AnthropicStreamEvent{
+		Type: "content_block_delta",
+		Delta: &AnthropicDelta{
+			Type:     "thinking_delta",
+			Thinking: "Let me think...",
+		},
+	}, state)
+	require.Len(t, events, 1)
+	assert.Equal(t, "response.reasoning_summary_text.delta", events[0].Type)
+	assert.Equal(t, itemID, events[0].ItemID)
+	assert.Equal(t, "Let me think...", events[0].Delta)
+
+	events = AnthropicEventToResponsesEvents(&AnthropicStreamEvent{
+		Type: "content_block_stop",
+	}, state)
+	require.Len(t, events, 1)
+	assert.Equal(t, "response.reasoning_summary_text.done", events[0].Type)
+	assert.Equal(t, "Let me think...", events[0].Text)
+
+	events = AnthropicEventToResponsesEvents(&AnthropicStreamEvent{
+		Type: "message_stop",
+	}, state)
+	require.Len(t, events, 2)
+	assert.Equal(t, "response.output_item.done", events[0].Type)
+	require.NotNil(t, events[0].Item)
+	assert.Equal(t, "reasoning", events[0].Item.Type)
+	require.Len(t, events[0].Item.Summary, 1)
+	assert.Equal(t, "Let me think...", events[0].Item.Summary[0].Text)
+
+	assert.Equal(t, "response.completed", events[1].Type)
+	require.NotNil(t, events[1].Response)
+	require.Len(t, events[1].Response.Output, 1)
+	assert.Equal(t, "reasoning", events[1].Response.Output[0].Type)
+	require.Len(t, events[1].Response.Output[0].Summary, 1)
+	assert.Equal(t, "Let me think...", events[1].Response.Output[0].Summary[0].Text)
+}
+
 func TestResponsesAnthropicEventToSSE(t *testing.T) {
 	evt := AnthropicStreamEvent{
 		Type: "message_start",

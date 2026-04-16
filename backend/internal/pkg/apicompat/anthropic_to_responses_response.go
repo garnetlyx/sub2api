@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -145,10 +146,15 @@ type AnthropicEventToResponsesState struct {
 
 	// For message output: accumulate text parts
 	ContentIndex int
+	CurrentText  string
 
 	// For function_call: track per-output info
-	CurrentCallID string
-	CurrentName   string
+	CurrentCallID    string
+	CurrentName      string
+	CurrentArguments string
+
+	// Completed output items for response.completed snapshot fidelity.
+	Outputs []ResponsesOutput
 
 	// Usage from message_delta
 	InputTokens          int
@@ -207,7 +213,11 @@ func FinalizeAnthropicResponsesStream(state *AnthropicEventToResponsesState) []R
 
 // ResponsesEventToSSE formats a ResponsesStreamEvent as an SSE data line.
 func ResponsesEventToSSE(evt ResponsesStreamEvent) (string, error) {
-	data, err := json.Marshal(evt)
+	payload, err := responsesEventPayload(evt)
+	if err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
@@ -245,32 +255,55 @@ func anthToResHandleContentBlockStart(evt *AnthropicStreamEvent, state *Anthropi
 
 	switch evt.ContentBlock.Type {
 	case "thinking":
+		// Emit a real reasoning item lifecycle for native Anthropic thinking
+		// blocks so strict OpenAI Responses clients can reconcile /think flows.
+		if state.CurrentItemType != "" {
+			events = append(events, closeCurrentResponsesItem(state)...)
+		}
 		state.CurrentItemID = generateItemID()
 		state.CurrentItemType = "reasoning"
 		state.ContentIndex = 0
+		state.CurrentText = ""
 
 		events = append(events, makeResponsesEvent(state, "response.output_item.added", &ResponsesStreamEvent{
 			OutputIndex: state.OutputIndex,
 			Item: &ResponsesOutput{
-				Type: "reasoning",
-				ID:   state.CurrentItemID,
+				Type:    "reasoning",
+				ID:      state.CurrentItemID,
+				Status:  "in_progress",
+				Summary: []ResponsesSummary{},
 			},
 		}))
+		return events
 
 	case "text":
 		// If we don't have an open message item, open one
 		if state.CurrentItemType != "message" {
+			if state.CurrentItemType != "" {
+				events = append(events, closeCurrentResponsesItem(state)...)
+			}
 			state.CurrentItemID = generateItemID()
 			state.CurrentItemType = "message"
 			state.ContentIndex = 0
+			state.CurrentText = ""
 
 			events = append(events, makeResponsesEvent(state, "response.output_item.added", &ResponsesStreamEvent{
 				OutputIndex: state.OutputIndex,
 				Item: &ResponsesOutput{
-					Type:   "message",
-					ID:     state.CurrentItemID,
-					Role:   "assistant",
-					Status: "in_progress",
+					Type:    "message",
+					ID:      state.CurrentItemID,
+					Role:    "assistant",
+					Status:  "in_progress",
+					Content: []ResponsesContentPart{},
+				},
+			}))
+			events = append(events, makeResponsesEvent(state, "response.content_part.added", &ResponsesStreamEvent{
+				OutputIndex:  state.OutputIndex,
+				ContentIndex: state.ContentIndex,
+				ItemID:       state.CurrentItemID,
+				Part: &ResponsesContentPart{
+					Type: "output_text",
+					Text: "",
 				},
 			}))
 		}
@@ -283,6 +316,7 @@ func anthToResHandleContentBlockStart(evt *AnthropicStreamEvent, state *Anthropi
 		state.CurrentItemType = "function_call"
 		state.CurrentCallID = toResponsesCallID(evt.ContentBlock.ID)
 		state.CurrentName = evt.ContentBlock.Name
+		state.CurrentArguments = ""
 
 		events = append(events, makeResponsesEvent(state, "response.output_item.added", &ResponsesStreamEvent{
 			OutputIndex: state.OutputIndex,
@@ -309,6 +343,7 @@ func anthToResHandleContentBlockDelta(evt *AnthropicStreamEvent, state *Anthropi
 		if evt.Delta.Text == "" {
 			return nil
 		}
+		state.CurrentText += evt.Delta.Text
 		return []ResponsesStreamEvent{makeResponsesEvent(state, "response.output_text.delta", &ResponsesStreamEvent{
 			OutputIndex:  state.OutputIndex,
 			ContentIndex: state.ContentIndex,
@@ -317,20 +352,37 @@ func anthToResHandleContentBlockDelta(evt *AnthropicStreamEvent, state *Anthropi
 		})}
 
 	case "thinking_delta":
-		if evt.Delta.Thinking == "" {
+		if state.CurrentItemID == "" || evt.Delta.Thinking == "" {
 			return nil
 		}
-		return []ResponsesStreamEvent{makeResponsesEvent(state, "response.reasoning_summary_text.delta", &ResponsesStreamEvent{
-			OutputIndex:  state.OutputIndex,
-			SummaryIndex: 0,
-			Delta:        evt.Delta.Thinking,
-			ItemID:       state.CurrentItemID,
-		})}
+		switch state.CurrentItemType {
+		case "reasoning":
+			state.CurrentText += evt.Delta.Thinking
+			return []ResponsesStreamEvent{makeResponsesEvent(state, "response.reasoning_summary_text.delta", &ResponsesStreamEvent{
+				OutputIndex:  state.OutputIndex,
+				ItemID:       state.CurrentItemID,
+				SummaryIndex: 0,
+				Delta:        evt.Delta.Thinking,
+			})}
+		case "message":
+			// Some Anthropic-compatible upstreams tunnel visible text through
+			// thinking_delta inside an otherwise normal text block.
+			state.CurrentText += evt.Delta.Thinking
+			return []ResponsesStreamEvent{makeResponsesEvent(state, "response.output_text.delta", &ResponsesStreamEvent{
+				OutputIndex:  state.OutputIndex,
+				ContentIndex: state.ContentIndex,
+				Delta:        evt.Delta.Thinking,
+				ItemID:       state.CurrentItemID,
+			})}
+		default:
+			return nil
+		}
 
 	case "input_json_delta":
 		if evt.Delta.PartialJSON == "" {
 			return nil
 		}
+		state.CurrentArguments += evt.Delta.PartialJSON
 		return []ResponsesStreamEvent{makeResponsesEvent(state, "response.function_call_arguments.delta", &ResponsesStreamEvent{
 			OutputIndex: state.OutputIndex,
 			Delta:       evt.Delta.PartialJSON,
@@ -350,16 +402,14 @@ func anthToResHandleContentBlockDelta(evt *AnthropicStreamEvent, state *Anthropi
 func anthToResHandleContentBlockStop(evt *AnthropicStreamEvent, state *AnthropicEventToResponsesState) []ResponsesStreamEvent {
 	switch state.CurrentItemType {
 	case "reasoning":
-		// Emit reasoning summary done + output item done
-		events := []ResponsesStreamEvent{
+		return []ResponsesStreamEvent{
 			makeResponsesEvent(state, "response.reasoning_summary_text.done", &ResponsesStreamEvent{
 				OutputIndex:  state.OutputIndex,
-				SummaryIndex: 0,
 				ItemID:       state.CurrentItemID,
+				SummaryIndex: 0,
+				Text:         state.CurrentText,
 			}),
 		}
-		events = append(events, closeCurrentResponsesItem(state)...)
-		return events
 
 	case "function_call":
 		// Emit function_call_arguments.done + output item done
@@ -375,12 +425,23 @@ func anthToResHandleContentBlockStop(evt *AnthropicStreamEvent, state *Anthropic
 		return events
 
 	case "message":
-		// Emit output_text.done (text block is done, but message item stays open for potential more blocks)
+		// Emit output_text.done and content_part.done so strict Responses clients
+		// can reconcile the text part lifecycle before the message item closes.
 		return []ResponsesStreamEvent{
 			makeResponsesEvent(state, "response.output_text.done", &ResponsesStreamEvent{
 				OutputIndex:  state.OutputIndex,
 				ContentIndex: state.ContentIndex,
 				ItemID:       state.CurrentItemID,
+				Text:         state.CurrentText,
+			}),
+			makeResponsesEvent(state, "response.content_part.done", &ResponsesStreamEvent{
+				OutputIndex:  state.OutputIndex,
+				ContentIndex: state.ContentIndex,
+				ItemID:       state.CurrentItemID,
+				Part: &ResponsesContentPart{
+					Type: "output_text",
+					Text: state.CurrentText,
+				},
 			}),
 		}
 	}
@@ -429,22 +490,50 @@ func closeCurrentResponsesItem(state *AnthropicEventToResponsesState) []Response
 
 	itemType := state.CurrentItemType
 	itemID := state.CurrentItemID
+	currentText := state.CurrentText
+	currentCallID := state.CurrentCallID
+	currentName := state.CurrentName
+	currentArguments := state.CurrentArguments
 
 	// Reset
 	state.CurrentItemType = ""
 	state.CurrentItemID = ""
 	state.CurrentCallID = ""
 	state.CurrentName = ""
+	state.CurrentText = ""
+	state.CurrentArguments = ""
 	state.OutputIndex++
 	state.ContentIndex = 0
 
+	completedItem := ResponsesOutput{
+		Type:   itemType,
+		ID:     itemID,
+		Status: "completed",
+	}
+
+	switch itemType {
+	case "message":
+		completedItem.Role = "assistant"
+		completedItem.Content = []ResponsesContentPart{{
+			Type: "output_text",
+			Text: currentText,
+		}}
+	case "reasoning":
+		completedItem.Summary = []ResponsesSummary{{
+			Type: "summary_text",
+			Text: currentText,
+		}}
+	case "function_call":
+		completedItem.CallID = currentCallID
+		completedItem.Name = currentName
+		completedItem.Arguments = currentArguments
+	}
+
+	state.Outputs = append(state.Outputs, completedItem)
+
 	return []ResponsesStreamEvent{makeResponsesEvent(state, "response.output_item.done", &ResponsesStreamEvent{
 		OutputIndex: state.OutputIndex - 1, // Use the index before increment
-		Item: &ResponsesOutput{
-			Type:   itemType,
-			ID:     itemID,
-			Status: "completed",
-		},
+		Item:        &completedItem,
 	})}
 }
 
@@ -491,7 +580,7 @@ func makeResponsesCompletedEvent(
 			Object:            "response",
 			Model:             state.Model,
 			Status:            status,
-			Output:            []ResponsesOutput{}, // Simplified; full output tracking would add complexity
+			Output:            append([]ResponsesOutput(nil), state.Outputs...),
 			Usage:             usage,
 			IncompleteDetails: incompleteDetails,
 		},
@@ -518,4 +607,118 @@ func generateItemID() string {
 	b := make([]byte, 12)
 	_, _ = rand.Read(b)
 	return "item_" + hex.EncodeToString(b)
+}
+
+func responsesEventPayload(evt ResponsesStreamEvent) (map[string]any, error) {
+	payload := map[string]any{
+		"type": evt.Type,
+	}
+	if evt.SequenceNumber != 0 || strings.HasPrefix(evt.Type, "response.") {
+		payload["sequence_number"] = evt.SequenceNumber
+	}
+
+	switch evt.Type {
+	case "response.created", "response.completed", "response.failed", "response.incomplete":
+		payload["response"] = evt.Response
+	case "response.output_item.added", "response.output_item.done":
+		payload["output_index"] = evt.OutputIndex
+		if evt.Item != nil {
+			item := map[string]any{
+				"type": evt.Item.Type,
+			}
+			if evt.Item.ID != "" {
+				item["id"] = evt.Item.ID
+			}
+			if evt.Item.Role != "" {
+				item["role"] = evt.Item.Role
+			}
+			if evt.Item.Status != "" {
+				item["status"] = evt.Item.Status
+			}
+			if evt.Item.Type == "message" {
+				content := make([]any, 0, len(evt.Item.Content))
+				for _, part := range evt.Item.Content {
+					partPayload := map[string]any{
+						"type": part.Type,
+						"text": part.Text,
+					}
+					content = append(content, partPayload)
+				}
+				item["content"] = content
+			}
+			if evt.Item.Type == "reasoning" {
+				summary := make([]any, 0, len(evt.Item.Summary))
+				for _, part := range evt.Item.Summary {
+					partPayload := map[string]any{
+						"type": part.Type,
+						"text": part.Text,
+					}
+					summary = append(summary, partPayload)
+				}
+				item["summary"] = summary
+			}
+			if evt.Item.CallID != "" {
+				item["call_id"] = evt.Item.CallID
+			}
+			if evt.Item.Name != "" {
+				item["name"] = evt.Item.Name
+			}
+			if evt.Item.Arguments != "" {
+				item["arguments"] = evt.Item.Arguments
+			}
+			payload["item"] = item
+		}
+	case "response.content_part.added", "response.content_part.done":
+		payload["output_index"] = evt.OutputIndex
+		payload["content_index"] = evt.ContentIndex
+		payload["item_id"] = evt.ItemID
+		part := map[string]any{
+			"type": evt.Part.Type,
+			"text": evt.Part.Text,
+		}
+		payload["part"] = part
+	case "response.output_text.delta":
+		payload["output_index"] = evt.OutputIndex
+		payload["content_index"] = evt.ContentIndex
+		payload["item_id"] = evt.ItemID
+		payload["delta"] = evt.Delta
+	case "response.output_text.done":
+		payload["output_index"] = evt.OutputIndex
+		payload["content_index"] = evt.ContentIndex
+		payload["item_id"] = evt.ItemID
+		payload["text"] = evt.Text
+	case "response.function_call_arguments.delta", "response.function_call_arguments.done":
+		payload["output_index"] = evt.OutputIndex
+		payload["item_id"] = evt.ItemID
+		payload["call_id"] = evt.CallID
+		payload["name"] = evt.Name
+		if evt.Delta != "" {
+			payload["delta"] = evt.Delta
+		}
+		if evt.Arguments != "" {
+			payload["arguments"] = evt.Arguments
+		}
+	case "response.reasoning_summary_text.delta", "response.reasoning_summary_text.done":
+		payload["output_index"] = evt.OutputIndex
+		payload["item_id"] = evt.ItemID
+		payload["summary_index"] = evt.SummaryIndex
+		if evt.Delta != "" {
+			payload["delta"] = evt.Delta
+		}
+		if evt.Text != "" {
+			payload["text"] = evt.Text
+		}
+	default:
+		raw, err := json.Marshal(evt)
+		if err != nil {
+			return nil, err
+		}
+		var generic map[string]any
+		if err := json.Unmarshal(raw, &generic); err != nil {
+			return nil, err
+		}
+		return generic, nil
+	}
+
+	return payload, nil
 }
