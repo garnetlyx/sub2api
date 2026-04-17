@@ -541,13 +541,12 @@ Antigravity accounts support optional **hybrid scheduling**. When enabled, the g
 Sub2API now supports `GitHub Copilot` account pools.
 
 - A new `Copilot` platform is available in the admin panel
-- Authorization uses manual `GitHub Access Token` import
-- During import, the backend validates the GitHub token, exchanges it for a short-lived Copilot token, and fetches the available model list
+- Authorization uses GitHub `Device Code` flow
+- After device authorization completes, the backend exchanges the GitHub token for a short-lived Copilot token and fetches the available model list
 - External callers still use the standard OpenAI-compatible API surface
 
 Current v1 behavior:
 
-- No Device Code flow yet
 - Account type is `oauth`
 - `/v1/responses`, `/v1/chat/completions`, and `/v1/messages` can all route through the OpenAI-compatible gateway to Copilot accounts
 

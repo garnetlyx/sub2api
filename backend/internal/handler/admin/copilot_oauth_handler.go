@@ -23,19 +23,36 @@ func NewCopilotOAuthHandler(copilotOAuthService *service.CopilotOAuthService, ad
 	}
 }
 
-type CopilotImportAccessTokenRequest struct {
-	AccessToken string `json:"access_token" binding:"required"`
-	ProxyID     *int64 `json:"proxy_id"`
+type CopilotDeviceFlowRequest struct {
+	ProxyID *int64 `json:"proxy_id"`
 }
 
-func (h *CopilotOAuthHandler) ImportAccessToken(c *gin.Context) {
-	var req CopilotImportAccessTokenRequest
+func (h *CopilotOAuthHandler) StartDeviceFlow(c *gin.Context) {
+	var req CopilotDeviceFlowRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		req = CopilotDeviceFlowRequest{}
+	}
+
+	result, err := h.copilotOAuthService.StartDeviceFlow(c.Request.Context(), req.ProxyID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, result)
+}
+
+func (h *CopilotOAuthHandler) PollDeviceFlow(c *gin.Context) {
+	var req struct {
+		SessionID string `json:"session_id" binding:"required"`
+		ProxyID   *int64 `json:"proxy_id"`
+	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
 
-	result, err := h.copilotOAuthService.ImportAccessToken(c.Request.Context(), req.AccessToken, req.ProxyID)
+	result, err := h.copilotOAuthService.PollDeviceFlow(c.Request.Context(), req.SessionID, req.ProxyID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
@@ -87,9 +104,9 @@ func (h *CopilotOAuthHandler) RefreshAccountToken(c *gin.Context) {
 	response.Success(c, dto.AccountFromService(updatedAccount))
 }
 
-func (h *CopilotOAuthHandler) CreateAccountFromAccessToken(c *gin.Context) {
+func (h *CopilotOAuthHandler) CreateAccountFromDeviceFlow(c *gin.Context) {
 	var req struct {
-		AccessToken string  `json:"access_token" binding:"required"`
+		SessionID   string  `json:"session_id" binding:"required"`
 		ProxyID     *int64  `json:"proxy_id"`
 		Name        string  `json:"name"`
 		Concurrency int     `json:"concurrency"`
@@ -101,7 +118,7 @@ func (h *CopilotOAuthHandler) CreateAccountFromAccessToken(c *gin.Context) {
 		return
 	}
 
-	result, err := h.copilotOAuthService.ImportAccessToken(c.Request.Context(), req.AccessToken, req.ProxyID)
+	result, err := h.copilotOAuthService.PollDeviceFlow(c.Request.Context(), req.SessionID, req.ProxyID)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

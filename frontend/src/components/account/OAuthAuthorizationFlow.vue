@@ -168,70 +168,6 @@
           </div>
         </div>
 
-        <div v-if="inputMethod === 'access_token'" class="space-y-4">
-          <div
-            class="rounded-lg border border-blue-300 bg-white/80 p-4 dark:border-blue-600 dark:bg-gray-800/80"
-          >
-            <p class="mb-3 text-sm text-blue-700 dark:text-blue-300">
-              {{ t('admin.accounts.oauth.copilot.accessTokenDesc', '输入 GitHub Access Token，后端会校验并导入 Copilot 账号。') }}
-            </p>
-
-            <div class="mb-4">
-              <label
-                class="mb-2 flex items-center gap-2 text-sm font-semibold text-gray-700 dark:text-gray-300"
-              >
-                <Icon name="key" size="sm" class="text-blue-500" />
-                GitHub Access Token
-              </label>
-              <textarea
-                v-model="accessTokenInput"
-                rows="4"
-                class="input w-full resize-y font-mono text-sm"
-                :placeholder="t('admin.accounts.oauth.copilot.accessTokenPlaceholder', 'ghu_...')"
-              ></textarea>
-            </div>
-
-            <div
-              v-if="error"
-              class="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-700 dark:bg-red-900/30"
-            >
-              <p class="whitespace-pre-line text-sm text-red-600 dark:text-red-400">
-                {{ error }}
-              </p>
-            </div>
-
-            <button
-              type="button"
-              class="btn btn-primary w-full"
-              :disabled="loading || !accessTokenInput.trim()"
-              @click="handleImportAccessToken"
-            >
-              <svg
-                v-if="loading"
-                class="-ml-1 mr-2 h-4 w-4 animate-spin"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <circle
-                  class="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  stroke-width="4"
-                ></circle>
-                <path
-                  class="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                ></path>
-              </svg>
-              <Icon v-else name="sparkles" size="sm" class="mr-2" />
-              {{ t('admin.accounts.oauth.copilot.validateAndCreate', '验证并导入') }}
-            </button>
-          </div>
-        </div>
-
         <!-- Cookie Auto-Auth Form -->
         <div v-if="inputMethod === 'cookie'" class="space-y-4">
           <div
@@ -484,6 +420,17 @@
                     <Icon name="refresh" size="xs" class="mr-1 inline" />
                     {{ t('admin.accounts.oauth.regenerate') }}
                   </button>
+                  <div
+                    v-if="isCopilot && deviceUserCode"
+                    class="rounded-lg border border-slate-300 bg-slate-50 p-3 dark:border-slate-600 dark:bg-slate-800/80"
+                  >
+                    <div class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                      {{ t('admin.accounts.oauth.copilot.deviceCodeLabel', 'Device Code') }}
+                    </div>
+                    <div class="font-mono text-lg font-semibold tracking-[0.18em] text-slate-900 dark:text-slate-100">
+                      {{ deviceUserCode }}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -506,6 +453,14 @@
                 <p class="text-sm text-blue-700 dark:text-blue-300">
                   {{ oauthOpenUrlDesc }}
                 </p>
+                <div
+                  v-if="isCopilot && deviceUserCode"
+                  class="mt-3 rounded border border-emerald-300 bg-emerald-50 p-3 dark:border-emerald-700 dark:bg-emerald-900/30"
+                >
+                  <p class="text-xs text-emerald-800 dark:text-emerald-300">
+                    {{ t('admin.accounts.oauth.copilot.deviceCodeHint', '打开上方链接，输入这里显示的 device code，然后回到面板完成授权。') }}
+                  </p>
+                </div>
                 <!-- OpenAI Important Notice -->
                 <div
                   v-if="isOpenAI"
@@ -548,7 +503,7 @@
                   class="mb-3 text-sm text-blue-700 dark:text-blue-300"
                   v-text="oauthAuthCodeDesc"
                 ></p>
-                <div>
+                <div v-if="!isCopilot">
                   <label class="input-label">
                     <Icon name="key" size="sm" class="mr-1 inline text-blue-500" />
                     {{ oauthAuthCode }}
@@ -582,6 +537,12 @@
                       </div>
                     </div>
                   </div>
+                </div>
+                <div
+                  v-else
+                  class="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-700 dark:bg-blue-900/30 dark:text-blue-200"
+                >
+                  {{ t('admin.accounts.oauth.copilot.completeHint', '完成 GitHub 页面授权后，点击底部“完成授权”按钮，系统会轮询并导入账号。') }}
                 </div>
 
                 <!-- Error Message -->
@@ -627,6 +588,7 @@ interface Props {
   showAccessTokenOption?: boolean
   platform?: AccountPlatform // Platform type for different UI/text
   showProjectId?: boolean // New prop to control project ID visibility
+  deviceUserCode?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -644,7 +606,8 @@ const props = withDefaults(defineProps<Props>(), {
   showSessionTokenOption: false,
   showAccessTokenOption: false,
   platform: 'anthropic',
-  showProjectId: true
+  showProjectId: true,
+  deviceUserCode: ''
 })
 
 const emit = defineEmits<{
@@ -654,19 +617,20 @@ const emit = defineEmits<{
   'validate-refresh-token': [refreshToken: string]
   'validate-mobile-refresh-token': [refreshToken: string]
   'validate-session-token': [sessionToken: string]
-  'import-access-token': [accessToken: string]
   'update:inputMethod': [method: AuthInputMethod]
 }>()
 
 const { t } = useI18n()
 
 const isOpenAI = computed(() => props.platform === 'openai')
+const isCopilot = computed(() => props.platform === 'copilot')
 
 // Get translation key based on platform
 const getOAuthKey = (key: string) => {
   if (props.platform === 'openai') return `admin.accounts.oauth.openai.${key}`
   if (props.platform === 'gemini') return `admin.accounts.oauth.gemini.${key}`
   if (props.platform === 'antigravity') return `admin.accounts.oauth.antigravity.${key}`
+  if (props.platform === 'copilot') return `admin.accounts.oauth.copilot.${key}`
   return `admin.accounts.oauth.${key}`
 }
 
@@ -694,7 +658,6 @@ const authCodeInput = ref('')
 const sessionKeyInput = ref('')
 const refreshTokenInput = ref('')
 const sessionTokenInput = ref('')
-const accessTokenInput = ref('')
 const showHelpDialog = ref(false)
 const oauthState = ref('')
 const projectId = ref('')
@@ -792,12 +755,6 @@ const handleValidateRefreshToken = () => {
   }
 }
 
-const handleImportAccessToken = () => {
-  if (accessTokenInput.value.trim()) {
-    emit('import-access-token', accessTokenInput.value.trim())
-  }
-}
-
 // Expose methods and state
 defineExpose({
   authCode: authCodeInput,
@@ -806,7 +763,6 @@ defineExpose({
   sessionKey: sessionKeyInput,
   refreshToken: refreshTokenInput,
   sessionToken: sessionTokenInput,
-  accessToken: accessTokenInput,
   inputMethod,
   reset: () => {
     authCodeInput.value = ''
@@ -815,7 +771,6 @@ defineExpose({
     sessionKeyInput.value = ''
     refreshTokenInput.value = ''
     sessionTokenInput.value = ''
-    accessTokenInput.value = ''
     inputMethod.value = 'manual'
     showHelpDialog.value = false
   }

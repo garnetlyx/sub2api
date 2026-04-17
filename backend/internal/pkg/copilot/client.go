@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -18,6 +19,10 @@ const (
 	DefaultCopilotAPIBase = "https://api.githubcopilot.com"
 	tokenExchangePath     = "/copilot_internal/v2/token"
 	userPath              = "/user"
+	deviceCodePath        = "/login/device/code"
+	oauthTokenPath        = "/login/oauth/access_token"
+	GitHubCopilotClientID = "Iv1.b507a08c87ecfe98"
+	deviceGrantType       = "urn:ietf:params:oauth:grant-type:device_code"
 )
 
 type GitHubUser struct {
@@ -46,6 +51,24 @@ type tokenResponse struct {
 	ExpiresIn int64  `json:"expires_in"`
 }
 
+type DeviceCodeResponse struct {
+	DeviceCode              string `json:"device_code"`
+	UserCode                string `json:"user_code"`
+	VerificationURI         string `json:"verification_uri"`
+	VerificationURIComplete string `json:"verification_uri_complete"`
+	ExpiresIn               int64  `json:"expires_in"`
+	Interval                int64  `json:"interval"`
+}
+
+type GitHubAccessTokenResponse struct {
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+	Scope       string `json:"scope"`
+	Error       string `json:"error"`
+	Description string `json:"error_description"`
+	URI         string `json:"error_uri"`
+}
+
 func NewHTTPClient(proxyURL string) (*http.Client, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	trimmed := strings.TrimSpace(proxyURL)
@@ -67,6 +90,70 @@ func NewHTTPClient(proxyURL string) (*http.Client, error) {
 	}
 	client.Transport = transport
 	return client, nil
+}
+
+func StartDeviceCodeFlow(ctx context.Context, httpClient *http.Client) (*DeviceCodeResponse, error) {
+	form := url.Values{}
+	form.Set("client_id", GitHubCopilotClientID)
+	form.Set("scope", "read:user")
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://github.com"+deviceCodePath, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "sub2api-copilot/1.0")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("github device code request failed: status %d body %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var payload DeviceCodeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode github device code: %w", err)
+	}
+	if strings.TrimSpace(payload.DeviceCode) == "" || strings.TrimSpace(payload.UserCode) == "" {
+		return nil, fmt.Errorf("github device code response missing required fields")
+	}
+	if payload.Interval <= 0 {
+		payload.Interval = 5
+	}
+	return &payload, nil
+}
+
+func PollDeviceCodeAccessToken(ctx context.Context, httpClient *http.Client, deviceCode string) (*GitHubAccessTokenResponse, error) {
+	form := url.Values{}
+	form.Set("client_id", GitHubCopilotClientID)
+	form.Set("device_code", strings.TrimSpace(deviceCode))
+	form.Set("grant_type", deviceGrantType)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://github.com"+oauthTokenPath, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "sub2api-copilot/1.0")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var payload GitHubAccessTokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode github device token response: %w", err)
+	}
+	return &payload, nil
 }
 
 func GetGitHubUser(ctx context.Context, httpClient *http.Client, accessToken string) (*GitHubUser, error) {

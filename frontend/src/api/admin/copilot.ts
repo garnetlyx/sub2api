@@ -1,7 +1,20 @@
 import { apiClient } from '../client'
 
-export interface CopilotAccessTokenRequest {
-  access_token: string
+export interface CopilotDeviceFlowStartRequest {
+  proxy_id?: number
+}
+
+export interface CopilotDeviceFlowStartResponse {
+  session_id: string
+  user_code: string
+  verification_uri: string
+  verification_uri_complete?: string
+  expires_in?: number
+  interval?: number
+}
+
+export interface CopilotDeviceFlowPollRequest {
+  session_id: string
   proxy_id?: number
 }
 
@@ -15,11 +28,21 @@ export interface CopilotTokenInfo {
   [key: string]: unknown
 }
 
-export async function importAccessToken(
-  payload: CopilotAccessTokenRequest
-): Promise<CopilotTokenInfo> {
-  const { data } = await apiClient.post<CopilotTokenInfo>('/admin/copilot/access-token', payload)
+export async function startDeviceFlow(
+  payload: CopilotDeviceFlowStartRequest = {}
+): Promise<CopilotDeviceFlowStartResponse> {
+  const { data } = await apiClient.post<CopilotDeviceFlowStartResponse>(
+    '/admin/copilot/device-code/start',
+    payload
+  )
   return data
 }
 
-export default { importAccessToken }
+export async function pollDeviceFlow(
+  payload: CopilotDeviceFlowPollRequest
+): Promise<CopilotTokenInfo> {
+  const { data } = await apiClient.post<CopilotTokenInfo>('/admin/copilot/device-code/poll', payload)
+  return data
+}
+
+export default { startDeviceFlow, pollDeviceFlow }

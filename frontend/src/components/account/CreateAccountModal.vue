@@ -2483,15 +2483,15 @@
         :show-refresh-token-option="form.platform === 'openai' || form.platform === 'antigravity'"
         :show-mobile-refresh-token-option="form.platform === 'openai'"
         :show-session-token-option="false"
-        :show-access-token-option="form.platform === 'copilot'"
+        :show-access-token-option="false"
         :platform="form.platform"
         :show-project-id="geminiOAuthType === 'code_assist'"
+        :device-user-code="form.platform === 'copilot' ? copilotOAuth.userCode.value : ''"
         @generate-url="handleGenerateUrl"
         @cookie-auth="handleCookieAuth"
         @validate-refresh-token="handleValidateRefreshToken"
         @validate-mobile-refresh-token="handleOpenAIValidateMobileRT"
         @validate-session-token="handleValidateSessionToken"
-        @import-access-token="handleCopilotImportAccessToken"
       />
 
     </div>
@@ -2916,7 +2916,7 @@ const appStore = useAppStore()
 // OAuth composables
 const oauth = useAccountOAuth() // For Anthropic OAuth
 const openaiOAuth = useOpenAIOAuth() // For OpenAI OAuth
-const copilotOAuth = useCopilotOAuth() // For Copilot GitHub token import
+const copilotOAuth = useCopilotOAuth() // For Copilot device code flow
 const geminiOAuth = useGeminiOAuth() // For Gemini OAuth
 const antigravityOAuth = useAntigravityOAuth() // For Antigravity OAuth
 
@@ -3216,6 +3216,9 @@ const expiresAtInput = computed({
 
 const canExchangeCode = computed(() => {
   const authCode = oauthFlowRef.value?.authCode || ''
+  if (form.platform === 'copilot') {
+    return !!copilotOAuth.sessionId.value && !copilotOAuth.loading.value
+  }
   if (form.platform === 'openai') {
     return authCode.trim() && openaiOAuth.sessionId.value && !openaiOAuth.loading.value
   }
@@ -4036,7 +4039,7 @@ const handleGenerateUrl = async () => {
   if (form.platform === 'openai') {
     await openaiOAuth.generateAuthUrl(form.proxy_id)
   } else if (form.platform === 'copilot') {
-    return
+    await copilotOAuth.startDeviceFlow(form.proxy_id)
   } else if (form.platform === 'gemini') {
     await geminiOAuth.generateAuthUrl(
       form.proxy_id,
@@ -4063,9 +4066,9 @@ const handleValidateSessionToken = (_sessionToken: string) => {
   // Session token validation removed
 }
 
-const handleCopilotImportAccessToken = async (accessToken: string) => {
+const handleCopilotDeviceFlow = async () => {
   if (form.platform !== 'copilot') return
-  const tokenInfo = await copilotOAuth.importAccessToken(accessToken, form.proxy_id)
+  const tokenInfo = await copilotOAuth.pollDeviceFlow(copilotOAuth.sessionId.value, form.proxy_id)
   if (!tokenInfo) return
 
   const credentials = copilotOAuth.buildCredentials(tokenInfo)
@@ -4595,6 +4598,8 @@ const handleExchangeCode = async () => {
   const authCode = oauthFlowRef.value?.authCode || ''
 
   switch (form.platform) {
+    case 'copilot':
+      return handleCopilotDeviceFlow()
     case 'openai':
       return handleOpenAIExchange(authCode)
     case 'gemini':

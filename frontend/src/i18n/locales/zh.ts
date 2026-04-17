@@ -2716,10 +2716,20 @@ export default {
           pleaseEnterSessionToken: '请输入 Session Token'
         },
         copilot: {
-          title: 'GitHub Copilot 导入',
-          accessTokenDesc: '输入 GitHub Access Token，后端会校验该 token，并自动拉取 Copilot 可用模型。',
-          accessTokenPlaceholder: '粘贴 GitHub Access Token，例如 ghu_...',
-          validateAndCreate: '验证并导入'
+          title: 'GitHub Copilot 授权',
+          followSteps: '请按照以下步骤完成 GitHub Copilot 设备码授权：',
+          step1GenerateUrl: '生成设备码',
+          generateAuthUrl: '生成设备码',
+          step2OpenUrl: '打开链接并在 GitHub 中确认',
+          openUrlDesc: '请在浏览器中打开上方链接，输入设备码并完成 GitHub 授权。',
+          step3EnterCode: '回到面板完成授权',
+          authCodeDesc: 'GitHub 授权完成后，无需粘贴 code，直接回到面板点击“完成授权”即可。',
+          authCode: '授权状态',
+          authCodePlaceholder: 'Copilot device flow 不需要手动粘贴 code',
+          authCodeHint: '如果尚未完成 GitHub 侧授权，点击完成授权时会提示 authorization pending。',
+          deviceCodeLabel: '设备码',
+          deviceCodeHint: '打开上方链接，输入这里显示的 device code，然后回到面板完成授权。',
+          completeHint: '完成 GitHub 页面授权后，点击底部“完成授权”按钮，系统会轮询并导入账号。'
         },
         // Gemini specific
         gemini: {

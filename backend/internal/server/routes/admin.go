@@ -325,9 +325,10 @@ func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 func registerCopilotOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	copilot := admin.Group("/copilot")
 	{
-		copilot.POST("/access-token", h.Admin.CopilotOAuth.ImportAccessToken)
+		copilot.POST("/device-code/start", h.Admin.CopilotOAuth.StartDeviceFlow)
+		copilot.POST("/device-code/poll", h.Admin.CopilotOAuth.PollDeviceFlow)
 		copilot.POST("/accounts/:id/refresh", h.Admin.CopilotOAuth.RefreshAccountToken)
-		copilot.POST("/create-from-access-token", h.Admin.CopilotOAuth.CreateAccountFromAccessToken)
+		copilot.POST("/create-from-device-code", h.Admin.CopilotOAuth.CreateAccountFromDeviceFlow)
 	}
 }
 

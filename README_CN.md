@@ -604,13 +604,12 @@ Antigravity 账户支持可选的**混合调度**功能。开启后，通用端�
 Sub2API 现支持 `GitHub Copilot` 账号池。
 
 - 管理后台新增 `Copilot` 平台
-- 授权方式为手动导入 `GitHub Access Token`
-- 导入时后端会自动校验 GitHub token、换取 Copilot 短期 token，并拉取可用模型列表
+- 授权方式为 GitHub `Device Code` 流程
+- 完成设备码授权后，后端会自动换取 GitHub token、再换取 Copilot 短期 token，并拉取可用模型列表
 - 对外仍走 OpenAI 兼容接口，调用格式不需要额外变化
 
 当前实现说明：
 
-- v1 不使用 Device Code 流程
 - 账号类型为 `oauth`
 - `/v1/responses`、`/v1/chat/completions`、`/v1/messages` 均可通过 OpenAI 兼容网关路由到 Copilot 账号
 

@@ -128,14 +128,14 @@
         :show-help="isAnthropic"
         :show-proxy-warning="isAnthropic"
         :show-cookie-option="isAnthropic"
-        :show-access-token-option="isCopilot"
+        :show-access-token-option="false"
         :allow-multiple="false"
         :method-label="t('admin.accounts.inputMethod')"
         :platform="isOpenAI ? 'openai' : isCopilot ? 'copilot' : isGemini ? 'gemini' : isAntigravity ? 'antigravity' : 'anthropic'"
         :show-project-id="isGemini && geminiOAuthType === 'code_assist'"
+        :device-user-code="isCopilot ? copilotOAuth.userCode.value : ''"
         @generate-url="handleGenerateUrl"
         @cookie-auth="handleCookieAuth"
-        @import-access-token="handleImportAccessToken"
       />
 
     </div>
@@ -289,6 +289,9 @@ const canExchangeCode = computed(() => {
   const authCode = oauthFlowRef.value?.authCode || ''
   const sessionId = currentSessionId.value
   const loading = currentLoading.value
+  if (isCopilot.value) {
+    return !!sessionId && !loading
+  }
   return authCode.trim() && sessionId && !loading
 })
 
@@ -340,6 +343,7 @@ const handleGenerateUrl = async () => {
 
   if (isOpenAILike.value) {
     if (isCopilot.value) {
+      await copilotOAuth.startDeviceFlow(props.account.proxy_id)
       return
     }
     await openaiOAuth.generateAuthUrl(props.account.proxy_id)
@@ -359,12 +363,32 @@ const handleExchangeCode = async () => {
   if (!props.account) return
 
   const authCode = oauthFlowRef.value?.authCode || ''
-  if (!authCode.trim()) return
 
   if (isOpenAILike.value) {
     if (isCopilot.value) {
+      const tokenInfo = await copilotOAuth.pollDeviceFlow(copilotOAuth.sessionId.value, props.account.proxy_id)
+      if (!tokenInfo) return
+
+      const credentials = copilotOAuth.buildCredentials(tokenInfo)
+      const extra = copilotOAuth.buildExtraInfo(tokenInfo)
+
+      try {
+        await adminAPI.accounts.update(props.account.id, {
+          type: 'oauth',
+          credentials,
+          extra
+        })
+        await adminAPI.accounts.clearError(props.account.id)
+        appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
+        emit('reauthorized')
+        handleClose()
+      } catch (error: any) {
+        copilotOAuth.error.value = error.response?.data?.detail || t('admin.accounts.oauth.authFailed')
+        appStore.showError(copilotOAuth.error.value)
+      }
       return
     }
+    if (!authCode.trim()) return
     // OpenAI OAuth flow
     const oauthClient = openaiOAuth
     const sessionId = oauthClient.sessionId.value
@@ -513,30 +537,6 @@ const handleExchangeCode = async () => {
     } finally {
       claudeOAuth.loading.value = false
     }
-  }
-}
-
-const handleImportAccessToken = async (accessToken: string) => {
-  if (!props.account || !isCopilot.value) return
-  const tokenInfo = await copilotOAuth.importAccessToken(accessToken, props.account.proxy_id)
-  if (!tokenInfo) return
-
-  const credentials = copilotOAuth.buildCredentials(tokenInfo)
-  const extra = copilotOAuth.buildExtraInfo(tokenInfo)
-
-  try {
-    await adminAPI.accounts.update(props.account.id, {
-      type: 'oauth',
-      credentials,
-      extra
-    })
-    await adminAPI.accounts.clearError(props.account.id)
-    appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
-    emit('reauthorized')
-    handleClose()
-  } catch (error: any) {
-    copilotOAuth.error.value = error.response?.data?.detail || t('admin.accounts.oauth.authFailed')
-    appStore.showError(copilotOAuth.error.value)
   }
 }
 

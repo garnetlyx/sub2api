@@ -2578,10 +2578,20 @@ export default {
           pleaseEnterSessionToken: 'Please enter Session Token'
         },
         copilot: {
-          title: 'GitHub Copilot Import',
-          accessTokenDesc: 'Enter a GitHub access token. The backend will validate it and fetch the Copilot model catalog.',
-          accessTokenPlaceholder: 'Paste a GitHub access token, e.g. ghu_...',
-          validateAndCreate: 'Validate & Import'
+          title: 'GitHub Copilot Authorization',
+          followSteps: 'Follow these steps to complete GitHub Copilot device authorization:',
+          step1GenerateUrl: 'Generate device code',
+          generateAuthUrl: 'Generate Device Code',
+          step2OpenUrl: 'Open the link and approve on GitHub',
+          openUrlDesc: 'Open the link above in your browser, enter the device code, and complete GitHub authorization.',
+          step3EnterCode: 'Return here to finish authorization',
+          authCodeDesc: 'After GitHub authorization is complete, you do not need to paste any code. Just return here and click "Complete Authorization".',
+          authCode: 'Authorization Status',
+          authCodePlaceholder: 'Copilot device flow does not require manually pasting a code',
+          authCodeHint: 'If GitHub authorization is not finished yet, completing authorization will return authorization pending.',
+          deviceCodeLabel: 'Device Code',
+          deviceCodeHint: 'Open the link above, enter the device code shown here, then return to the panel to finish authorization.',
+          completeHint: 'After authorizing on GitHub, click "Complete Authorization" below and the system will poll and import the account.'
         },
         // Gemini specific
 	        gemini: {
