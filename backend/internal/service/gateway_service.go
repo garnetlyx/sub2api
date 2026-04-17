@@ -23,9 +23,12 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
@@ -8650,28 +8653,10 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 	}
 	modelsListCacheMissTotal.Add(1)
 
-	var accounts []Account
-	var err error
-
-	if groupID != nil {
-		accounts, err = s.accountRepo.ListSchedulableByGroupID(ctx, *groupID)
-	} else {
-		accounts, err = s.accountRepo.ListSchedulable(ctx)
-	}
+	accounts, err := s.listSchedulableAccountsForModels(ctx, groupID, platform)
 
 	if err != nil || len(accounts) == 0 {
 		return nil
-	}
-
-	// Filter by platform if specified
-	if platform != "" {
-		filtered := make([]Account, 0)
-		for _, acc := range accounts {
-			if acc.Platform == platform {
-				filtered = append(filtered, acc)
-			}
-		}
-		accounts = filtered
 	}
 
 	// Collect unique models from all accounts
@@ -8679,13 +8664,7 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 	hasAnyMapping := false
 
 	for _, acc := range accounts {
-		mapping := acc.GetModelMapping()
-		if len(mapping) > 0 {
-			hasAnyMapping = true
-			for model := range mapping {
-				modelSet[model] = struct{}{}
-			}
-		}
+		hasAnyMapping = s.addAvailableModelsForAccount(modelSet, acc) || hasAnyMapping
 	}
 
 	// If no account has model_mapping, return nil (use default)
@@ -8709,6 +8688,136 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		modelsListCacheStoreTotal.Add(1)
 	}
 	return cloneStringSlice(models)
+}
+
+func (s *GatewayService) listSchedulableAccountsForModels(ctx context.Context, groupID *int64, platform string) ([]Account, error) {
+	effectiveGroupID := groupID
+	hasForcePlatform := false
+	useSimpleUnion := s.cfg != nil && s.cfg.RunMode == config.RunModeSimple && strings.TrimSpace(platform) == ""
+
+	if useSimpleUnion {
+		// The public simple-mode gateway can schedule across provider pools, so the
+		// public /v1/models catalog should reflect the union of all schedulable
+		// accounts instead of only the current key's bound group.
+		effectiveGroupID = nil
+	}
+
+	filterByPlatform := func(accounts []Account) []Account {
+		if strings.TrimSpace(platform) == "" {
+			return accounts
+		}
+		filtered := make([]Account, 0, len(accounts))
+		for _, acc := range accounts {
+			if acc.Platform == platform {
+				filtered = append(filtered, acc)
+			}
+		}
+		return filtered
+	}
+
+	if s.schedulerSnapshot != nil {
+		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, effectiveGroupID, platform, hasForcePlatform)
+		if err != nil {
+			return nil, err
+		}
+		if useSimpleUnion {
+			openAIAccounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, nil, PlatformOpenAI, false)
+			if err != nil {
+				return nil, err
+			}
+			if len(openAIAccounts) > 0 {
+				seen := make(map[int64]struct{}, len(accounts))
+				for _, acc := range accounts {
+					seen[acc.ID] = struct{}{}
+				}
+				for _, acc := range openAIAccounts {
+					if _, exists := seen[acc.ID]; exists {
+						continue
+					}
+					accounts = append(accounts, acc)
+				}
+			}
+		}
+		return accounts, nil
+	}
+
+	if effectiveGroupID != nil {
+		accounts, err := s.accountRepo.ListSchedulableByGroupID(ctx, *effectiveGroupID)
+		if err != nil {
+			return nil, err
+		}
+		return filterByPlatform(accounts), nil
+	}
+
+	accounts, err := s.accountRepo.ListSchedulable(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if useSimpleUnion {
+		openAIAccounts, err := s.accountRepo.ListSchedulableByPlatform(ctx, PlatformOpenAI)
+		if err != nil {
+			return nil, err
+		}
+		if len(openAIAccounts) > 0 {
+			seen := make(map[int64]struct{}, len(accounts))
+			for _, acc := range accounts {
+				seen[acc.ID] = struct{}{}
+			}
+			for _, acc := range openAIAccounts {
+				if _, exists := seen[acc.ID]; exists {
+					continue
+				}
+				accounts = append(accounts, acc)
+			}
+		}
+	}
+	return filterByPlatform(accounts), nil
+}
+
+func (s *GatewayService) addAvailableModelsForAccount(modelSet map[string]struct{}, acc Account) bool {
+	switch {
+	case acc.IsOpenAI():
+		mapping := acc.GetModelMapping()
+		if acc.IsOpenAIPassthroughEnabled() || len(mapping) == 0 {
+			for _, model := range openai.DefaultModels {
+				modelSet[model.ID] = struct{}{}
+			}
+			return true
+		}
+		for model := range mapping {
+			modelSet[model] = struct{}{}
+		}
+		return true
+	case acc.IsGemini():
+		mapping := acc.GetModelMapping()
+		if acc.IsOAuth() || len(mapping) == 0 {
+			for _, model := range geminicli.DefaultModels {
+				modelSet[model.ID] = struct{}{}
+			}
+			return true
+		}
+		for model := range mapping {
+			modelSet[model] = struct{}{}
+		}
+		return true
+	case acc.Platform == PlatformAntigravity:
+		for _, model := range antigravity.DefaultModels() {
+			modelSet[model.ID] = struct{}{}
+		}
+		return true
+	default:
+		mapping := acc.GetModelMapping()
+		if acc.IsOAuth() || len(mapping) == 0 {
+			for _, model := range claude.DefaultModels {
+				modelSet[model.ID] = struct{}{}
+			}
+			return true
+		}
+		for model := range mapping {
+			modelSet[model] = struct{}{}
+		}
+		return true
+	}
 }
 
 func (s *GatewayService) InvalidateAvailableModelsCache(groupID *int64, platform string) {

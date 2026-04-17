@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -861,6 +862,22 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 
 	// Get available models from account configurations (without platform filter)
 	availableModels := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, "")
+	if h.cfg != nil && h.cfg.RunMode == config.RunModeSimple {
+		modelSet := make(map[string]struct{}, len(availableModels)+len(openai.DefaultModels))
+		for _, modelID := range availableModels {
+			modelSet[modelID] = struct{}{}
+		}
+		for _, model := range openai.DefaultModels {
+			modelSet[model.ID] = struct{}{}
+		}
+		if len(modelSet) > 0 {
+			availableModels = availableModels[:0]
+			for modelID := range modelSet {
+				availableModels = append(availableModels, modelID)
+			}
+			sort.Strings(availableModels)
+		}
+	}
 
 	if len(availableModels) > 0 {
 		// Build model list from whitelist
