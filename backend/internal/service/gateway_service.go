@@ -1967,6 +1967,7 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 	if s.schedulerSnapshot != nil {
 		accounts, useMixed, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, platform, hasForcePlatform)
 		if err == nil {
+			accounts = s.unionSimpleModeDBAccounts(ctx, groupID, platform, hasForcePlatform, accounts)
 			slog.Debug("account_scheduling_list_snapshot",
 				"group_id", derefGroupID(groupID),
 				"platform", platform,
@@ -2058,6 +2059,43 @@ func (s *GatewayService) listSchedulableAccounts(ctx context.Context, groupID *i
 			"tls_fingerprint", acc.IsTLSFingerprintEnabled())
 	}
 	return accounts, useMixed, nil
+}
+
+func (s *GatewayService) unionSimpleModeDBAccounts(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool, base []Account) []Account {
+	if s == nil || s.accountRepo == nil || s.cfg == nil || s.cfg.RunMode != config.RunModeSimple || groupID != nil {
+		return base
+	}
+
+	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
+	var (
+		extra []Account
+		err   error
+	)
+	switch {
+	case strings.TrimSpace(platform) == "":
+		extra, err = s.accountRepo.ListSchedulable(ctx)
+	case useMixed:
+		extra, err = s.accountRepo.ListSchedulableByPlatforms(ctx, []string{platform, PlatformAntigravity})
+	default:
+		extra, err = s.accountRepo.ListSchedulableByPlatform(ctx, platform)
+	}
+	if err != nil || len(extra) == 0 {
+		return base
+	}
+
+	seen := make(map[int64]struct{}, len(base))
+	merged := make([]Account, 0, len(base)+len(extra))
+	for _, acc := range base {
+		seen[acc.ID] = struct{}{}
+		merged = append(merged, acc)
+	}
+	for _, acc := range extra {
+		if _, exists := seen[acc.ID]; exists {
+			continue
+		}
+		merged = append(merged, acc)
+	}
+	return merged
 }
 
 // IsSingleAntigravityAccountGroup 检查指定分组是否只有一个 antigravity 平台的可调度账号。
@@ -8720,11 +8758,13 @@ func (s *GatewayService) listSchedulableAccountsForModels(ctx context.Context, g
 		if err != nil {
 			return nil, err
 		}
+		accounts = s.unionSimpleModeDBAccounts(ctx, effectiveGroupID, platform, hasForcePlatform, accounts)
 		if useSimpleUnion {
 			openAIAccounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, nil, PlatformOpenAI, false)
 			if err != nil {
 				return nil, err
 			}
+			openAIAccounts = s.unionSimpleModeDBAccounts(ctx, nil, PlatformOpenAI, false, openAIAccounts)
 			if len(openAIAccounts) > 0 {
 				seen := make(map[int64]struct{}, len(accounts))
 				for _, acc := range accounts {
