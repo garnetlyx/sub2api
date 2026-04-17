@@ -8760,11 +8760,11 @@ func (s *GatewayService) listSchedulableAccountsForModels(ctx context.Context, g
 		}
 		accounts = s.unionSimpleModeDBAccounts(ctx, effectiveGroupID, platform, hasForcePlatform, accounts)
 		if useSimpleUnion {
-			openAIAccounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, nil, PlatformOpenAI, false)
+			openAIAccounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, nil, "", false)
 			if err != nil {
 				return nil, err
 			}
-			openAIAccounts = s.unionSimpleModeDBAccounts(ctx, nil, PlatformOpenAI, false, openAIAccounts)
+			openAIAccounts = filterOpenAICompatibleAccounts(s.unionSimpleModeDBAccounts(ctx, nil, "", false, openAIAccounts))
 			if len(openAIAccounts) > 0 {
 				seen := make(map[int64]struct{}, len(accounts))
 				for _, acc := range accounts {
@@ -8794,10 +8794,11 @@ func (s *GatewayService) listSchedulableAccountsForModels(ctx context.Context, g
 		return nil, err
 	}
 	if useSimpleUnion {
-		openAIAccounts, err := s.accountRepo.ListSchedulableByPlatform(ctx, PlatformOpenAI)
+		openAIAccounts, err := s.accountRepo.ListSchedulable(ctx)
 		if err != nil {
 			return nil, err
 		}
+		openAIAccounts = filterOpenAICompatibleAccounts(openAIAccounts)
 		if len(openAIAccounts) > 0 {
 			seen := make(map[int64]struct{}, len(accounts))
 			for _, acc := range accounts {
@@ -8828,6 +8829,18 @@ func (s *GatewayService) addAvailableModelsForAccount(modelSet map[string]struct
 			modelSet[model] = struct{}{}
 		}
 		return true
+	case acc.IsCopilot():
+		mapping := acc.GetModelMapping()
+		if len(mapping) > 0 {
+			for model := range mapping {
+				modelSet[model] = struct{}{}
+			}
+			return true
+		}
+		for _, model := range acc.GetCopilotAvailableModels() {
+			modelSet[model] = struct{}{}
+		}
+		return len(acc.GetCopilotAvailableModels()) > 0
 	case acc.IsGemini():
 		mapping := acc.GetModelMapping()
 		if acc.IsOAuth() || len(mapping) == 0 {

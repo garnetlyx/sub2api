@@ -323,6 +323,7 @@ type OpenAIGatewayService struct {
 	httpUpstream          HTTPUpstream
 	deferredService       *DeferredService
 	openAITokenProvider   *OpenAITokenProvider
+	copilotTokenProvider  *CopilotTokenProvider
 	toolCorrector         *CodexToolCorrector
 	openaiWSResolver      OpenAIWSProtocolResolver
 	resolver              *ModelPricingResolver
@@ -362,6 +363,7 @@ func NewOpenAIGatewayService(
 	httpUpstream HTTPUpstream,
 	deferredService *DeferredService,
 	openAITokenProvider *OpenAITokenProvider,
+	copilotTokenProvider *CopilotTokenProvider,
 	resolver *ModelPricingResolver,
 	channelService *ChannelService,
 ) *OpenAIGatewayService {
@@ -389,6 +391,7 @@ func NewOpenAIGatewayService(
 		httpUpstream:          httpUpstream,
 		deferredService:       deferredService,
 		openAITokenProvider:   openAITokenProvider,
+		copilotTokenProvider:  copilotTokenProvider,
 		toolCorrector:         NewCodexToolCorrector(),
 		openaiWSResolver:      NewOpenAIWSProtocolResolver(cfg),
 		resolver:              resolver,
@@ -1283,7 +1286,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 
 	// 验证账号是否可用于当前请求
 	// Verify account is usable for current request
-	if !account.IsSchedulable() || !account.IsOpenAI() {
+	if !account.IsSchedulable() || !account.UsesOpenAIGateway() {
 		return nil
 	}
 	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
@@ -1465,7 +1468,7 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 				if clearSticky {
 					_ = s.deleteStickySessionAccountID(ctx, groupID, sessionHash)
 				}
-				if !clearSticky && account.IsSchedulable() && account.IsOpenAI() &&
+				if !clearSticky && account.IsSchedulable() && account.UsesOpenAIGateway() &&
 					(requestedModel == "" || account.IsModelSupported(requestedModel)) {
 					account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel)
 					if account == nil {
@@ -1645,21 +1648,65 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 
 func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64) ([]Account, error) {
 	if s.schedulerSnapshot != nil {
-		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, PlatformOpenAI, false)
-		return accounts, err
+		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, "", false)
+		if err != nil {
+			return nil, err
+		}
+		return filterOpenAICompatibleAccounts(accounts), nil
 	}
+
+	merge := func(dst []Account, src []Account) []Account {
+		if len(src) == 0 {
+			return dst
+		}
+		seen := make(map[int64]struct{}, len(dst))
+		for _, item := range dst {
+			seen[item.ID] = struct{}{}
+		}
+		for _, item := range src {
+			if _, exists := seen[item.ID]; exists {
+				continue
+			}
+			seen[item.ID] = struct{}{}
+			dst = append(dst, item)
+		}
+		return dst
+	}
+
 	var accounts []Account
+	var openaiAccounts []Account
+	var copilotAccounts []Account
 	var err error
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
-		accounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, PlatformOpenAI)
+		openaiAccounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, PlatformOpenAI)
+		if err != nil {
+			return nil, fmt.Errorf("query openai accounts failed: %w", err)
+		}
+		copilotAccounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, PlatformCopilot)
+		if err != nil {
+			return nil, fmt.Errorf("query copilot accounts failed: %w", err)
+		}
 	} else if groupID != nil {
-		accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, PlatformOpenAI)
+		openaiAccounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, PlatformOpenAI)
+		if err != nil {
+			return nil, fmt.Errorf("query openai accounts failed: %w", err)
+		}
+		copilotAccounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, PlatformCopilot)
+		if err != nil {
+			return nil, fmt.Errorf("query copilot accounts failed: %w", err)
+		}
 	} else {
-		accounts, err = s.accountRepo.ListSchedulableUngroupedByPlatform(ctx, PlatformOpenAI)
+		openaiAccounts, err = s.accountRepo.ListSchedulableUngroupedByPlatform(ctx, PlatformOpenAI)
+		if err != nil {
+			return nil, fmt.Errorf("query openai accounts failed: %w", err)
+		}
+		copilotAccounts, err = s.accountRepo.ListSchedulableUngroupedByPlatform(ctx, PlatformCopilot)
+		if err != nil {
+			return nil, fmt.Errorf("query copilot accounts failed: %w", err)
+		}
 	}
-	if err != nil {
-		return nil, fmt.Errorf("query accounts failed: %w", err)
-	}
+	accounts = merge(accounts, openaiAccounts)
+	accounts = merge(accounts, copilotAccounts)
 	return accounts, nil
 }
 
@@ -1684,7 +1731,7 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.
 		fresh = current
 	}
 
-	if !fresh.IsSchedulable() || !fresh.IsOpenAI() {
+	if !fresh.IsSchedulable() || !fresh.UsesOpenAIGateway() {
 		return nil
 	}
 	if requestedModel != "" && !fresh.IsModelSupported(requestedModel) {
@@ -1706,13 +1753,26 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 		return nil
 	}
 	syncOpenAICodexRateLimitFromExtra(ctx, s.accountRepo, latest, time.Now())
-	if !latest.IsSchedulable() || !latest.IsOpenAI() {
+	if !latest.IsSchedulable() || !latest.UsesOpenAIGateway() {
 		return nil
 	}
 	if requestedModel != "" && !latest.IsModelSupported(requestedModel) {
 		return nil
 	}
 	return latest
+}
+
+func filterOpenAICompatibleAccounts(accounts []Account) []Account {
+	if len(accounts) == 0 {
+		return accounts
+	}
+	filtered := make([]Account, 0, len(accounts))
+	for _, account := range accounts {
+		if account.UsesOpenAIGateway() {
+			filtered = append(filtered, account)
+		}
+	}
+	return filtered
 }
 
 func (s *OpenAIGatewayService) getSchedulableAccount(ctx context.Context, accountID int64) (*Account, error) {
@@ -1750,8 +1810,15 @@ func (s *OpenAIGatewayService) schedulingConfig() config.GatewaySchedulingConfig
 func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Account) (string, string, error) {
 	switch account.Type {
 	case AccountTypeOAuth:
-		// 使用 TokenProvider 获取缓存的 token
-		if s.openAITokenProvider != nil {
+		if account.IsCopilot() {
+			if s.copilotTokenProvider != nil {
+				accessToken, err := s.copilotTokenProvider.GetAccessToken(ctx, account)
+				if err != nil {
+					return "", "", err
+				}
+				return accessToken, "oauth", nil
+			}
+		} else if s.openAITokenProvider != nil {
 			accessToken, err := s.openAITokenProvider.GetAccessToken(ctx, account)
 			if err != nil {
 				return "", "", err
@@ -1992,7 +2059,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if !isCodexCLI {
 		if maxOutputTokens, hasMaxOutputTokens := reqBody["max_output_tokens"]; hasMaxOutputTokens {
 			switch account.Platform {
-			case PlatformOpenAI:
+			case PlatformOpenAI, PlatformCopilot:
 				// For OpenAI API Key, remove max_output_tokens (not supported)
 				// For OpenAI OAuth (Responses API), keep it (supported)
 				if account.Type == AccountTypeAPIKey {
@@ -2024,7 +2091,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 		// Also handle max_completion_tokens (similar logic)
 		if _, hasMaxCompletionTokens := reqBody["max_completion_tokens"]; hasMaxCompletionTokens {
-			if account.Type == AccountTypeAPIKey || account.Platform != PlatformOpenAI {
+			if account.Type == AccountTypeAPIKey || !account.UsesOpenAIGateway() || account.IsCopilot() {
 				delete(reqBody, "max_completion_tokens")
 				bodyModified = true
 				markPatchDelete("max_completion_tokens")

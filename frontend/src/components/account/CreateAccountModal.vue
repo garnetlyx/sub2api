@@ -111,6 +111,19 @@
           </button>
           <button
             type="button"
+            @click="form.platform = 'copilot'"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'copilot'
+                ? 'bg-white text-slate-700 shadow-sm dark:bg-dark-600 dark:text-slate-200'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <Icon name="cloud" size="sm" />
+            Copilot
+          </button>
+          <button
+            type="button"
             @click="form.platform = 'gemini'"
             :class="[
               'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
@@ -2464,13 +2477,13 @@
         :loading="currentOAuthLoading"
         :error="currentOAuthError"
         :show-help="form.platform === 'anthropic'"
-        :show-proxy-warning="form.platform !== 'openai' && !!form.proxy_id"
+        :show-proxy-warning="form.platform !== 'openai' && form.platform !== 'copilot' && !!form.proxy_id"
         :allow-multiple="form.platform === 'anthropic'"
         :show-cookie-option="form.platform === 'anthropic'"
         :show-refresh-token-option="form.platform === 'openai' || form.platform === 'antigravity'"
         :show-mobile-refresh-token-option="form.platform === 'openai'"
         :show-session-token-option="false"
-        :show-access-token-option="false"
+        :show-access-token-option="form.platform === 'copilot'"
         :platform="form.platform"
         :show-project-id="geminiOAuthType === 'code_assist'"
         @generate-url="handleGenerateUrl"
@@ -2478,6 +2491,7 @@
         @validate-refresh-token="handleValidateRefreshToken"
         @validate-mobile-refresh-token="handleOpenAIValidateMobileRT"
         @validate-session-token="handleValidateSessionToken"
+        @import-access-token="handleCopilotImportAccessToken"
       />
 
     </div>
@@ -2815,6 +2829,7 @@ import {
   type AuthInputMethod
 } from '@/composables/useAccountOAuth'
 import { useOpenAIOAuth } from '@/composables/useOpenAIOAuth'
+import { useCopilotOAuth } from '@/composables/useCopilotOAuth'
 import { useGeminiOAuth } from '@/composables/useGeminiOAuth'
 import { useAntigravityOAuth } from '@/composables/useAntigravityOAuth'
 import type {
@@ -2855,6 +2870,7 @@ interface OAuthFlowExposed {
   sessionKey: string
   refreshToken: string
   sessionToken: string
+  accessToken: string
   inputMethod: AuthInputMethod
   reset: () => void
 }
@@ -2864,6 +2880,7 @@ const authStore = useAuthStore()
 
 const oauthStepTitle = computed(() => {
   if (form.platform === 'openai') return t('admin.accounts.oauth.openai.title')
+  if (form.platform === 'copilot') return t('admin.accounts.oauth.copilot.title', 'GitHub Copilot 导入')
   if (form.platform === 'gemini') return t('admin.accounts.oauth.gemini.title')
   if (form.platform === 'antigravity') return t('admin.accounts.oauth.antigravity.title')
   return t('admin.accounts.oauth.title')
@@ -2899,12 +2916,14 @@ const appStore = useAppStore()
 // OAuth composables
 const oauth = useAccountOAuth() // For Anthropic OAuth
 const openaiOAuth = useOpenAIOAuth() // For OpenAI OAuth
+const copilotOAuth = useCopilotOAuth() // For Copilot GitHub token import
 const geminiOAuth = useGeminiOAuth() // For Gemini OAuth
 const antigravityOAuth = useAntigravityOAuth() // For Antigravity OAuth
 
 // Computed: current OAuth state for template binding
 const currentAuthUrl = computed(() => {
   if (form.platform === 'openai') return openaiOAuth.authUrl.value
+  if (form.platform === 'copilot') return copilotOAuth.authUrl.value
   if (form.platform === 'gemini') return geminiOAuth.authUrl.value
   if (form.platform === 'antigravity') return antigravityOAuth.authUrl.value
   return oauth.authUrl.value
@@ -2912,6 +2931,7 @@ const currentAuthUrl = computed(() => {
 
 const currentSessionId = computed(() => {
   if (form.platform === 'openai') return openaiOAuth.sessionId.value
+  if (form.platform === 'copilot') return copilotOAuth.sessionId.value
   if (form.platform === 'gemini') return geminiOAuth.sessionId.value
   if (form.platform === 'antigravity') return antigravityOAuth.sessionId.value
   return oauth.sessionId.value
@@ -2919,6 +2939,7 @@ const currentSessionId = computed(() => {
 
 const currentOAuthLoading = computed(() => {
   if (form.platform === 'openai') return openaiOAuth.loading.value
+  if (form.platform === 'copilot') return copilotOAuth.loading.value
   if (form.platform === 'gemini') return geminiOAuth.loading.value
   if (form.platform === 'antigravity') return antigravityOAuth.loading.value
   return oauth.loading.value
@@ -2926,6 +2947,7 @@ const currentOAuthLoading = computed(() => {
 
 const currentOAuthError = computed(() => {
   if (form.platform === 'openai') return openaiOAuth.error.value
+  if (form.platform === 'copilot') return copilotOAuth.error.value
   if (form.platform === 'gemini') return geminiOAuth.error.value
   if (form.platform === 'antigravity') return antigravityOAuth.error.value
   return oauth.error.value
@@ -3311,6 +3333,7 @@ watch(
     // Reset OAuth states
     oauth.resetState()
     openaiOAuth.resetState()
+    copilotOAuth.resetState()
 
     geminiOAuth.resetState()
     antigravityOAuth.resetState()
@@ -3721,6 +3744,7 @@ const resetForm = () => {
   geminiTierAIStudio.value = 'aistudio_free'
   oauth.resetState()
   openaiOAuth.resetState()
+  copilotOAuth.resetState()
   geminiOAuth.resetState()
   antigravityOAuth.resetState()
   oauthFlowRef.value?.reset()
@@ -4002,6 +4026,7 @@ const goBackToBasicInfo = () => {
   step.value = 1
   oauth.resetState()
   openaiOAuth.resetState()
+  copilotOAuth.resetState()
   geminiOAuth.resetState()
   antigravityOAuth.resetState()
   oauthFlowRef.value?.reset()
@@ -4010,6 +4035,8 @@ const goBackToBasicInfo = () => {
 const handleGenerateUrl = async () => {
   if (form.platform === 'openai') {
     await openaiOAuth.generateAuthUrl(form.proxy_id)
+  } else if (form.platform === 'copilot') {
+    return
   } else if (form.platform === 'gemini') {
     await geminiOAuth.generateAuthUrl(
       form.proxy_id,
@@ -4034,6 +4061,20 @@ const handleValidateRefreshToken = (rt: string) => {
 
 const handleValidateSessionToken = (_sessionToken: string) => {
   // Session token validation removed
+}
+
+const handleCopilotImportAccessToken = async (accessToken: string) => {
+  if (form.platform !== 'copilot') return
+  const tokenInfo = await copilotOAuth.importAccessToken(accessToken, form.proxy_id)
+  if (!tokenInfo) return
+
+  const credentials = copilotOAuth.buildCredentials(tokenInfo)
+  const extra = copilotOAuth.buildExtraInfo(tokenInfo)
+
+  await createAccountAndFinish('copilot', 'oauth', credentials, extra)
+  appStore.showSuccess(t('admin.accounts.accountCreated'))
+  emit('created')
+  handleClose()
 }
 
 const formatDateTimeLocal = formatDateTimeLocalInput

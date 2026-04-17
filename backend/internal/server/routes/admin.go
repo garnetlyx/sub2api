@@ -35,6 +35,9 @@ func RegisterAdminRoutes(
 		// OpenAI OAuth
 		registerOpenAIOAuthRoutes(admin, h)
 
+		// Copilot OAuth
+		registerCopilotOAuthRoutes(admin, h)
+
 		// Gemini OAuth
 		registerGeminiOAuthRoutes(admin, h)
 
@@ -316,6 +319,15 @@ func registerOpenAIOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		openai.POST("/refresh-token", h.Admin.OpenAIOAuth.RefreshToken)
 		openai.POST("/accounts/:id/refresh", h.Admin.OpenAIOAuth.RefreshAccountToken)
 		openai.POST("/create-from-oauth", h.Admin.OpenAIOAuth.CreateAccountFromOAuth)
+	}
+}
+
+func registerCopilotOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	copilot := admin.Group("/copilot")
+	{
+		copilot.POST("/access-token", h.Admin.CopilotOAuth.ImportAccessToken)
+		copilot.POST("/accounts/:id/refresh", h.Admin.CopilotOAuth.RefreshAccountToken)
+		copilot.POST("/create-from-access-token", h.Admin.CopilotOAuth.CreateAccountFromAccessToken)
 	}
 }
 

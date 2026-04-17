@@ -536,6 +536,21 @@ Antigravity accounts support optional **hybrid scheduling**. When enabled, the g
 
 > **⚠️ Warning**: Anthropic Claude and Antigravity Claude **cannot be mixed within the same conversation context**. Use groups to isolate them properly.
 
+## GitHub Copilot Support
+
+Sub2API now supports `GitHub Copilot` account pools.
+
+- A new `Copilot` platform is available in the admin panel
+- Authorization uses manual `GitHub Access Token` import
+- During import, the backend validates the GitHub token, exchanges it for a short-lived Copilot token, and fetches the available model list
+- External callers still use the standard OpenAI-compatible API surface
+
+Current v1 behavior:
+
+- No Device Code flow yet
+- Account type is `oauth`
+- `/v1/responses`, `/v1/chat/completions`, and `/v1/messages` can all route through the OpenAI-compatible gateway to Copilot accounts
+
 ### Known Issues
 
 In Claude Code, Plan Mode cannot exit automatically. (Normally when using the native Claude API, after planning is complete, Claude Code will pop up options for users to approve or reject the plan.)

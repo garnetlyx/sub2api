@@ -74,6 +74,7 @@ const props = defineProps<Props>()
 const platformLabel = computed(() => {
   if (props.platform === 'anthropic') return 'Anthropic'
   if (props.platform === 'openai') return 'OpenAI'
+  if (props.platform === 'copilot') return 'Copilot'
   if (props.platform === 'antigravity') return 'Antigravity'
   return 'Gemini'
 })
@@ -120,6 +121,9 @@ const platformClass = computed(() => {
   if (props.platform === 'openai') {
     return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
   }
+  if (props.platform === 'copilot') {
+    return 'bg-slate-100 text-slate-700 dark:bg-slate-900/30 dark:text-slate-300'
+  }
   if (props.platform === 'antigravity') {
     return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
   }
@@ -132,6 +136,9 @@ const typeClass = computed(() => {
   }
   if (props.platform === 'openai') {
     return 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400'
+  }
+  if (props.platform === 'copilot') {
+    return 'bg-slate-100 text-slate-600 dark:bg-slate-900/30 dark:text-slate-300'
   }
   if (props.platform === 'antigravity') {
     return 'bg-purple-100 text-purple-600 dark:bg-purple-900/30 dark:text-purple-400'
@@ -166,7 +173,7 @@ const expiresLabel = computed(() => {
 const privacyBadge = computed(() => {
   if (props.type !== 'oauth' || !props.privacyMode) return null
   // 支持 OpenAI 和 Antigravity 平台
-  if (props.platform !== 'openai' && props.platform !== 'antigravity') return null
+  if (props.platform !== 'openai' && props.platform !== 'antigravity' && props.platform !== 'copilot') return null
 
   const shieldCheck = 'M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z'
   const shieldX = 'M12 9v3.75m0-10.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285zM12 18h.008v.008H12V18z'

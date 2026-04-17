@@ -14,7 +14,7 @@
           <div
             :class="[
               'flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-br',
-              isOpenAILike
+                isOpenAILike
                 ? 'from-green-500 to-green-600'
                 : isGemini
                   ? 'from-blue-500 to-blue-600'
@@ -33,6 +33,8 @@
               {{
                 isOpenAI
                   ? t('admin.accounts.openaiAccount')
+                  : isCopilot
+                    ? t('admin.accounts.copilotAccount', 'GitHub Copilot 账号')
                   : isGemini
                     ? t('admin.accounts.geminiAccount')
                     : isAntigravity
@@ -126,12 +128,14 @@
         :show-help="isAnthropic"
         :show-proxy-warning="isAnthropic"
         :show-cookie-option="isAnthropic"
+        :show-access-token-option="isCopilot"
         :allow-multiple="false"
         :method-label="t('admin.accounts.inputMethod')"
-        :platform="isOpenAI ? 'openai' : isGemini ? 'gemini' : isAntigravity ? 'antigravity' : 'anthropic'"
+        :platform="isOpenAI ? 'openai' : isCopilot ? 'copilot' : isGemini ? 'gemini' : isAntigravity ? 'antigravity' : 'anthropic'"
         :show-project-id="isGemini && geminiOAuthType === 'code_assist'"
         @generate-url="handleGenerateUrl"
         @cookie-auth="handleCookieAuth"
+        @import-access-token="handleImportAccessToken"
       />
 
     </div>
@@ -190,6 +194,7 @@ import {
   type AuthInputMethod
 } from '@/composables/useAccountOAuth'
 import { useOpenAIOAuth } from '@/composables/useOpenAIOAuth'
+import { useCopilotOAuth } from '@/composables/useCopilotOAuth'
 import { useGeminiOAuth } from '@/composables/useGeminiOAuth'
 import { useAntigravityOAuth } from '@/composables/useAntigravityOAuth'
 import type { Account } from '@/types'
@@ -225,6 +230,7 @@ const { t } = useI18n()
 // OAuth composables
 const claudeOAuth = useAccountOAuth()
 const openaiOAuth = useOpenAIOAuth()
+const copilotOAuth = useCopilotOAuth()
 const geminiOAuth = useGeminiOAuth()
 const antigravityOAuth = useAntigravityOAuth()
 
@@ -237,32 +243,37 @@ const geminiOAuthType = ref<'code_assist' | 'google_one' | 'ai_studio'>('code_as
 
 // Computed - check platform
 const isOpenAI = computed(() => props.account?.platform === 'openai')
-const isOpenAILike = computed(() => isOpenAI.value)
+const isCopilot = computed(() => props.account?.platform === 'copilot')
+const isOpenAILike = computed(() => isOpenAI.value || isCopilot.value)
 const isGemini = computed(() => props.account?.platform === 'gemini')
 const isAnthropic = computed(() => props.account?.platform === 'anthropic')
 const isAntigravity = computed(() => props.account?.platform === 'antigravity')
 
 // Computed - current OAuth state based on platform
 const currentAuthUrl = computed(() => {
-  if (isOpenAILike.value) return openaiOAuth.authUrl.value
+  if (isCopilot.value) return copilotOAuth.authUrl.value
+  if (isOpenAI.value) return openaiOAuth.authUrl.value
   if (isGemini.value) return geminiOAuth.authUrl.value
   if (isAntigravity.value) return antigravityOAuth.authUrl.value
   return claudeOAuth.authUrl.value
 })
 const currentSessionId = computed(() => {
-  if (isOpenAILike.value) return openaiOAuth.sessionId.value
+  if (isCopilot.value) return copilotOAuth.sessionId.value
+  if (isOpenAI.value) return openaiOAuth.sessionId.value
   if (isGemini.value) return geminiOAuth.sessionId.value
   if (isAntigravity.value) return antigravityOAuth.sessionId.value
   return claudeOAuth.sessionId.value
 })
 const currentLoading = computed(() => {
-  if (isOpenAILike.value) return openaiOAuth.loading.value
+  if (isCopilot.value) return copilotOAuth.loading.value
+  if (isOpenAI.value) return openaiOAuth.loading.value
   if (isGemini.value) return geminiOAuth.loading.value
   if (isAntigravity.value) return antigravityOAuth.loading.value
   return claudeOAuth.loading.value
 })
 const currentError = computed(() => {
-  if (isOpenAILike.value) return openaiOAuth.error.value
+  if (isCopilot.value) return copilotOAuth.error.value
+  if (isOpenAI.value) return openaiOAuth.error.value
   if (isGemini.value) return geminiOAuth.error.value
   if (isAntigravity.value) return antigravityOAuth.error.value
   return claudeOAuth.error.value
@@ -314,6 +325,7 @@ const resetState = () => {
   geminiOAuthType.value = 'code_assist'
   claudeOAuth.resetState()
   openaiOAuth.resetState()
+  copilotOAuth.resetState()
   geminiOAuth.resetState()
   antigravityOAuth.resetState()
   oauthFlowRef.value?.reset()
@@ -327,6 +339,9 @@ const handleGenerateUrl = async () => {
   if (!props.account) return
 
   if (isOpenAILike.value) {
+    if (isCopilot.value) {
+      return
+    }
     await openaiOAuth.generateAuthUrl(props.account.proxy_id)
   } else if (isGemini.value) {
     const creds = (props.account.credentials || {}) as Record<string, unknown>
@@ -347,6 +362,9 @@ const handleExchangeCode = async () => {
   if (!authCode.trim()) return
 
   if (isOpenAILike.value) {
+    if (isCopilot.value) {
+      return
+    }
     // OpenAI OAuth flow
     const oauthClient = openaiOAuth
     const sessionId = oauthClient.sessionId.value
@@ -495,6 +513,30 @@ const handleExchangeCode = async () => {
     } finally {
       claudeOAuth.loading.value = false
     }
+  }
+}
+
+const handleImportAccessToken = async (accessToken: string) => {
+  if (!props.account || !isCopilot.value) return
+  const tokenInfo = await copilotOAuth.importAccessToken(accessToken, props.account.proxy_id)
+  if (!tokenInfo) return
+
+  const credentials = copilotOAuth.buildCredentials(tokenInfo)
+  const extra = copilotOAuth.buildExtraInfo(tokenInfo)
+
+  try {
+    await adminAPI.accounts.update(props.account.id, {
+      type: 'oauth',
+      credentials,
+      extra
+    })
+    await adminAPI.accounts.clearError(props.account.id)
+    appStore.showSuccess(t('admin.accounts.reAuthorizedSuccess'))
+    emit('reauthorized')
+    handleClose()
+  } catch (error: any) {
+    copilotOAuth.error.value = error.response?.data?.detail || t('admin.accounts.oauth.authFailed')
+    appStore.showError(copilotOAuth.error.value)
   }
 }
 

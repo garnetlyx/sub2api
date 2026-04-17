@@ -1830,6 +1830,27 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		return
 	}
 
+	if account.IsCopilot() {
+		modelIDs := account.GetCopilotAvailableModels()
+		if len(modelIDs) == 0 {
+			mapping := account.GetModelMapping()
+			for requestedModel := range mapping {
+				modelIDs = append(modelIDs, requestedModel)
+			}
+		}
+		models := make([]openai.Model, 0, len(modelIDs))
+		for _, modelID := range modelIDs {
+			models = append(models, openai.Model{
+				ID:          modelID,
+				Object:      "model",
+				Type:        "model",
+				DisplayName: modelID,
+			})
+		}
+		response.Success(c, models)
+		return
+	}
+
 	// Handle Gemini accounts
 	if account.IsGemini() {
 		// For OAuth accounts: return default Gemini models

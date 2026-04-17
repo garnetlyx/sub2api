@@ -2715,6 +2715,12 @@ export default {
           pleaseEnterRefreshToken: '请输入 Refresh Token',
           pleaseEnterSessionToken: '请输入 Session Token'
         },
+        copilot: {
+          title: 'GitHub Copilot 导入',
+          accessTokenDesc: '输入 GitHub Access Token，后端会校验该 token，并自动拉取 Copilot 可用模型。',
+          accessTokenPlaceholder: '粘贴 GitHub Access Token，例如 ghu_...',
+          validateAndCreate: '验证并导入'
+        },
         // Gemini specific
         gemini: {
           title: 'Gemini 账户授权',
@@ -2929,6 +2935,7 @@ export default {
       reAuthorizeAccount: '重新授权账号',
       claudeCodeAccount: 'Claude Code 账号',
       openaiAccount: 'OpenAI 账号',
+      copilotAccount: 'GitHub Copilot 账号',
       geminiAccount: 'Gemini 账号',
       antigravityAccount: 'Antigravity 账号',
       inputMethod: '输入方式',

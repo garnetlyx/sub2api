@@ -91,6 +91,13 @@ func ProvideOpenAITokenProvider(
 	return p
 }
 
+func ProvideCopilotTokenProvider(
+	tokenCache GeminiTokenCache,
+	proxyRepo ProxyRepository,
+) *CopilotTokenProvider {
+	return NewCopilotTokenProvider(tokenCache, proxyRepo)
+}
+
 // ProvideGeminiTokenProvider creates GeminiTokenProvider with OAuthRefreshAPI injection
 func ProvideGeminiTokenProvider(
 	accountRepo AccountRepository,
@@ -401,6 +408,7 @@ var ProviderSet = wire.NewSet(
 	NewOpenAIGatewayService,
 	NewOAuthService,
 	NewOpenAIOAuthService,
+	NewCopilotOAuthService,
 	NewGeminiOAuthService,
 	NewGeminiQuotaService,
 	NewCompositeTokenCacheInvalidator,
@@ -411,6 +419,7 @@ var ProviderSet = wire.NewSet(
 	NewGeminiMessagesCompatService,
 	ProvideAntigravityTokenProvider,
 	ProvideOpenAITokenProvider,
+	ProvideCopilotTokenProvider,
 	ProvideClaudeTokenProvider,
 	NewAntigravityGatewayService,
 	ProvideRateLimitService,

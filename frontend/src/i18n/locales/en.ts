@@ -2577,6 +2577,12 @@ export default {
           pleaseEnterRefreshToken: 'Please enter Refresh Token',
           pleaseEnterSessionToken: 'Please enter Session Token'
         },
+        copilot: {
+          title: 'GitHub Copilot Import',
+          accessTokenDesc: 'Enter a GitHub access token. The backend will validate it and fetch the Copilot model catalog.',
+          accessTokenPlaceholder: 'Paste a GitHub access token, e.g. ghu_...',
+          validateAndCreate: 'Validate & Import'
+        },
         // Gemini specific
 	        gemini: {
 	          title: 'Gemini Account Authorization',
@@ -2796,6 +2802,7 @@ export default {
       reAuthorizeAccount: 'Re-Authorize Account',
       claudeCodeAccount: 'Claude Code Account',
       openaiAccount: 'OpenAI Account',
+      copilotAccount: 'GitHub Copilot Account',
       geminiAccount: 'Gemini Account',
       antigravityAccount: 'Antigravity Account',
       inputMethod: 'Input Method',

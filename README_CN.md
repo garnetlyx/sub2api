@@ -599,6 +599,21 @@ Antigravity 账户支持可选的**混合调度**功能。开启后，通用端�
 
 > **⚠️ 注意**：Anthropic Claude 和 Antigravity Claude **不能在同一上下文中混合使用**，请通过分组功能做好隔离。
 
+## GitHub Copilot 使用说明
+
+Sub2API 现支持 `GitHub Copilot` 账号池。
+
+- 管理后台新增 `Copilot` 平台
+- 授权方式为手动导入 `GitHub Access Token`
+- 导入时后端会自动校验 GitHub token、换取 Copilot 短期 token，并拉取可用模型列表
+- 对外仍走 OpenAI 兼容接口，调用格式不需要额外变化
+
+当前实现说明：
+
+- v1 不使用 Device Code 流程
+- 账号类型为 `oauth`
+- `/v1/responses`、`/v1/chat/completions`、`/v1/messages` 均可通过 OpenAI 兼容网关路由到 Copilot 账号
+
 
 ### 已知问题
 在 Claude Code 中，无法自动退出Plan Mode。（正常使用原生Claude Api时，Plan 完成后，Claude Code会弹出弹出选项让用户同意或拒绝Plan。） 

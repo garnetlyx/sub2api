@@ -20,6 +20,7 @@ const (
 const (
 	PlatformAnthropic   = "anthropic"
 	PlatformOpenAI      = "openai"
+	PlatformCopilot     = "copilot"
 	PlatformGemini      = "gemini"
 	PlatformAntigravity = "antigravity"
 )

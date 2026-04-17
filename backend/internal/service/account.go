@@ -850,6 +850,14 @@ func (a *Account) IsOpenAI() bool {
 	return a.Platform == PlatformOpenAI
 }
 
+func (a *Account) IsCopilot() bool {
+	return a.Platform == PlatformCopilot
+}
+
+func (a *Account) UsesOpenAIGateway() bool {
+	return a.Platform == PlatformOpenAI || a.Platform == PlatformCopilot
+}
+
 func (a *Account) IsAnthropic() bool {
 	return a.Platform == PlatformAnthropic
 }
@@ -863,8 +871,11 @@ func (a *Account) IsOpenAIApiKey() bool {
 }
 
 func (a *Account) GetOpenAIBaseURL() string {
-	if !a.IsOpenAI() {
+	if a == nil || !a.UsesOpenAIGateway() {
 		return ""
+	}
+	if a.IsCopilot() {
+		return "https://api.githubcopilot.com"
 	}
 	if a.Type == AccountTypeAPIKey {
 		baseURL := a.GetCredential("base_url")
@@ -876,7 +887,7 @@ func (a *Account) GetOpenAIBaseURL() string {
 }
 
 func (a *Account) GetOpenAIAccessToken() string {
-	if !a.IsOpenAI() {
+	if a == nil || !a.UsesOpenAIGateway() {
 		return ""
 	}
 	return a.GetCredential("access_token")
@@ -904,10 +915,44 @@ func (a *Account) GetOpenAIApiKey() string {
 }
 
 func (a *Account) GetOpenAIUserAgent() string {
-	if !a.IsOpenAI() {
+	if a == nil || !a.UsesOpenAIGateway() {
 		return ""
 	}
 	return a.GetCredential("user_agent")
+}
+
+func (a *Account) GetCopilotAvailableModels() []string {
+	if a == nil || a.Extra == nil {
+		return nil
+	}
+	raw, ok := a.Extra["available_models"]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch values := raw.(type) {
+	case []string:
+		out := make([]string, 0, len(values))
+		for _, v := range values {
+			v = strings.TrimSpace(v)
+			if v != "" {
+				out = append(out, v)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, item := range values {
+			if s, ok := item.(string); ok {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func (a *Account) GetChatGPTAccountID() string {
