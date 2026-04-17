@@ -1648,11 +1648,24 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 
 func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, groupID *int64) ([]Account, error) {
 	if s.schedulerSnapshot != nil {
-		accounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, "", false)
+		openaiAccounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, PlatformOpenAI, false)
 		if err != nil {
 			return nil, err
 		}
-		return filterOpenAICompatibleAccounts(accounts), nil
+		copilotAccounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, PlatformCopilot, false)
+		if err != nil {
+			return nil, err
+		}
+		merged := make([]Account, 0, len(openaiAccounts)+len(copilotAccounts))
+		seen := make(map[int64]struct{}, len(openaiAccounts)+len(copilotAccounts))
+		for _, acc := range append(openaiAccounts, copilotAccounts...) {
+			if _, exists := seen[acc.ID]; exists {
+				continue
+			}
+			seen[acc.ID] = struct{}{}
+			merged = append(merged, acc)
+		}
+		return merged, nil
 	}
 
 	merge := func(dst []Account, src []Account) []Account {
@@ -1737,6 +1750,11 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.
 	if requestedModel != "" && !fresh.IsModelSupported(requestedModel) {
 		return nil
 	}
+	// OpenAI OAuth accounts (ChatGPT) cannot handle claude-* models; skip them so
+	// Copilot accounts are selected instead for Anthropic-family model names.
+	if fresh.IsOpenAIOAuth() && looksLikeAnthropicModel(requestedModel) {
+		return nil
+	}
 	return fresh
 }
 
@@ -1759,6 +1777,9 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 	if requestedModel != "" && !latest.IsModelSupported(requestedModel) {
 		return nil
 	}
+	if latest.IsOpenAIOAuth() && looksLikeAnthropicModel(requestedModel) {
+		return nil
+	}
 	return latest
 }
 
@@ -1773,6 +1794,10 @@ func filterOpenAICompatibleAccounts(accounts []Account) []Account {
 		}
 	}
 	return filtered
+}
+
+func looksLikeAnthropicModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "claude-")
 }
 
 func (s *OpenAIGatewayService) getSchedulableAccount(ctx context.Context, accountID int64) (*Account, error) {
@@ -2041,7 +2066,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
-	if account.Type == AccountTypeOAuth {
+	// Copilot uses the standard Responses API format; codex transform is ChatGPT-internal only.
+	if account.Type == AccountTypeOAuth && !account.IsCopilot() {
 		codexResult := applyCodexOAuthTransform(reqBody, isCodexCLI, isOpenAIResponsesCompactPath(c))
 		if codexResult.Modified {
 			bodyModified = true
@@ -2717,7 +2743,17 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	targetURL := openaiPlatformAPIURL
 	switch account.Type {
 	case AccountTypeOAuth:
-		targetURL = chatgptCodexURL
+		if account.IsCopilot() {
+			// Copilot OAuth uses the GitHub Copilot API, not the ChatGPT internal API.
+			baseURL := account.GetOpenAIBaseURL()
+			validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+			if err != nil {
+				return nil, err
+			}
+			targetURL = buildOpenAIResponsesURL(validatedURL)
+		} else {
+			targetURL = chatgptCodexURL
+		}
 	case AccountTypeAPIKey:
 		baseURL := account.GetOpenAIBaseURL()
 		if baseURL != "" {
@@ -2755,8 +2791,8 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	req.Header.Del("x-goog-api-key")
 	req.Header.Set("authorization", "Bearer "+token)
 
-	// OAuth 透传到 ChatGPT internal API 时补齐必要头。
-	if account.Type == AccountTypeOAuth {
+	// OAuth 透传到 ChatGPT internal API 时补齐必要头（Copilot 账号走 Copilot API，不需要这些头）。
+	if account.Type == AccountTypeOAuth && !account.IsCopilot() {
 		promptCacheKey := strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
 		req.Host = "chatgpt.com"
 		if chatgptAccountID := account.GetChatGPTAccountID(); chatgptAccountID != "" {
@@ -2797,6 +2833,14 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 			req.Header.Set("conversation_id", isolateOpenAISessionID(apiKeyID, clientConversationID))
 		}
 	}
+	if account.IsCopilot() {
+		if req.Header.Get("accept") == "" {
+			req.Header.Set("accept", "text/event-stream")
+		}
+		req.Header.Set("Editor-Version", "vscode/1.99.3")
+		req.Header.Set("Editor-Plugin-Version", "copilot-chat/0.26.7")
+		req.Header.Set("Copilot-Integration-Id", "vscode-chat")
+	}
 
 	// 透传模式也支持账户自定义 User-Agent 与 ForceCodexCLI 兜底。
 	customUA := account.GetOpenAIUserAgent()
@@ -2807,7 +2851,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		req.Header.Set("user-agent", codexCLIUserAgent)
 	}
 	// OAuth 安全透传：对非 Codex UA 统一兜底，降低被上游风控拦截概率。
-	if account.Type == AccountTypeOAuth && !openai.IsCodexCLIRequest(req.Header.Get("user-agent")) {
+	if account.Type == AccountTypeOAuth && !account.IsCopilot() && !openai.IsCodexCLIRequest(req.Header.Get("user-agent")) {
 		req.Header.Set("user-agent", codexCLIUserAgent)
 	}
 
@@ -3225,8 +3269,17 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	var targetURL string
 	switch account.Type {
 	case AccountTypeOAuth:
-		// OAuth accounts use ChatGPT internal API
-		targetURL = chatgptCodexURL
+		if account.IsCopilot() {
+			// Copilot OAuth uses the GitHub Copilot API, not the ChatGPT internal API.
+			baseURL := account.GetOpenAIBaseURL()
+			validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+			if err != nil {
+				return nil, err
+			}
+			targetURL = buildOpenAIResponsesURL(validatedURL)
+		} else {
+			targetURL = chatgptCodexURL
+		}
 	case AccountTypeAPIKey:
 		// API Key accounts use Platform API or custom base URL
 		baseURL := account.GetOpenAIBaseURL()
@@ -3252,8 +3305,8 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// Set authentication header
 	req.Header.Set("authorization", "Bearer "+token)
 
-	// Set headers specific to OAuth accounts (ChatGPT internal API)
-	if account.Type == AccountTypeOAuth {
+	// Set headers specific to ChatGPT internal API (non-Copilot OAuth accounts only)
+	if account.Type == AccountTypeOAuth && !account.IsCopilot() {
 		// Required: set Host for ChatGPT API (must use req.Host, not Header.Set)
 		req.Host = "chatgpt.com"
 		// Required: set chatgpt-account-id header
@@ -3272,7 +3325,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			}
 		}
 	}
-	if account.Type == AccountTypeOAuth {
+	if account.Type == AccountTypeOAuth && !account.IsCopilot() {
 		// 清除客户端透传的 session 头，后续用隔离后的值重新设置，防止跨用户会话碰撞。
 		req.Header.Del("conversation_id")
 		req.Header.Del("session_id")
@@ -3295,6 +3348,12 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			req.Header.Set("conversation_id", isolated)
 			req.Header.Set("session_id", isolated)
 		}
+	}
+	if account.IsCopilot() {
+		req.Header.Set("accept", "text/event-stream")
+		req.Header.Set("Editor-Version", "vscode/1.99.3")
+		req.Header.Set("Editor-Plugin-Version", "copilot-chat/0.26.7")
+		req.Header.Set("Copilot-Integration-Id", "vscode-chat")
 	}
 
 	// Apply custom User-Agent if configured

@@ -84,7 +84,8 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		return nil, fmt.Errorf("marshal responses request: %w", err)
 	}
 
-	if account.Type == AccountTypeOAuth {
+	// Copilot uses the standard Responses API format; codex transform is ChatGPT-internal only.
+	if account.Type == AccountTypeOAuth && !account.IsCopilot() {
 		var reqBody map[string]any
 		if err := json.Unmarshal(responsesBody, &reqBody); err != nil {
 			return nil, fmt.Errorf("unmarshal for codex transform: %w", err)

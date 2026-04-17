@@ -178,8 +178,13 @@ func getGroupPlatform(c *gin.Context) string {
 }
 
 func shouldRouteToOpenAI(c *gin.Context) bool {
-	if platform := getGroupPlatform(c); platform == service.PlatformOpenAI || platform == service.PlatformCopilot {
+	platform := getGroupPlatform(c)
+	if platform == service.PlatformOpenAI || platform == service.PlatformCopilot {
 		return true
+	}
+	// Anthropic-platform groups always use Anthropic gateway regardless of model name.
+	if platform == service.PlatformAnthropic {
+		return false
 	}
 	return requestTargetsOpenAIModel(c)
 }
@@ -217,6 +222,10 @@ func looksLikeOpenAIModel(model string) bool {
 		return true
 	}
 	if strings.HasPrefix(model, "chatgpt-") {
+		return true
+	}
+	// Copilot supports claude-* models via OpenAI-compatible API.
+	if strings.HasPrefix(model, "claude-") {
 		return true
 	}
 	return false

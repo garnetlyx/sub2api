@@ -37,8 +37,14 @@ type CopilotTokenInfo struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+type modelCapabilities struct {
+	Type   string `json:"type"`
+	Family string `json:"family"`
+}
+
 type Model struct {
-	ID string `json:"id"`
+	ID           string             `json:"id"`
+	Capabilities modelCapabilities  `json:"capabilities"`
 }
 
 type modelsResponse struct {
@@ -46,9 +52,9 @@ type modelsResponse struct {
 }
 
 type tokenResponse struct {
-	Token     string `json:"token"`
-	ExpiresAt string `json:"expires_at"`
-	ExpiresIn int64  `json:"expires_in"`
+	Token     string          `json:"token"`
+	ExpiresAt json.RawMessage `json:"expires_at"`
+	ExpiresIn int64           `json:"expires_in"`
 }
 
 type DeviceCodeResponse struct {
@@ -216,10 +222,18 @@ func ExchangeCopilotToken(ctx context.Context, httpClient *http.Client, githubAc
 	}
 
 	expiresAt := time.Time{}
-	if strings.TrimSpace(payload.ExpiresAt) != "" {
-		parsed, err := time.Parse(time.RFC3339, payload.ExpiresAt)
-		if err == nil {
-			expiresAt = parsed
+	if len(payload.ExpiresAt) > 0 {
+		// expires_at may be a Unix timestamp (number) or an RFC3339 string
+		var ts int64
+		if err := json.Unmarshal(payload.ExpiresAt, &ts); err == nil && ts > 0 {
+			expiresAt = time.Unix(ts, 0)
+		} else {
+			var s string
+			if err := json.Unmarshal(payload.ExpiresAt, &s); err == nil && s != "" {
+				if parsed, err := time.Parse(time.RFC3339, s); err == nil {
+					expiresAt = parsed
+				}
+			}
 		}
 	}
 	if expiresAt.IsZero() && payload.ExpiresIn > 0 {
@@ -243,6 +257,9 @@ func ListModels(ctx context.Context, httpClient *http.Client, copilotToken strin
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(copilotToken))
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "sub2api-copilot/1.0")
+	req.Header.Set("Editor-Version", "vscode/1.99.3")
+	req.Header.Set("Editor-Plugin-Version", "copilot-chat/0.26.7")
+	req.Header.Set("Copilot-Integration-Id", "vscode-chat")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -264,6 +281,15 @@ func ListModels(ctx context.Context, httpClient *http.Client, copilotToken strin
 	for _, item := range payload.Data {
 		id := strings.TrimSpace(item.ID)
 		if id == "" {
+			continue
+		}
+		// skip internal router entries (e.g. accounts/msft/routers/...)
+		if strings.HasPrefix(id, "accounts/") {
+			continue
+		}
+		// skip non-chat capability types when type is explicitly set
+		capType := strings.TrimSpace(item.Capabilities.Type)
+		if capType != "" && capType != "chat" {
 			continue
 		}
 		if _, exists := seen[id]; exists {

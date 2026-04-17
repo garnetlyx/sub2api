@@ -276,7 +276,7 @@ func normalizeCodexModel(model string) string {
 }
 
 func normalizeOpenAIModelForUpstream(account *Account, model string) string {
-	if account == nil || account.Type == AccountTypeOAuth {
+	if account == nil || (account.Type == AccountTypeOAuth && !account.IsCopilot()) {
 		return normalizeCodexModel(model)
 	}
 	return strings.TrimSpace(model)
