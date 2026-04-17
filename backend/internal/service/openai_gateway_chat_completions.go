@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/sjson"
 	"go.uber.org/zap"
 )
 
@@ -53,6 +54,11 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	if promptCacheKey == "" && account.Type == AccountTypeOAuth && shouldAutoInjectPromptCacheKeyForCompat(upstreamModel) {
 		promptCacheKey = deriveCompatPromptCacheKey(&chatReq, upstreamModel)
 		compatPromptCacheInjected = promptCacheKey != ""
+	}
+
+	// 3a. Copilot: forward as native chat completions (Copilot doesn't support Responses API).
+	if account.IsCopilot() {
+		return s.forwardCopilotChatCompletions(ctx, c, account, body, originalModel, billingModel, upstreamModel, clientStream, includeUsage, startTime)
 	}
 
 	// 3. Convert to Responses and forward
@@ -530,6 +536,175 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			c.Writer.Flush()
 		}
 	}
+}
+
+// forwardCopilotChatCompletions sends a Chat Completions request directly to the Copilot API
+// without converting to Responses format, which Copilot does not support for all models.
+func (s *OpenAIGatewayService) forwardCopilotChatCompletions(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	originalModel, billingModel, upstreamModel string,
+	clientStream, includeUsage bool,
+	startTime time.Time,
+) (*OpenAIForwardResult, error) {
+	// Replace model in body with upstream model if different.
+	upstreamBody := body
+	if upstreamModel != originalModel {
+		if replaced, err := sjson.SetBytes(body, "model", upstreamModel); err == nil {
+			upstreamBody = replaced
+		}
+	}
+
+	token, _, err := s.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, fmt.Errorf("get access token: %w", err)
+	}
+
+	baseURL := account.GetOpenAIBaseURL() // "https://api.githubcopilot.com"
+	targetURL := strings.TrimRight(baseURL, "/") + "/chat/completions"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(upstreamBody))
+	if err != nil {
+		return nil, fmt.Errorf("build copilot request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Editor-Version", "vscode/1.99.3")
+	req.Header.Set("Editor-Plugin-Version", "copilot-chat/0.26.7")
+	req.Header.Set("Copilot-Integration-Id", "vscode-chat")
+	if clientStream {
+		req.Header.Set("Accept", "text/event-stream")
+	} else {
+		req.Header.Set("Accept", "application/json")
+	}
+
+	proxyURL := ""
+	if account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+	if err != nil {
+		safeErr := sanitizeUpstreamErrorMessage(err.Error())
+		setOpsUpstreamError(c, 0, safeErr, "")
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
+			UpstreamStatusCode: 0, Kind: "request_error", Message: safeErr,
+		})
+		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
+		return nil, fmt.Errorf("copilot request failed: %s", safeErr)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
+				UpstreamStatusCode: resp.StatusCode, Kind: "failover", Message: upstreamMsg,
+			})
+			if s.rateLimitService != nil {
+				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+			}
+			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
+		}
+		return s.handleChatCompletionsErrorResponse(resp, c, account)
+	}
+
+	requestID := resp.Header.Get("x-request-id")
+	if s.responseHeaderFilter != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	}
+
+	if clientStream {
+		// Stream SSE chunks directly — Copilot returns standard chat.completion.chunk format.
+		c.Writer.Header().Set("Content-Type", "text/event-stream")
+		c.Writer.Header().Set("Cache-Control", "no-cache")
+		c.Writer.Header().Set("Connection", "keep-alive")
+		c.Writer.Header().Set("X-Accel-Buffering", "no")
+		c.Writer.WriteHeader(http.StatusOK)
+
+		var usage OpenAIUsage
+		var firstTokenMs *int
+		firstChunk := true
+
+		scanner := bufio.NewScanner(resp.Body)
+		maxLineSize := defaultMaxLineSize
+		if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
+			maxLineSize = s.cfg.Gateway.MaxLineSize
+		}
+		scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if firstChunk && strings.HasPrefix(line, "data:") {
+				firstChunk = false
+				ms := int(time.Since(startTime).Milliseconds())
+				firstTokenMs = &ms
+			}
+			if line == "data: [DONE]" {
+				fmt.Fprint(c.Writer, line+"\n\n") //nolint:errcheck
+				c.Writer.Flush()
+				break
+			}
+			if strings.HasPrefix(line, "data: ") {
+				// Extract usage from the final chunk if present.
+				payload := line[6:]
+				var chunk struct {
+					Usage *struct {
+						PromptTokens     int `json:"prompt_tokens"`
+						CompletionTokens int `json:"completion_tokens"`
+					} `json:"usage"`
+				}
+				if json.Unmarshal([]byte(payload), &chunk) == nil && chunk.Usage != nil {
+					usage.InputTokens = chunk.Usage.PromptTokens
+					usage.OutputTokens = chunk.Usage.CompletionTokens
+				}
+			}
+			fmt.Fprint(c.Writer, line+"\n") //nolint:errcheck
+			if line == "" {
+				c.Writer.Flush()
+			}
+		}
+		if err := scanner.Err(); err != nil && !errors.Is(err, context.Canceled) {
+			logger.L().Warn("copilot chat_completions stream: read error", zap.Error(err))
+		}
+		return &OpenAIForwardResult{
+			RequestID: requestID, Usage: usage, Model: originalModel,
+			BillingModel: billingModel, UpstreamModel: upstreamModel,
+			Stream: true, Duration: time.Since(startTime), FirstTokenMs: firstTokenMs,
+		}, nil
+	}
+
+	// Non-streaming: pass response JSON through directly.
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if err != nil {
+		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Failed to read response")
+		return nil, fmt.Errorf("read copilot response: %w", err)
+	}
+
+	var usage OpenAIUsage
+	var parsed struct {
+		Usage *struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal(respBody, &parsed) == nil && parsed.Usage != nil {
+		usage.InputTokens = parsed.Usage.PromptTokens
+		usage.OutputTokens = parsed.Usage.CompletionTokens
+	}
+
+	c.Data(http.StatusOK, "application/json", respBody)
+	return &OpenAIForwardResult{
+		RequestID: requestID, Usage: usage, Model: originalModel,
+		BillingModel: billingModel, UpstreamModel: upstreamModel,
+		Stream: false, Duration: time.Since(startTime),
+	}, nil
 }
 
 // writeChatCompletionsError writes an error response in OpenAI Chat Completions format.
