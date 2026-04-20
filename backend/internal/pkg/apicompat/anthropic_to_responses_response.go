@@ -160,6 +160,9 @@ type AnthropicEventToResponsesState struct {
 	InputTokens          int
 	OutputTokens         int
 	CacheReadInputTokens int
+
+	// StopReason from message_delta (e.g. "max_tokens", "end_turn")
+	StopReason string
 }
 
 // NewAnthropicEventToResponsesState returns an initialised stream state.
@@ -457,6 +460,10 @@ func anthToResHandleMessageDelta(evt *AnthropicStreamEvent, state *AnthropicEven
 			state.CacheReadInputTokens = evt.Usage.CacheReadInputTokens
 		}
 	}
+	// Save stop_reason so message_stop can emit the correct terminal status.
+	if evt.Delta != nil && evt.Delta.StopReason != "" {
+		state.StopReason = evt.Delta.StopReason
+	}
 
 	return nil
 }
@@ -471,9 +478,13 @@ func anthToResHandleMessageStop(state *AnthropicEventToResponsesState) []Respons
 	// Close any open item
 	events = append(events, closeCurrentResponsesItem(state)...)
 
-	// Determine status
+	// Derive status from stop_reason saved during message_delta.
 	status := "completed"
 	var incompleteDetails *ResponsesIncompleteDetails
+	if state.StopReason == "max_tokens" {
+		status = "incomplete"
+		incompleteDetails = &ResponsesIncompleteDetails{Reason: "max_output_tokens"}
+	}
 
 	// Emit response.completed
 	events = append(events, makeResponsesCompletedEvent(state, status, incompleteDetails))
