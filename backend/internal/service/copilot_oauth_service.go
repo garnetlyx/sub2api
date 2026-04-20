@@ -26,15 +26,35 @@ type CopilotImportResult struct {
 }
 
 type CopilotOAuthService struct {
-	proxyRepo ProxyRepository
-	sessions  *copilotDeviceSessionStore
+	proxyRepo   ProxyRepository
+	accountRepo AccountRepository
+	sessions    *copilotDeviceSessionStore
 }
 
-func NewCopilotOAuthService(proxyRepo ProxyRepository) *CopilotOAuthService {
+func NewCopilotOAuthService(proxyRepo ProxyRepository, accountRepo AccountRepository) *CopilotOAuthService {
 	return &CopilotOAuthService{
-		proxyRepo: proxyRepo,
-		sessions:  newCopilotDeviceSessionStore(),
+		proxyRepo:   proxyRepo,
+		accountRepo: accountRepo,
+		sessions:    newCopilotDeviceSessionStore(),
 	}
+}
+
+// FindByGitHubLogin returns the first copilot account whose extra.github_login matches.
+// Returns (nil, nil) if not found.
+func (s *CopilotOAuthService) FindByGitHubLogin(ctx context.Context, login string) (*Account, error) {
+	if s.accountRepo == nil || strings.TrimSpace(login) == "" {
+		return nil, nil
+	}
+	accounts, err := s.accountRepo.FindByExtraField(ctx, "github_login", login)
+	if err != nil {
+		return nil, err
+	}
+	for i := range accounts {
+		if accounts[i].Platform == PlatformCopilot {
+			return &accounts[i], nil
+		}
+	}
+	return nil, nil
 }
 
 func (s *CopilotOAuthService) ImportAccessToken(ctx context.Context, accessToken string, proxyID *int64) (*CopilotImportResult, error) {

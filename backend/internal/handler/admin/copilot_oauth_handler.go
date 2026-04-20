@@ -132,6 +132,33 @@ func (h *CopilotOAuthHandler) CreateAccountFromDeviceFlow(c *gin.Context) {
 		}
 	}
 
+	// Upsert: if an account with the same GitHub login already exists, update its credentials.
+	existing, err := h.copilotOAuthService.FindByGitHubLogin(c.Request.Context(), result.GitHubLogin)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	if existing != nil {
+		extra := h.copilotOAuthService.BuildAccountExtra(result)
+		for k, v := range existing.Extra {
+			if _, exists := extra[k]; !exists {
+				extra[k] = v
+			}
+		}
+		updatedAccount, updateErr := h.adminService.UpdateAccount(c.Request.Context(), existing.ID, &service.UpdateAccountInput{
+			Name:        name,
+			Credentials: h.copilotOAuthService.BuildAccountCredentials(result),
+			Extra:       extra,
+		})
+		if updateErr != nil {
+			response.ErrorFrom(c, updateErr)
+			return
+		}
+		response.Success(c, dto.AccountFromService(updatedAccount))
+		return
+	}
+
 	account, err := h.adminService.CreateAccount(c.Request.Context(), &service.CreateAccountInput{
 		Name:        name,
 		Platform:    service.PlatformCopilot,

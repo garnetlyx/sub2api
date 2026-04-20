@@ -159,7 +159,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	backupHandler := admin.NewBackupHandler(backupService, userService)
 	oAuthHandler := admin.NewOAuthHandler(oAuthService)
 	openAIOAuthHandler := admin.NewOpenAIOAuthHandler(openAIOAuthService, adminService)
-	copilotOAuthService := service.NewCopilotOAuthService(proxyRepository)
+	copilotOAuthService := service.NewCopilotOAuthService(proxyRepository, accountRepository)
 	copilotOAuthHandler := admin.NewCopilotOAuthHandler(copilotOAuthService, adminService)
 	geminiOAuthHandler := admin.NewGeminiOAuthHandler(geminiOAuthService)
 	antigravityOAuthHandler := admin.NewAntigravityOAuthHandler(antigravityOAuthService)
