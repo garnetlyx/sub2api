@@ -67,12 +67,15 @@ type DeviceCodeResponse struct {
 }
 
 type GitHubAccessTokenResponse struct {
-	AccessToken string `json:"access_token"`
-	TokenType   string `json:"token_type"`
-	Scope       string `json:"scope"`
-	Error       string `json:"error"`
-	Description string `json:"error_description"`
-	URI         string `json:"error_uri"`
+	AccessToken           string `json:"access_token"`
+	TokenType             string `json:"token_type"`
+	Scope                 string `json:"scope"`
+	RefreshToken          string `json:"refresh_token"`
+	RefreshTokenExpiresIn int64  `json:"refresh_token_expires_in"`
+	ExpiresIn             int64  `json:"expires_in"`
+	Error                 string `json:"error"`
+	Description           string `json:"error_description"`
+	URI                   string `json:"error_uri"`
 }
 
 func NewHTTPClient(proxyURL string) (*http.Client, error) {
@@ -247,6 +250,40 @@ func ExchangeCopilotToken(ctx context.Context, httpClient *http.Client, githubAc
 		Token:     payload.Token,
 		ExpiresAt: expiresAt,
 	}, nil
+}
+
+// RefreshGitHubToken exchanges a GitHub refresh_token for a new access_token + refresh_token pair.
+func RefreshGitHubToken(ctx context.Context, httpClient *http.Client, refreshToken string) (*GitHubAccessTokenResponse, error) {
+	form := url.Values{}
+	form.Set("client_id", GitHubCopilotClientID)
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", strings.TrimSpace(refreshToken))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://github.com"+oauthTokenPath, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "sub2api-copilot/1.0")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var payload GitHubAccessTokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode github refresh token response: %w", err)
+	}
+	if payload.Error != "" {
+		return nil, fmt.Errorf("%s: %s", payload.Error, payload.Description)
+	}
+	if strings.TrimSpace(payload.AccessToken) == "" {
+		return nil, fmt.Errorf("github refresh token response returned empty access_token")
+	}
+	return &payload, nil
 }
 
 func ListModels(ctx context.Context, httpClient *http.Client, copilotToken string) ([]string, error) {

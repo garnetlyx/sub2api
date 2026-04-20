@@ -14,12 +14,15 @@ import (
 )
 
 type CopilotImportResult struct {
-	GitHubLogin     string   `json:"github_login"`
-	GitHubUserID    int64    `json:"github_user_id,omitempty"`
-	Email           string   `json:"email,omitempty"`
-	Name            string   `json:"name,omitempty"`
-	AccessToken     string   `json:"access_token"`
-	AvailableModels []string `json:"available_models,omitempty"`
+	GitHubLogin           string    `json:"github_login"`
+	GitHubUserID          int64     `json:"github_user_id,omitempty"`
+	Email                 string    `json:"email,omitempty"`
+	Name                  string    `json:"name,omitempty"`
+	AccessToken           string    `json:"access_token"`
+	RefreshToken          string    `json:"refresh_token,omitempty"`
+	ExpiresAt             time.Time `json:"expires_at,omitempty"`
+	RefreshTokenExpiresAt time.Time `json:"refresh_token_expires_at,omitempty"`
+	AvailableModels       []string  `json:"available_models,omitempty"`
 }
 
 type CopilotOAuthService struct {
@@ -85,9 +88,17 @@ func (s *CopilotOAuthService) BuildAccountCredentials(result *CopilotImportResul
 	if result == nil {
 		return nil
 	}
-	return map[string]any{
-		"access_token": result.AccessToken,
+	creds := map[string]any{"access_token": result.AccessToken}
+	if result.RefreshToken != "" {
+		creds["refresh_token"] = result.RefreshToken
+		if !result.RefreshTokenExpiresAt.IsZero() {
+			creds["refresh_token_expires_at"] = result.RefreshTokenExpiresAt.UTC().Format(time.RFC3339)
+		}
 	}
+	if !result.ExpiresAt.IsZero() {
+		creds["expires_at"] = result.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	return creds
 }
 
 func (s *CopilotOAuthService) BuildAccountExtra(result *CopilotImportResult) map[string]any {
@@ -282,6 +293,17 @@ func (s *CopilotOAuthService) PollDeviceFlow(ctx context.Context, sessionID stri
 		return nil, err
 	}
 	s.sessions.Delete(sessionID)
+
+	if tokenResp.RefreshToken != "" {
+		result.RefreshToken = tokenResp.RefreshToken
+		now := time.Now()
+		if tokenResp.ExpiresIn > 0 {
+			result.ExpiresAt = now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+		}
+		if tokenResp.RefreshTokenExpiresIn > 0 {
+			result.RefreshTokenExpiresAt = now.Add(time.Duration(tokenResp.RefreshTokenExpiresIn) * time.Second)
+		}
+	}
 	return result, nil
 }
 
@@ -310,6 +332,45 @@ func coalesceTrimmed(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// RefreshByRefreshToken uses the stored GitHub refresh_token to get a new access_token,
+// then re-validates it and fetches the current available_models list.
+func (s *CopilotOAuthService) RefreshByRefreshToken(ctx context.Context, account *Account, proxyID *int64) (*CopilotImportResult, error) {
+	refreshToken := strings.TrimSpace(account.GetCredential("refresh_token"))
+	if refreshToken == "" {
+		return nil, infraerrors.New(http.StatusBadRequest, "COPILOT_NO_REFRESH_TOKEN", "no refresh_token stored for this account")
+	}
+
+	proxyURL, err := s.resolveProxyURL(ctx, proxyID)
+	if err != nil {
+		return nil, err
+	}
+
+	httpClient, err := copilot.NewHTTPClient(proxyURL)
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusBadRequest, "COPILOT_PROXY_INVALID", "invalid proxy: %v", err)
+	}
+
+	tokenResp, err := copilot.RefreshGitHubToken(ctx, httpClient, refreshToken)
+	if err != nil {
+		return nil, infraerrors.Newf(http.StatusUnauthorized, "COPILOT_REFRESH_FAILED", "github token refresh failed: %v", err)
+	}
+
+	result, err := s.ImportAccessToken(ctx, tokenResp.AccessToken, proxyID)
+	if err != nil {
+		return nil, err
+	}
+
+	result.RefreshToken = tokenResp.RefreshToken
+	now := time.Now()
+	if tokenResp.ExpiresIn > 0 {
+		result.ExpiresAt = now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	}
+	if tokenResp.RefreshTokenExpiresIn > 0 {
+		result.RefreshTokenExpiresAt = now.Add(time.Duration(tokenResp.RefreshTokenExpiresIn) * time.Second)
+	}
+	return result, nil
 }
 
 func CopilotTokenCacheKey(account *Account) string {
