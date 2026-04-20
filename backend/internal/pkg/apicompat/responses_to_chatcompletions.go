@@ -68,6 +68,10 @@ func ResponsesToChatCompletions(resp *ResponsesResponse, model string) *ChatComp
 	if contentText != "" {
 		raw, _ := json.Marshal(contentText)
 		msg.Content = raw
+	} else if len(toolCalls) == 0 {
+		// Always emit content for non-tool-call responses; empty string is valid and
+		// prevents clients from treating a missing field as a fatal error.
+		msg.Content = json.RawMessage(`""`)
 	}
 	if reasoningText != "" {
 		msg.ReasoningContent = reasoningText
