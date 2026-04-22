@@ -854,8 +854,12 @@ func (a *Account) IsCopilot() bool {
 	return a.Platform == PlatformCopilot
 }
 
+func (a *Account) IsKiro() bool {
+	return a.Platform == PlatformKiro
+}
+
 func (a *Account) UsesOpenAIGateway() bool {
-	return a.Platform == PlatformOpenAI || a.Platform == PlatformCopilot
+	return a.Platform == PlatformOpenAI || a.Platform == PlatformCopilot || a.Platform == PlatformKiro
 }
 
 func (a *Account) IsAnthropic() bool {
@@ -876,6 +880,13 @@ func (a *Account) GetOpenAIBaseURL() string {
 	}
 	if a.IsCopilot() {
 		return "https://api.githubcopilot.com"
+	}
+	if a.IsKiro() {
+		region := a.GetExtraString("region")
+		if region == "" {
+			region = "us-east-1"
+		}
+		return "https://q." + region + ".amazonaws.com"
 	}
 	if a.Type == AccountTypeAPIKey {
 		baseURL := a.GetCredential("base_url")

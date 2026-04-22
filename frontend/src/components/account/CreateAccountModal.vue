@@ -160,6 +160,19 @@
             <Icon name="cloud" size="sm" />
             Antigravity
           </button>
+          <button
+            type="button"
+            @click="form.platform = 'kiro'"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'kiro'
+                ? 'bg-white text-cyan-600 shadow-sm dark:bg-dark-600 dark:text-cyan-400'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <Icon name="cloud" size="sm" />
+            Kiro
+          </button>
         </div>
       </div>
 
@@ -830,6 +843,61 @@
               + {{ preset.label }}
             </button>
           </div>
+        </div>
+      </div>
+
+      <!-- Kiro IdP Selection -->
+      <div v-if="form.platform === 'kiro'" class="border-t border-gray-200 pt-4 dark:border-dark-600">
+        <label class="input-label">{{ t('admin.accounts.kiro.idp.label') }}</label>
+        <div class="mt-2 flex gap-3">
+          <button
+            type="button"
+            @click="kiroIdp = 'Google'"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              kiroIdp === 'Google'
+                ? 'border-cyan-500 bg-cyan-50 dark:bg-cyan-900/20'
+                : 'border-gray-200 hover:border-cyan-300 dark:border-dark-600 dark:hover:border-cyan-700'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                kiroIdp === 'Google'
+                  ? 'bg-cyan-500 text-white'
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon name="cloud" size="sm" />
+            </div>
+            <div>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">Google</span>
+            </div>
+          </button>
+          <button
+            type="button"
+            @click="kiroIdp = 'Github'"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              kiroIdp === 'Github'
+                ? 'border-cyan-500 bg-cyan-50 dark:bg-cyan-900/20'
+                : 'border-gray-200 hover:border-cyan-300 dark:border-dark-600 dark:hover:border-cyan-700'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                kiroIdp === 'Github'
+                  ? 'bg-cyan-500 text-white'
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon name="cloud" size="sm" />
+            </div>
+            <div>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">GitHub</span>
+            </div>
+          </button>
         </div>
       </div>
 
@@ -2832,6 +2900,7 @@ import { useOpenAIOAuth } from '@/composables/useOpenAIOAuth'
 import { useCopilotOAuth } from '@/composables/useCopilotOAuth'
 import { useGeminiOAuth } from '@/composables/useGeminiOAuth'
 import { useAntigravityOAuth } from '@/composables/useAntigravityOAuth'
+import { useKiroOAuth } from '@/composables/useKiroOAuth'
 import type {
   Proxy,
   AdminGroup,
@@ -2883,6 +2952,7 @@ const oauthStepTitle = computed(() => {
   if (form.platform === 'copilot') return t('admin.accounts.oauth.copilot.title', 'GitHub Copilot 导入')
   if (form.platform === 'gemini') return t('admin.accounts.oauth.gemini.title')
   if (form.platform === 'antigravity') return t('admin.accounts.oauth.antigravity.title')
+  if (form.platform === 'kiro') return t('admin.accounts.oauth.kiro.title', 'Kiro 账号导入')
   return t('admin.accounts.oauth.title')
 })
 
@@ -2919,6 +2989,7 @@ const openaiOAuth = useOpenAIOAuth() // For OpenAI OAuth
 const copilotOAuth = useCopilotOAuth() // For Copilot device code flow
 const geminiOAuth = useGeminiOAuth() // For Gemini OAuth
 const antigravityOAuth = useAntigravityOAuth() // For Antigravity OAuth
+const kiroOAuth = useKiroOAuth() // For Kiro OAuth
 
 // Computed: current OAuth state for template binding
 const currentAuthUrl = computed(() => {
@@ -2926,6 +2997,7 @@ const currentAuthUrl = computed(() => {
   if (form.platform === 'copilot') return copilotOAuth.authUrl.value
   if (form.platform === 'gemini') return geminiOAuth.authUrl.value
   if (form.platform === 'antigravity') return antigravityOAuth.authUrl.value
+  if (form.platform === 'kiro') return kiroOAuth.authUrl.value
   return oauth.authUrl.value
 })
 
@@ -2934,6 +3006,7 @@ const currentSessionId = computed(() => {
   if (form.platform === 'copilot') return copilotOAuth.sessionId.value
   if (form.platform === 'gemini') return geminiOAuth.sessionId.value
   if (form.platform === 'antigravity') return antigravityOAuth.sessionId.value
+  if (form.platform === 'kiro') return kiroOAuth.sessionId.value
   return oauth.sessionId.value
 })
 
@@ -2942,6 +3015,7 @@ const currentOAuthLoading = computed(() => {
   if (form.platform === 'copilot') return copilotOAuth.loading.value
   if (form.platform === 'gemini') return geminiOAuth.loading.value
   if (form.platform === 'antigravity') return antigravityOAuth.loading.value
+  if (form.platform === 'kiro') return kiroOAuth.loading.value
   return oauth.loading.value
 })
 
@@ -2950,6 +3024,7 @@ const currentOAuthError = computed(() => {
   if (form.platform === 'copilot') return copilotOAuth.error.value
   if (form.platform === 'gemini') return geminiOAuth.error.value
   if (form.platform === 'antigravity') return antigravityOAuth.error.value
+  if (form.platform === 'kiro') return kiroOAuth.error.value
   return oauth.error.value
 })
 
@@ -3011,6 +3086,7 @@ const antigravityModelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist'
 const antigravityWhitelistModels = ref<string[]>([])
 const antigravityModelMappings = ref<ModelMapping[]>([])
 const antigravityPresetMappings = computed(() => getPresetMappingsByPlatform('antigravity'))
+const kiroIdp = ref<string>('Google') // For Kiro: Google or Github
 const bedrockPresets = computed(() => getPresetMappingsByPlatform('bedrock'))
 
 // Bedrock credentials
@@ -3227,6 +3303,9 @@ const canExchangeCode = computed(() => {
   }
   if (form.platform === 'antigravity') {
     return authCode.trim() && antigravityOAuth.sessionId.value && !antigravityOAuth.loading.value
+  }
+  if (form.platform === 'kiro') {
+    return authCode.trim() && kiroOAuth.sessionId.value && !kiroOAuth.loading.value
   }
   return authCode.trim() && oauth.sessionId.value && !oauth.loading.value
 })
@@ -4049,6 +4128,8 @@ const handleGenerateUrl = async () => {
     )
   } else if (form.platform === 'antigravity') {
     await antigravityOAuth.generateAuthUrl(form.proxy_id)
+  } else if (form.platform === 'kiro') {
+    await kiroOAuth.generateAuthUrl('us-east-1', kiroIdp.value, form.proxy_id)
   } else {
     await oauth.generateAuthUrl(addMethod.value, form.proxy_id)
   }
@@ -4504,6 +4585,39 @@ const handleAntigravityExchange = async (authCode: string) => {
   }
 }
 
+// Kiro OAuth 授权码兑换
+const handleKiroExchange = async (authCode: string) => {
+  if (!authCode.trim() || !kiroOAuth.sessionId.value) return
+
+  kiroOAuth.loading.value = true
+  kiroOAuth.error.value = ''
+
+  try {
+    const stateFromInput = oauthFlowRef.value?.oauthState || ''
+    const stateToUse = stateFromInput
+
+    const result = await kiroOAuth.createFromOAuth({
+      code: authCode.trim(),
+      state: stateToUse,
+      name: form.name,
+      concurrency: form.concurrency,
+      priority: form.priority,
+      groupIds: form.group_ids,
+      proxyId: form.proxy_id
+    })
+    if (!result) return
+
+    appStore.showSuccess(t('admin.accounts.accountCreated'))
+    emit('created')
+    handleClose()
+  } catch (error: any) {
+    kiroOAuth.error.value = error.response?.data?.detail || t('admin.accounts.oauth.authFailed')
+    appStore.showError(kiroOAuth.error.value)
+  } finally {
+    kiroOAuth.loading.value = false
+  }
+}
+
 // Anthropic OAuth 授权码兑换
 const handleAnthropicExchange = async (authCode: string) => {
   if (!authCode.trim() || !oauth.sessionId.value) return
@@ -4606,6 +4720,8 @@ const handleExchangeCode = async () => {
       return handleGeminiExchange(authCode)
     case 'antigravity':
       return handleAntigravityExchange(authCode)
+    case 'kiro':
+      return handleKiroExchange(authCode)
     default:
       return handleAnthropicExchange(authCode)
   }

@@ -97,6 +97,7 @@ export default {
       claude: 'Claude',
       gemini: 'Gemini',
       antigravity: 'Antigravity',
+      kiro: 'Kiro',
       more: 'More'
     },
     // CTA section
@@ -1611,6 +1612,7 @@ export default {
         openai: 'OpenAI',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        kiro: 'Kiro',
       },
       deleteConfirm:
         "Are you sure you want to delete '{name}'? All associated API keys will no longer belong to any group.",
@@ -2014,6 +2016,7 @@ export default {
         openai: 'OpenAI',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        kiro: 'Kiro',
       },
       types: {
         oauth: 'OAuth',
@@ -2671,7 +2674,31 @@ export default {
                     pleaseEnterRefreshToken: 'Please enter Refresh Token',
                     failedToValidateRT: 'Failed to validate Refresh Token'
                   }
-                },      // Gemini specific (platform-wide)
+                },
+        kiro: {
+          idp: {
+            label: 'Identity Provider'
+          },
+          title: 'Kiro Account Import',
+          followSteps: 'Follow these steps to import your Kiro account:',
+          step1GenerateUrl: 'Generate the authorization URL',
+          generateAuthUrl: 'Generate Auth URL',
+          step2OpenUrl: 'Open the URL in your browser and complete login',
+          openUrlDesc: 'Open the authorization URL, log in with your Google or GitHub account.',
+          importantNotice:
+            'After login, when the browser redirects to http://127.0.0.1:19876/oauth/callback?code=..., copy the full URL.',
+          step3EnterCode: 'Enter Callback URL or Code',
+          authCodeDesc:
+            'After authorization, when the page URL becomes http://127.0.0.1:19876/oauth/callback?code=...&state=...:',
+          authCode: 'Callback URL or Code',
+          authCodePlaceholder:
+            'Paste the full callback URL or just the code parameter',
+          authCodeHint: 'You can paste the entire URL or just the code parameter value',
+          failedToGenerateUrl: 'Failed to generate Kiro auth URL',
+          missingExchangeParams: 'Missing code, session ID, or state',
+          failedToExchangeCode: 'Failed to exchange Kiro auth code'
+        },
+      // Gemini specific (platform-wide)
       gemini: {
         helpButton: 'Help',
         helpDialog: {
@@ -2815,6 +2842,7 @@ export default {
       copilotAccount: 'GitHub Copilot Account',
       geminiAccount: 'Gemini Account',
       antigravityAccount: 'Antigravity Account',
+      kiroAccount: 'Kiro Account',
       inputMethod: 'Input Method',
       reAuthorizedSuccess: 'Account re-authorized successfully',
       // Test Modal

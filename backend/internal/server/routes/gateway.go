@@ -46,7 +46,7 @@ func RegisterGatewayRoutes(
 	{
 		// /v1/messages: auto-route based on group platform
 		gateway.POST("/messages", func(c *gin.Context) {
-			if platform := getGroupPlatform(c); platform == service.PlatformOpenAI || platform == service.PlatformCopilot {
+			if platform := getGroupPlatform(c); platform == service.PlatformOpenAI || platform == service.PlatformCopilot || platform == service.PlatformKiro {
 				h.OpenAIGateway.Messages(c)
 				return
 			}
@@ -54,7 +54,7 @@ func RegisterGatewayRoutes(
 		})
 		// /v1/messages/count_tokens: OpenAI groups get 404
 		gateway.POST("/messages/count_tokens", func(c *gin.Context) {
-			if platform := getGroupPlatform(c); platform == service.PlatformOpenAI || platform == service.PlatformCopilot {
+			if platform := getGroupPlatform(c); platform == service.PlatformOpenAI || platform == service.PlatformCopilot || platform == service.PlatformKiro {
 				c.JSON(http.StatusNotFound, gin.H{
 					"type": "error",
 					"error": gin.H{
@@ -179,7 +179,7 @@ func getGroupPlatform(c *gin.Context) string {
 
 func shouldRouteToOpenAI(c *gin.Context) bool {
 	platform := getGroupPlatform(c)
-	if platform == service.PlatformOpenAI || platform == service.PlatformCopilot {
+	if platform == service.PlatformOpenAI || platform == service.PlatformCopilot || platform == service.PlatformKiro {
 		return true
 	}
 	// Anthropic-platform groups always use Anthropic gateway regardless of model name.

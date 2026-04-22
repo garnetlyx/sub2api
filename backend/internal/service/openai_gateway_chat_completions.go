@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
@@ -61,6 +62,11 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		return s.forwardCopilotChatCompletions(ctx, c, account, body, originalModel, billingModel, upstreamModel, clientStream, includeUsage, startTime)
 	}
 
+	// 3b. Kiro: forward via Kiro generateAssistantResponse API.
+	if account.IsKiro() {
+		return s.forwardKiroChatCompletions(ctx, c, account, body, originalModel, billingModel, upstreamModel, clientStream, includeUsage, startTime)
+	}
+
 	// 3. Convert to Responses and forward
 	// ChatCompletionsToResponses always sets Stream=true (upstream always streams).
 	responsesReq, err := apicompat.ChatCompletionsToResponses(&chatReq)
@@ -91,7 +97,7 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	}
 
 	// Copilot uses the standard Responses API format; codex transform is ChatGPT-internal only.
-	if account.Type == AccountTypeOAuth && !account.IsCopilot() {
+	if account.Type == AccountTypeOAuth && !account.IsCopilot() && !account.IsKiro() {
 		var reqBody map[string]any
 		if err := json.Unmarshal(responsesBody, &reqBody); err != nil {
 			return nil, fmt.Errorf("unmarshal for codex transform: %w", err)
@@ -715,4 +721,127 @@ func writeChatCompletionsError(c *gin.Context, statusCode int, errType, message 
 			"message": message,
 		},
 	})
+}
+
+// forwardKiroChatCompletions sends a Chat Completions request to the Kiro API
+// after converting from OpenAI format to Kiro generateAssistantResponse format.
+func (s *OpenAIGatewayService) forwardKiroChatCompletions(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	originalModel, billingModel, upstreamModel string,
+	clientStream, includeUsage bool,
+	startTime time.Time,
+) (*OpenAIForwardResult, error) {
+	region := account.GetExtraString("region")
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	accessToken, _, err := s.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, fmt.Errorf("get kiro access token: %w", err)
+	}
+
+	profileArn := account.GetExtraString("profile_arn")
+	kiroReq, err := kiro.ConvertOpenAIToKiro(body, profileArn)
+	if err != nil {
+		return nil, fmt.Errorf("convert request to kiro format: %w", err)
+	}
+
+	proxyURL := ""
+	if account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	httpClient, clientErr := kiro.NewHTTPClient(proxyURL)
+	if clientErr != nil {
+		return nil, fmt.Errorf("create kiro http client: %w", clientErr)
+	}
+
+	resp, respErr := kiro.GenerateAssistantResponse(ctx, httpClient, region, accessToken, kiroReq)
+	if respErr != nil {
+		return nil, fmt.Errorf("kiro upstream request: %w", respErr)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		upstreamMsg := strings.TrimSpace(string(respBody))
+		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if resp.StatusCode == http.StatusUnauthorized {
+			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			if s.rateLimitService != nil {
+				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+			}
+			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
+		}
+		writeChatCompletionsError(c, resp.StatusCode, "upstream_error", upstreamMsg)
+		return nil, fmt.Errorf("kiro upstream error: status %d", resp.StatusCode)
+	}
+
+	if clientStream {
+		c.Writer.Header().Set("Content-Type", "text/event-stream")
+		c.Writer.Header().Set("Cache-Control", "no-cache")
+		c.Writer.Header().Set("Connection", "keep-alive")
+		c.Writer.Header().Set("X-Accel-Buffering", "no")
+		c.Writer.WriteHeader(http.StatusOK)
+
+		contentCh, errCh := kiro.ExtractStreamingChunks(resp.Body)
+		finishReason := "stop"
+
+		roleChunk, _ := kiro.BuildOpenAIStreamChunk("", originalModel, true, nil)
+		fmt.Fprintf(c.Writer, "data: %s\n\n", roleChunk)
+		c.Writer.Flush()
+
+		for {
+			select {
+			case content, ok := <-contentCh:
+				if !ok {
+					goto kiroStreamDone
+				}
+				chunk, _ := kiro.BuildOpenAIStreamChunk(content, originalModel, false, nil)
+				fmt.Fprintf(c.Writer, "data: %s\n\n", chunk)
+				c.Writer.Flush()
+			case <-errCh:
+				goto kiroStreamDone
+			}
+		}
+
+	kiroStreamDone:
+		finishChunk, _ := kiro.BuildOpenAIStreamChunk("", originalModel, false, &finishReason)
+		fmt.Fprintf(c.Writer, "data: %s\n\n", finishChunk)
+		fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
+		c.Writer.Flush()
+
+		return &OpenAIForwardResult{
+			RequestID: "", Model: originalModel,
+			BillingModel: billingModel, UpstreamModel: upstreamModel,
+			Stream: true, Duration: time.Since(startTime),
+		}, nil
+	}
+
+	events, parseErr := kiro.ParseEventStream(resp.Body)
+	if parseErr != nil {
+		return nil, fmt.Errorf("parse kiro event stream: %w", parseErr)
+	}
+
+	content := kiro.ExtractAssistantContent(events)
+	respBytes, buildErr := kiro.BuildOpenAIResponse(content, originalModel, 0)
+	if buildErr != nil {
+		return nil, fmt.Errorf("build openai response: %w", buildErr)
+	}
+
+	c.Data(http.StatusOK, "application/json", respBytes)
+
+	var usage OpenAIUsage
+	return &OpenAIForwardResult{
+		RequestID: "", Usage: usage, Model: originalModel,
+		BillingModel: billingModel, UpstreamModel: upstreamModel,
+		Stream: false, Duration: time.Since(startTime),
+	}, nil
 }

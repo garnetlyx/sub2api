@@ -97,6 +97,7 @@ export default {
       claude: 'Claude',
       gemini: 'Gemini',
       antigravity: 'Antigravity',
+      kiro: 'Kiro',
       more: '更多'
     },
     // CTA 区块
@@ -1648,6 +1649,7 @@ export default {
         openai: 'OpenAI',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        kiro: 'Kiro',
       },
       saving: '保存中...',
       noGroups: '暂无分组',
@@ -2196,6 +2198,7 @@ export default {
         anthropic: 'Anthropic',
         gemini: 'Gemini',
         antigravity: 'Antigravity',
+        kiro: 'Kiro',
       },
       types: {
         oauth: 'OAuth',
@@ -2205,6 +2208,7 @@ export default {
         codeAssist: 'Code Assist',
         antigravityOauth: 'Antigravity OAuth',
         antigravityApikey: '通过 Base URL + API Key 连接',
+        kiroOauth: 'Kiro OAuth',
         upstream: '对接上游',
         upstreamDesc: '通过 Base URL + API Key 连接上游',
         api_key: 'API Key',
@@ -2631,6 +2635,11 @@ export default {
         pleaseEnterBaseUrl: '请输入上游 Base URL',
         pleaseEnterApiKey: '请输入上游 API Key'
       },
+      kiro: {
+        idp: {
+          label: '身份提供商'
+        }
+      },
       // OAuth flow
       oauth: {
         title: 'Claude 账号授权',
@@ -2804,6 +2813,26 @@ export default {
           validateAndCreate: '验证并创建账号',
           pleaseEnterRefreshToken: '请输入 Refresh Token',
           failedToValidateRT: '验证 Refresh Token 失败'
+        },
+        kiro: {
+          title: 'Kiro 账号导入',
+          followSteps: '请按照以下步骤导入您的 Kiro 账号：',
+          step1GenerateUrl: '生成授权链接',
+          generateAuthUrl: '生成授权链接',
+          step2OpenUrl: '在浏览器中打开链接并完成登录',
+          openUrlDesc: '请打开授权链接，使用您的 Google 或 GitHub 账号登录。',
+          importantNotice:
+            '登录完成后，浏览器会跳转到 http://127.0.0.1:19876/oauth/callback?code=...，请复制完整 URL。',
+          step3EnterCode: '输入回调链接或 Code',
+          authCodeDesc:
+            '授权完成后，当页面地址变为 http://127.0.0.1:19876/oauth/callback?code=...&state=... 时：',
+          authCode: '回调链接或 Code',
+          authCodePlaceholder:
+            '粘贴完整的回调链接或仅粘贴 code 参数值',
+          authCodeHint: '您可以粘贴整个链接或仅粘贴 code 参数值',
+          failedToGenerateUrl: '生成 Kiro 授权链接失败',
+          missingExchangeParams: '缺少 code / session_id / state',
+          failedToExchangeCode: 'Kiro 授权码兑换失败'
         }
       },
       // Gemini specific (platform-wide)
@@ -2948,6 +2977,7 @@ export default {
       copilotAccount: 'GitHub Copilot 账号',
       geminiAccount: 'Gemini 账号',
       antigravityAccount: 'Antigravity 账号',
+      kiroAccount: 'Kiro 账号',
       inputMethod: '输入方式',
       reAuthorizedSuccess: '账号重新授权成功',
       // Test Modal

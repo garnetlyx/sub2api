@@ -45,6 +45,7 @@ func NewTokenRefreshService(
 	geminiOAuthService *GeminiOAuthService,
 	antigravityOAuthService *AntigravityOAuthService,
 	copilotOAuthService *CopilotOAuthService,
+	kiroOAuthService    *KiroOAuthService,
 	cacheInvalidator TokenCacheInvalidator,
 	schedulerCache SchedulerCache,
 	cfg *config.Config,
@@ -65,6 +66,7 @@ func NewTokenRefreshService(
 	geminiRefresher := NewGeminiTokenRefresher(geminiOAuthService)
 	agRefresher := NewAntigravityTokenRefresher(antigravityOAuthService)
 	copilotRefresher := NewCopilotTokenRefresher(copilotOAuthService)
+	kiroRefresher := NewKiroTokenRefresher(kiroOAuthService)
 
 	// 注册平台特定的刷新器（TokenRefresher 接口）
 	s.refreshers = []TokenRefresher{
@@ -73,6 +75,7 @@ func NewTokenRefreshService(
 		geminiRefresher,
 		agRefresher,
 		copilotRefresher,
+		kiroRefresher,
 	}
 
 	// 注册对应的 OAuthRefreshExecutor（带 CacheKey 方法）
@@ -82,6 +85,7 @@ func NewTokenRefreshService(
 		geminiRefresher,
 		agRefresher,
 		copilotRefresher,
+		kiroRefresher,
 	}
 
 	return s

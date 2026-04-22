@@ -631,6 +631,7 @@ const getOAuthKey = (key: string) => {
   if (props.platform === 'gemini') return `admin.accounts.oauth.gemini.${key}`
   if (props.platform === 'antigravity') return `admin.accounts.oauth.antigravity.${key}`
   if (props.platform === 'copilot') return `admin.accounts.oauth.copilot.${key}`
+  if (props.platform === 'kiro') return `admin.accounts.oauth.kiro.${key}`
   return `admin.accounts.oauth.${key}`
 }
 
@@ -692,7 +693,7 @@ watch(inputMethod, (newVal) => {
 // Auto-extract code from callback URL (OpenAI/Gemini/Antigravity)
 // e.g., http://localhost:8085/callback?code=xxx...&state=...
 watch(authCodeInput, (newVal) => {
-  if (props.platform !== 'openai' && props.platform !== 'gemini' && props.platform !== 'antigravity') return
+  if (props.platform !== 'openai' && props.platform !== 'gemini' && props.platform !== 'antigravity' && props.platform !== 'kiro') return
 
   const trimmed = newVal.trim()
   // Check if it looks like a URL with code parameter

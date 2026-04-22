@@ -324,6 +324,7 @@ type OpenAIGatewayService struct {
 	deferredService       *DeferredService
 	openAITokenProvider   *OpenAITokenProvider
 	copilotTokenProvider  *CopilotTokenProvider
+	kiroTokenProvider     *KiroTokenProvider
 	toolCorrector         *CodexToolCorrector
 	openaiWSResolver      OpenAIWSProtocolResolver
 	resolver              *ModelPricingResolver
@@ -364,6 +365,7 @@ func NewOpenAIGatewayService(
 	deferredService *DeferredService,
 	openAITokenProvider *OpenAITokenProvider,
 	copilotTokenProvider *CopilotTokenProvider,
+	kiroTokenProvider *KiroTokenProvider,
 	resolver *ModelPricingResolver,
 	channelService *ChannelService,
 ) *OpenAIGatewayService {
@@ -392,6 +394,7 @@ func NewOpenAIGatewayService(
 		deferredService:       deferredService,
 		openAITokenProvider:   openAITokenProvider,
 		copilotTokenProvider:  copilotTokenProvider,
+		kiroTokenProvider:     kiroTokenProvider,
 		toolCorrector:         NewCodexToolCorrector(),
 		openaiWSResolver:      NewOpenAIWSProtocolResolver(cfg),
 		resolver:              resolver,
@@ -1656,9 +1659,13 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 		if err != nil {
 			return nil, err
 		}
-		merged := make([]Account, 0, len(openaiAccounts)+len(copilotAccounts))
-		seen := make(map[int64]struct{}, len(openaiAccounts)+len(copilotAccounts))
-		for _, acc := range append(openaiAccounts, copilotAccounts...) {
+		kiroAccounts, _, err := s.schedulerSnapshot.ListSchedulableAccounts(ctx, groupID, PlatformKiro, false)
+		if err != nil {
+			return nil, err
+		}
+		merged := make([]Account, 0, len(openaiAccounts)+len(copilotAccounts)+len(kiroAccounts))
+		seen := make(map[int64]struct{}, len(openaiAccounts)+len(copilotAccounts)+len(kiroAccounts))
+		for _, acc := range append(append(openaiAccounts, copilotAccounts...), kiroAccounts...) {
 			if _, exists := seen[acc.ID]; exists {
 				continue
 			}
@@ -1689,6 +1696,7 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 	var accounts []Account
 	var openaiAccounts []Account
 	var copilotAccounts []Account
+	var kiroAccounts []Account
 	var err error
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		openaiAccounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, PlatformOpenAI)
@@ -1699,6 +1707,10 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 		if err != nil {
 			return nil, fmt.Errorf("query copilot accounts failed: %w", err)
 		}
+		kiroAccounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, PlatformKiro)
+		if err != nil {
+			return nil, fmt.Errorf("query kiro accounts failed: %w", err)
+		}
 	} else if groupID != nil {
 		openaiAccounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, PlatformOpenAI)
 		if err != nil {
@@ -1707,6 +1719,10 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 		copilotAccounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, PlatformCopilot)
 		if err != nil {
 			return nil, fmt.Errorf("query copilot accounts failed: %w", err)
+		}
+		kiroAccounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, PlatformKiro)
+		if err != nil {
+			return nil, fmt.Errorf("query kiro accounts failed: %w", err)
 		}
 	} else {
 		openaiAccounts, err = s.accountRepo.ListSchedulableUngroupedByPlatform(ctx, PlatformOpenAI)
@@ -1717,9 +1733,14 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 		if err != nil {
 			return nil, fmt.Errorf("query copilot accounts failed: %w", err)
 		}
+		kiroAccounts, err = s.accountRepo.ListSchedulableUngroupedByPlatform(ctx, PlatformKiro)
+		if err != nil {
+			return nil, fmt.Errorf("query kiro accounts failed: %w", err)
+		}
 	}
 	accounts = merge(accounts, openaiAccounts)
 	accounts = merge(accounts, copilotAccounts)
+	accounts = merge(accounts, kiroAccounts)
 	return accounts, nil
 }
 
@@ -1838,6 +1859,14 @@ func (s *OpenAIGatewayService) GetAccessToken(ctx context.Context, account *Acco
 		if account.IsCopilot() {
 			if s.copilotTokenProvider != nil {
 				accessToken, err := s.copilotTokenProvider.GetAccessToken(ctx, account)
+				if err != nil {
+					return "", "", err
+				}
+				return accessToken, "oauth", nil
+			}
+		} else if account.IsKiro() {
+			if s.kiroTokenProvider != nil {
+				accessToken, err := s.kiroTokenProvider.GetAccessToken(ctx, account)
 				if err != nil {
 					return "", "", err
 				}
@@ -2117,7 +2146,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 		// Also handle max_completion_tokens (similar logic)
 		if _, hasMaxCompletionTokens := reqBody["max_completion_tokens"]; hasMaxCompletionTokens {
-			if account.Type == AccountTypeAPIKey || !account.UsesOpenAIGateway() || account.IsCopilot() {
+			if account.Type == AccountTypeAPIKey || !account.UsesOpenAIGateway() || account.IsCopilot() || account.IsKiro() {
 				delete(reqBody, "max_completion_tokens")
 				bodyModified = true
 				markPatchDelete("max_completion_tokens")

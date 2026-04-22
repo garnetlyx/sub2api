@@ -23,6 +23,10 @@
   <svg v-else-if="platform === 'antigravity'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor">
     <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z" />
   </svg>
+  <!-- Kiro logo (spinning top / K shape) -->
+  <svg v-else-if="platform === 'kiro'" :class="sizeClass" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M12 2L3 7v10l9 5 9-5V7l-9-5zm0 2.18L18.82 7.5 12 10.82 5.18 7.5 12 4.18zM5 9.08l6 3.33v7.41l-6-3.33V9.08zm8 10.74v-7.41l6-3.33v7.41l-6 3.33z" />
+  </svg>
   <!-- Fallback: generic platform icon -->
   <svg v-else :class="sizeClass" fill="currentColor" viewBox="0 0 24 24">
     <path

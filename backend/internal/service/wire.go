@@ -45,6 +45,7 @@ func ProvideTokenRefreshService(
 	geminiOAuthService *GeminiOAuthService,
 	antigravityOAuthService *AntigravityOAuthService,
 	copilotOAuthService *CopilotOAuthService,
+	kiroOAuthService    *KiroOAuthService,
 	cacheInvalidator TokenCacheInvalidator,
 	schedulerCache SchedulerCache,
 	cfg *config.Config,
@@ -53,7 +54,7 @@ func ProvideTokenRefreshService(
 	proxyRepo ProxyRepository,
 	refreshAPI *OAuthRefreshAPI,
 ) *TokenRefreshService {
-	svc := NewTokenRefreshService(accountRepo, oauthService, openaiOAuthService, geminiOAuthService, antigravityOAuthService, copilotOAuthService, cacheInvalidator, schedulerCache, cfg, tempUnschedCache)
+	svc := NewTokenRefreshService(accountRepo, oauthService, openaiOAuthService, geminiOAuthService, antigravityOAuthService, copilotOAuthService, kiroOAuthService, cacheInvalidator, schedulerCache, cfg, tempUnschedCache)
 	// 注入 OpenAI privacy opt-out 依赖
 	svc.SetPrivacyDeps(privacyClientFactory, proxyRepo)
 	// 注入统一 OAuth 刷新 API（消除 TokenRefreshService 与 TokenProvider 之间的竞争条件）
@@ -127,6 +128,13 @@ func ProvideAntigravityTokenProvider(
 	p.SetRefreshPolicy(AntigravityProviderRefreshPolicy())
 	p.SetTempUnschedCache(tempUnschedCache)
 	return p
+}
+
+func ProvideKiroTokenProvider(
+	tokenCache GeminiTokenCache,
+	proxyRepo ProxyRepository,
+) *KiroTokenProvider {
+	return NewKiroTokenProvider(tokenCache, proxyRepo)
 }
 
 // ProvideDashboardAggregationService 创建并启动仪表盘聚合服务
@@ -431,10 +439,12 @@ var ProviderSet = wire.NewSet(
 	NewCompositeTokenCacheInvalidator,
 	wire.Bind(new(TokenCacheInvalidator), new(*CompositeTokenCacheInvalidator)),
 	NewAntigravityOAuthService,
+	NewKiroOAuthService,
 	NewOAuthRefreshAPI,
 	ProvideGeminiTokenProvider,
 	NewGeminiMessagesCompatService,
 	ProvideAntigravityTokenProvider,
+	ProvideKiroTokenProvider,
 	ProvideOpenAITokenProvider,
 	ProvideCopilotTokenProvider,
 	ProvideClaudeTokenProvider,
