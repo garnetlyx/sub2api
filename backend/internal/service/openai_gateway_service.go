@@ -4974,6 +4974,9 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 		}
 		if resetAt != nil {
 			_ = s.accountRepo.SetRateLimited(updateCtx, accountID, *resetAt)
+		} else if shouldPersistUpdates {
+			// Snapshot with quota not exhausted — clear any stale rate-limit flag.
+			_ = s.accountRepo.ClearRateLimit(updateCtx, accountID)
 		}
 	}()
 }

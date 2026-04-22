@@ -266,6 +266,10 @@ type AccountUsageService struct {
 	cache                   *UsageCache
 	identityCache           IdentityCache
 	tlsFPProfileService     *TLSFingerprintProfileService
+
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 // NewAccountUsageService 创建AccountUsageService实例
@@ -288,6 +292,74 @@ func NewAccountUsageService(
 		cache:                   cache,
 		identityCache:           identityCache,
 		tlsFPProfileService:     tlsFPProfileService,
+		stopCh:                  make(chan struct{}),
+	}
+}
+
+const codexRecoveryInterval = 24 * time.Hour
+
+// Start launches the background Codex rate-limit recovery poller.
+func (s *AccountUsageService) Start() {
+	if s == nil || s.accountRepo == nil {
+		return
+	}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		ticker := time.NewTicker(codexRecoveryInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				s.runCodexRecoveryRound()
+			case <-s.stopCh:
+				return
+			}
+		}
+	}()
+}
+
+// Stop shuts down the background poller.
+func (s *AccountUsageService) Stop() {
+	if s == nil {
+		return
+	}
+	s.stopOnce.Do(func() { close(s.stopCh) })
+	s.wg.Wait()
+}
+
+// runCodexRecoveryRound probes OpenAI OAuth accounts that are still flagged
+// as rate-limited and clears the flag when OpenAI reports quota is no longer
+// exhausted (e.g. after an early random reset).
+func (s *AccountUsageService) runCodexRecoveryRound() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	accounts, err := s.accountRepo.ListByPlatform(ctx, PlatformOpenAI)
+	if err != nil {
+		slog.Warn("codex_recovery_list_failed", "error", err)
+		return
+	}
+
+	now := time.Now()
+	for i := range accounts {
+		acc := &accounts[i]
+		if !acc.IsRateLimited() || !acc.IsOAuth() {
+			continue
+		}
+		if !s.shouldProbeOpenAICodexSnapshot(acc.ID, now) {
+			continue
+		}
+		updates, resetAt, probeErr := s.probeOpenAICodexSnapshot(ctx, acc)
+		if probeErr != nil {
+			continue
+		}
+		if len(updates) > 0 && resetAt == nil {
+			slog.Info("codex_recovery_detected", "account", acc.Name)
+			if clearErr := s.accountRepo.ClearRateLimit(ctx, acc.ID); clearErr != nil {
+				slog.Warn("codex_recovery_clear_failed", "account", acc.Name, "error", clearErr)
+			}
+		}
 	}
 }
 
@@ -513,6 +585,16 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 			mergeAccountExtra(account, updates)
 			if resetAt != nil {
 				account.RateLimitResetAt = resetAt
+			} else if len(updates) > 0 && account.IsRateLimited() {
+				// Snapshot shows quota no longer exhausted — OpenAI may have reset early.
+				account.RateLimitResetAt = nil
+				if s.accountRepo != nil {
+					go func() {
+						clearCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer cancel()
+						_ = s.accountRepo.ClearRateLimit(clearCtx, account.ID)
+					}()
+				}
 			}
 			if usage.UpdatedAt == nil {
 				usage.UpdatedAt = &now
