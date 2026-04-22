@@ -77,6 +77,23 @@ func NewOpenAIGatewayHandler(
 	}
 }
 
+func (h *OpenAIGatewayHandler) SupportsModelForPublicOpenAIEndpoints(ctx context.Context, groupID *int64, requestedModel string) bool {
+	if h == nil || h.gatewayService == nil {
+		return false
+	}
+	// Local omlx OpenAI passthrough exists, but the public local-model contract
+	// still relies on the anthropic-compatible gateway path to preserve local
+	// request features that OpenAI-native handlers do not normalize.
+	return h.gatewayService.HasSchedulableModelSupport(ctx, groupID, requestedModel, "omlx-openai-internal")
+}
+
+func (h *OpenAIGatewayHandler) SupportsModelForPublicOpenAIResponses(ctx context.Context, groupID *int64, requestedModel string) bool {
+	if h == nil || h.gatewayService == nil {
+		return false
+	}
+	return h.gatewayService.HasSchedulableResponsesModelSupport(ctx, groupID, requestedModel, "omlx-openai-internal", "litellm-openai-internal")
+}
+
 // Responses handles OpenAI Responses API endpoint
 // POST /openai/v1/responses
 func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
@@ -275,6 +292,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			zap.Float64("load_skew", scheduleDecision.LoadSkew),
 		)
 		account := selection.Account
+		if !h.gatewayService.SupportsResponsesUpstreamAccount(account) {
+			failedAccountIDs[account.ID] = struct{}{}
+			reqLog.Debug("openai.responses_account_skipped_unsupported_transport",
+				zap.Int64("account_id", account.ID),
+				zap.String("account_name", account.Name),
+			)
+			continue
+		}
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)

@@ -21,11 +21,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// ForwardAsChatCompletions accepts a Chat Completions request body, converts it
-// to OpenAI Responses API format, forwards to the OpenAI upstream, and converts
-// the response back to Chat Completions format. All account types (OAuth and API
-// Key) go through the Responses API conversion path since the upstream only
-// exposes the /v1/responses endpoint.
+// ForwardAsChatCompletions accepts a Chat Completions request body and forwards
+// it to the best upstream path for the selected account:
+// - Copilot/Kiro: native provider-specific forwarding
+// - API key accounts: native OpenAI-compatible /chat/completions
+// - OAuth ChatGPT accounts: convert to Responses API and convert back
 func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	ctx context.Context,
 	c *gin.Context,
@@ -65,6 +65,13 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 	// 3b. Kiro: forward via Kiro generateAssistantResponse API.
 	if account.IsKiro() {
 		return s.forwardKiroChatCompletions(ctx, c, account, body, originalModel, billingModel, upstreamModel, clientStream, includeUsage, startTime)
+	}
+
+	// 3c. API key accounts should prefer the native OpenAI-compatible
+	// /chat/completions endpoint. Many proxy providers support chat completions
+	// but do not implement /v1/responses.
+	if account.Type == AccountTypeAPIKey {
+		return s.forwardNativeAPIKeyChatCompletions(ctx, c, account, body, originalModel, billingModel, upstreamModel, clientStream, startTime)
 	}
 
 	// 3. Convert to Responses and forward
@@ -542,6 +549,185 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			c.Writer.Flush()
 		}
 	}
+}
+
+func buildOpenAIChatCompletionsURL(base string) string {
+	normalized := strings.TrimRight(strings.TrimSpace(base), "/")
+	if normalized == "" {
+		return "https://api.openai.com/v1/chat/completions"
+	}
+	if strings.HasSuffix(normalized, "/chat/completions") {
+		return normalized
+	}
+	if strings.HasSuffix(normalized, "/v1") {
+		return normalized + "/chat/completions"
+	}
+	if strings.Contains(normalized, "api.openai.com") {
+		return normalized + "/v1/chat/completions"
+	}
+	return normalized + "/chat/completions"
+}
+
+func (s *OpenAIGatewayService) forwardNativeAPIKeyChatCompletions(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	originalModel, billingModel, upstreamModel string,
+	clientStream bool,
+	startTime time.Time,
+) (*OpenAIForwardResult, error) {
+	upstreamBody := body
+	if upstreamModel != originalModel {
+		if replaced, err := sjson.SetBytes(body, "model", upstreamModel); err == nil {
+			upstreamBody = replaced
+		}
+	}
+
+	token, _, err := s.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, fmt.Errorf("get access token: %w", err)
+	}
+
+	targetURL := buildOpenAIChatCompletionsURL(account.GetOpenAIBaseURL())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(upstreamBody))
+	if err != nil {
+		return nil, fmt.Errorf("build api-key chat request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	if clientStream {
+		req.Header.Set("Accept", "text/event-stream")
+	} else {
+		req.Header.Set("Accept", "application/json")
+	}
+
+	proxyURL := ""
+	if account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+	if err != nil {
+		safeErr := sanitizeUpstreamErrorMessage(err.Error())
+		setOpsUpstreamError(c, 0, safeErr, "")
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
+			UpstreamStatusCode: 0, Kind: "request_error", Message: safeErr,
+		})
+		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
+		return nil, fmt.Errorf("api-key chat request failed: %s", safeErr)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
+				UpstreamStatusCode: resp.StatusCode, Kind: "failover", Message: upstreamMsg,
+			})
+			if s.rateLimitService != nil {
+				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+			}
+			return nil, &UpstreamFailoverError{
+				StatusCode:             resp.StatusCode,
+				ResponseBody:           respBody,
+				RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
+			}
+		}
+		return s.handleChatCompletionsErrorResponse(resp, c, account)
+	}
+
+	requestID := resp.Header.Get("x-request-id")
+	if s.responseHeaderFilter != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	}
+
+	if clientStream {
+		c.Writer.Header().Set("Content-Type", "text/event-stream")
+		c.Writer.Header().Set("Cache-Control", "no-cache")
+		c.Writer.Header().Set("Connection", "keep-alive")
+		c.Writer.Header().Set("X-Accel-Buffering", "no")
+		c.Writer.WriteHeader(http.StatusOK)
+
+		var usage OpenAIUsage
+		var firstTokenMs *int
+		firstChunk := true
+
+		scanner := bufio.NewScanner(resp.Body)
+		maxLineSize := defaultMaxLineSize
+		if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
+			maxLineSize = s.cfg.Gateway.MaxLineSize
+		}
+		scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if firstChunk && strings.HasPrefix(line, "data:") {
+				firstChunk = false
+				ms := int(time.Since(startTime).Milliseconds())
+				firstTokenMs = &ms
+			}
+			if line == "data: [DONE]" {
+				fmt.Fprint(c.Writer, line+"\n\n") //nolint:errcheck
+				c.Writer.Flush()
+				break
+			}
+			if strings.HasPrefix(line, "data: ") {
+				payload := line[6:]
+				var chunk struct {
+					Usage *struct {
+						PromptTokens     int `json:"prompt_tokens"`
+						CompletionTokens int `json:"completion_tokens"`
+					} `json:"usage"`
+				}
+				if json.Unmarshal([]byte(payload), &chunk) == nil && chunk.Usage != nil {
+					usage.InputTokens = chunk.Usage.PromptTokens
+					usage.OutputTokens = chunk.Usage.CompletionTokens
+				}
+			}
+			fmt.Fprint(c.Writer, line+"\n") //nolint:errcheck
+			if line == "" {
+				c.Writer.Flush()
+			}
+		}
+		if err := scanner.Err(); err != nil && !errors.Is(err, context.Canceled) {
+			logger.L().Warn("api-key chat_completions stream: read error", zap.Error(err))
+		}
+		return &OpenAIForwardResult{
+			RequestID: requestID, Usage: usage, Model: originalModel,
+			BillingModel: billingModel, UpstreamModel: upstreamModel,
+			Stream: true, Duration: time.Since(startTime), FirstTokenMs: firstTokenMs,
+		}, nil
+	}
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if err != nil {
+		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Failed to read response")
+		return nil, fmt.Errorf("read api-key chat response: %w", err)
+	}
+
+	var usage OpenAIUsage
+	var parsed struct {
+		Usage *struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal(respBody, &parsed) == nil && parsed.Usage != nil {
+		usage.InputTokens = parsed.Usage.PromptTokens
+		usage.OutputTokens = parsed.Usage.CompletionTokens
+	}
+
+	c.Data(http.StatusOK, "application/json", respBody)
+	return &OpenAIForwardResult{
+		RequestID: requestID, Usage: usage, Model: originalModel,
+		BillingModel: billingModel, UpstreamModel: upstreamModel,
+		Stream: false, Duration: time.Since(startTime),
+	}, nil
 }
 
 // forwardCopilotChatCompletions sends a Chat Completions request directly to the Copilot API

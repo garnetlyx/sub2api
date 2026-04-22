@@ -1289,10 +1289,7 @@ func (s *OpenAIGatewayService) tryStickySessionHit(ctx context.Context, groupID 
 
 	// 验证账号是否可用于当前请求
 	// Verify account is usable for current request
-	if !account.IsSchedulable() || !account.UsesOpenAIGateway() {
-		return nil
-	}
-	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
+	if !supportsOpenAIGatewayRequestedModel(account, requestedModel) {
 		return nil
 	}
 	account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel)
@@ -1517,10 +1514,7 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 		// Scheduler snapshots can be temporarily stale (bucket rebuild is throttled);
 		// re-check schedulability here so recently rate-limited/overloaded accounts
 		// are not selected again before the bucket is rebuilt.
-		if !acc.IsSchedulable() {
-			continue
-		}
-		if requestedModel != "" && !acc.IsModelSupported(requestedModel) {
+		if !supportsOpenAIGatewayRequestedModel(acc, requestedModel) {
 			continue
 		}
 		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, acc, requestedModel) {
@@ -1744,6 +1738,89 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 	return accounts, nil
 }
 
+// HasSchedulableModelSupport reports whether any currently schedulable
+// OpenAI-compatible account can serve the requested model. Callers may exclude
+// internal account names that should not drive public handler routing.
+func (s *OpenAIGatewayService) HasSchedulableModelSupport(ctx context.Context, groupID *int64, requestedModel string, excludeAccountNames ...string) bool {
+	if strings.TrimSpace(requestedModel) == "" {
+		return false
+	}
+	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
+		return false
+	}
+
+	accounts, err := s.listSchedulableAccounts(ctx, groupID)
+	if err != nil {
+		return false
+	}
+
+	excluded := make(map[string]struct{}, len(excludeAccountNames))
+	for _, name := range excludeAccountNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		excluded[name] = struct{}{}
+	}
+
+	needsUpstreamCheck := groupID != nil && s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
+	for i := range accounts {
+		acc := &accounts[i]
+		if _, skip := excluded[acc.Name]; skip {
+			continue
+		}
+		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel)
+		if fresh == nil {
+			continue
+		}
+		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func (s *OpenAIGatewayService) HasSchedulableResponsesModelSupport(ctx context.Context, groupID *int64, requestedModel string, excludeAccountNames ...string) bool {
+	if strings.TrimSpace(requestedModel) == "" {
+		return false
+	}
+	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
+		return false
+	}
+
+	accounts, err := s.listSchedulableAccounts(ctx, groupID)
+	if err != nil {
+		return false
+	}
+
+	excluded := make(map[string]struct{}, len(excludeAccountNames))
+	for _, name := range excludeAccountNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		excluded[name] = struct{}{}
+	}
+
+	needsUpstreamCheck := groupID != nil && s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
+	for i := range accounts {
+		acc := &accounts[i]
+		if _, skip := excluded[acc.Name]; skip {
+			continue
+		}
+		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel)
+		if fresh == nil || !supportsOpenAIResponsesUpstream(fresh) {
+			continue
+		}
+		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func (s *OpenAIGatewayService) tryAcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int) (*AcquireResult, error) {
 	if s.concurrencyService == nil {
 		return &AcquireResult{Acquired: true, ReleaseFunc: func() {}}, nil
@@ -1765,15 +1842,7 @@ func (s *OpenAIGatewayService) resolveFreshSchedulableOpenAIAccount(ctx context.
 		fresh = current
 	}
 
-	if !fresh.IsSchedulable() || !fresh.UsesOpenAIGateway() {
-		return nil
-	}
-	if requestedModel != "" && !fresh.IsModelSupported(requestedModel) {
-		return nil
-	}
-	// OpenAI OAuth accounts (ChatGPT) cannot handle claude-* models; skip them so
-	// Copilot accounts are selected instead for Anthropic-family model names.
-	if fresh.IsOpenAIOAuth() && looksLikeAnthropicModel(requestedModel) {
+	if !supportsOpenAIGatewayRequestedModel(fresh, requestedModel) {
 		return nil
 	}
 	return fresh
@@ -1784,6 +1853,9 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 		return nil
 	}
 	if s.schedulerSnapshot == nil || s.accountRepo == nil {
+		if !supportsOpenAIGatewayRequestedModel(account, requestedModel) {
+			return nil
+		}
 		return account
 	}
 
@@ -1792,16 +1864,54 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 		return nil
 	}
 	syncOpenAICodexRateLimitFromExtra(ctx, s.accountRepo, latest, time.Now())
-	if !latest.IsSchedulable() || !latest.UsesOpenAIGateway() {
-		return nil
-	}
-	if requestedModel != "" && !latest.IsModelSupported(requestedModel) {
-		return nil
-	}
-	if latest.IsOpenAIOAuth() && looksLikeAnthropicModel(requestedModel) {
+	if !supportsOpenAIGatewayRequestedModel(latest, requestedModel) {
 		return nil
 	}
 	return latest
+}
+
+func requiresOpenAIFamilyModelName(account *Account) bool {
+	if account == nil {
+		return false
+	}
+	return account.IsOpenAIOAuth() || account.IsCopilot() || account.IsKiro()
+}
+
+func supportsOpenAIGatewayRequestedModel(account *Account, requestedModel string) bool {
+	if account == nil || !account.IsSchedulable() || !account.UsesOpenAIGateway() {
+		return false
+	}
+	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
+		return false
+	}
+	if requestedModel != "" && requiresOpenAIFamilyModelName(account) && !looksLikeOpenAIModel(requestedModel) {
+		return false
+	}
+	return true
+}
+
+func supportsOpenAIResponsesUpstream(account *Account) bool {
+	if account == nil || !account.UsesOpenAIGateway() {
+		return false
+	}
+	if account.IsOpenAIOAuth() || account.IsCopilot() || account.IsKiro() {
+		return true
+	}
+	if !account.IsOpenAIApiKey() {
+		return false
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(account.GetOpenAIBaseURL()), "/")
+	if baseURL == "" {
+		return true
+	}
+	if strings.HasSuffix(baseURL, "/responses") || strings.HasSuffix(baseURL, "/v1") {
+		return true
+	}
+	return strings.Contains(baseURL, "api.openai.com")
+}
+
+func (s *OpenAIGatewayService) SupportsResponsesUpstreamAccount(account *Account) bool {
+	return supportsOpenAIResponsesUpstream(account)
 }
 
 func filterOpenAICompatibleAccounts(accounts []Account) []Account {
@@ -1815,6 +1925,16 @@ func filterOpenAICompatibleAccounts(accounts []Account) []Account {
 		}
 	}
 	return filtered
+}
+
+func looksLikeOpenAIModel(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	for _, prefix := range []string{"gpt-", "o1", "o3", "o4", "chatgpt-", "computer-use-"} {
+		if strings.HasPrefix(m, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func looksLikeAnthropicModel(model string) bool {

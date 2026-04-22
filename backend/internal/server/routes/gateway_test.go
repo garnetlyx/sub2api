@@ -8,6 +8,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -34,6 +35,52 @@ func newGatewayRoutesTestRouter() *gin.Engine {
 	)
 
 	return router
+}
+
+func TestShouldRouteMessagesToOpenAI_PrefersNativeAnthropic(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"glm-5.1-zhipu"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	require.False(t, shouldRouteMessagesToOpenAI(c, &handler.Handlers{}))
+}
+
+func TestRequestTargetsOpenAIModel_UsesServiceSupport(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.1-zhipu"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	require.True(t, looksLikeOpenAIModel("gpt-5.4"))
+	require.False(t, looksLikeOpenAIModel("glm-5.1-zhipu"))
+}
+
+func TestRequestTargetsOpenAIResponsesModel_FallsBackForNonOpenAIFamilyProxyNames(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"glm-5.1-zhipu"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	require.False(t, requestTargetsOpenAIResponsesModel(c, &handler.Handlers{}))
+
+	c2rec := httptest.NewRecorder()
+	c2, _ := gin.CreateTestContext(c2rec)
+	c2.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4"}`))
+	c2.Request.Header.Set("Content-Type", "application/json")
+	require.True(t, requestTargetsOpenAIResponsesModel(c2, &handler.Handlers{}))
+}
+
+func TestGetAPIKeyGroupID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	groupID := int64(42)
+	c.Set("api_key", &service.APIKey{GroupID: &groupID})
+	require.Equal(t, &groupID, getAPIKeyGroupID(c))
 }
 
 func TestGatewayRoutesOpenAIResponsesCompactPathIsRegistered(t *testing.T) {

@@ -44,9 +44,10 @@ func RegisterGatewayRoutes(
 	gateway.Use(gin.HandlerFunc(apiKeyAuth))
 	gateway.Use(requireGroupAnthropic)
 	{
-		// /v1/messages: auto-route based on group platform
+		// /v1/messages: prefer native anthropic targets; fall back to the
+		// OpenAI-compatible bridge only when no native anthropic account exists.
 		gateway.POST("/messages", func(c *gin.Context) {
-			if platform := getGroupPlatform(c); platform == service.PlatformOpenAI || platform == service.PlatformCopilot || platform == service.PlatformKiro {
+			if shouldRouteMessagesToOpenAI(c, h) {
 				h.OpenAIGateway.Messages(c)
 				return
 			}
@@ -54,7 +55,7 @@ func RegisterGatewayRoutes(
 		})
 		// /v1/messages/count_tokens: OpenAI groups get 404
 		gateway.POST("/messages/count_tokens", func(c *gin.Context) {
-			if platform := getGroupPlatform(c); platform == service.PlatformOpenAI || platform == service.PlatformCopilot || platform == service.PlatformKiro {
+			if shouldRouteMessagesToOpenAI(c, h) {
 				c.JSON(http.StatusNotFound, gin.H{
 					"type": "error",
 					"error": gin.H{
@@ -70,14 +71,14 @@ func RegisterGatewayRoutes(
 		gateway.GET("/usage", h.Gateway.Usage)
 		// OpenAI Responses API: auto-route based on group platform
 		gateway.POST("/responses", func(c *gin.Context) {
-			if shouldRouteToOpenAI(c) {
+			if shouldRouteToOpenAI(c) || requestTargetsOpenAIResponsesModel(c, h) {
 				h.OpenAIGateway.Responses(c)
 				return
 			}
 			h.Gateway.Responses(c)
 		})
 		gateway.POST("/responses/*subpath", func(c *gin.Context) {
-			if shouldRouteToOpenAI(c) {
+			if shouldRouteToOpenAI(c) || requestTargetsOpenAIResponsesModel(c, h) {
 				h.OpenAIGateway.Responses(c)
 				return
 			}
@@ -86,7 +87,7 @@ func RegisterGatewayRoutes(
 		gateway.GET("/responses", h.OpenAIGateway.ResponsesWebSocket)
 		// OpenAI Chat Completions API: auto-route based on group platform
 		gateway.POST("/chat/completions", func(c *gin.Context) {
-			if shouldRouteToOpenAI(c) {
+			if shouldRouteToOpenAI(c) || requestTargetsOpenAIModel(c, h) {
 				h.OpenAIGateway.ChatCompletions(c)
 				return
 			}
@@ -114,7 +115,7 @@ func RegisterGatewayRoutes(
 	// can still use the generic scheduler across both OpenAI and Anthropic-style
 	// request formats.
 	responsesHandler := func(c *gin.Context) {
-		if shouldRouteToOpenAI(c) {
+		if shouldRouteToOpenAI(c) || requestTargetsOpenAIResponsesModel(c, h) {
 			h.OpenAIGateway.Responses(c)
 			return
 		}
@@ -126,7 +127,7 @@ func RegisterGatewayRoutes(
 	// OpenAI Chat Completions API（不带v1前缀的别名）
 	// Mirror /v1/chat/completions behavior for legacy tools like opencode.
 	r.POST("/chat/completions", bodyLimit, clientRequestID, opsErrorLogger, endpointNorm, gin.HandlerFunc(apiKeyAuth), requireGroupAnthropic, func(c *gin.Context) {
-		if shouldRouteToOpenAI(c) {
+		if shouldRouteToOpenAI(c) || requestTargetsOpenAIModel(c, h) {
 			h.OpenAIGateway.ChatCompletions(c)
 			return
 		}
@@ -186,22 +187,76 @@ func shouldRouteToOpenAI(c *gin.Context) bool {
 	if platform == service.PlatformAnthropic {
 		return false
 	}
-	return requestTargetsOpenAIModel(c)
+	return false
 }
 
-func requestTargetsOpenAIModel(c *gin.Context) bool {
-	if c == nil || c.Request == nil || c.Request.Body == nil {
+func shouldRouteMessagesToOpenAI(c *gin.Context, h *handler.Handlers) bool {
+	platform := getGroupPlatform(c)
+	if platform == service.PlatformOpenAI || platform == service.PlatformCopilot || platform == service.PlatformKiro {
+		return true
+	}
+	model, ok := requestedModelFromContext(c)
+	if !ok {
 		return false
+	}
+	groupID := getAPIKeyGroupID(c)
+	if h != nil && h.Gateway != nil && h.Gateway.SupportsModelForAnthropicEndpoints(c.Request.Context(), groupID, model) {
+		return false
+	}
+	return h != nil && h.OpenAIGateway != nil && h.OpenAIGateway.SupportsModelForPublicOpenAIEndpoints(c.Request.Context(), groupID, model)
+}
+
+func requestTargetsOpenAIModel(c *gin.Context, h *handler.Handlers) bool {
+	if platform := getGroupPlatform(c); platform == service.PlatformOpenAI || platform == service.PlatformCopilot || platform == service.PlatformKiro {
+		return true
+	}
+	model, ok := requestedModelFromContext(c)
+	if !ok {
+		return false
+	}
+	groupID := getAPIKeyGroupID(c)
+	if h != nil && h.OpenAIGateway != nil && h.OpenAIGateway.SupportsModelForPublicOpenAIEndpoints(c.Request.Context(), groupID, model) {
+		return true
+	}
+	return looksLikeOpenAIModel(model)
+}
+
+func requestTargetsOpenAIResponsesModel(c *gin.Context, h *handler.Handlers) bool {
+	if platform := getGroupPlatform(c); platform == service.PlatformOpenAI || platform == service.PlatformCopilot || platform == service.PlatformKiro {
+		return true
+	}
+	model, ok := requestedModelFromContext(c)
+	if !ok {
+		return false
+	}
+	groupID := getAPIKeyGroupID(c)
+	if h != nil && h.OpenAIGateway != nil && h.OpenAIGateway.SupportsModelForPublicOpenAIResponses(c.Request.Context(), groupID, model) {
+		return true
+	}
+	return looksLikeOpenAIModel(model)
+}
+
+func requestedModelFromContext(c *gin.Context) (string, bool) {
+	if c == nil || c.Request == nil || c.Request.Body == nil {
+		return "", false
 	}
 
 	bodyBytes, err := c.GetRawData()
 	if err != nil {
-		return false
+		return "", false
 	}
 	c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
 	model := strings.TrimSpace(gjson.GetBytes(bodyBytes, "model").String())
-	return looksLikeOpenAIModel(model)
+	return model, model != ""
+}
+
+func getAPIKeyGroupID(c *gin.Context) *int64 {
+	apiKey, ok := middleware.GetAPIKeyFromContext(c)
+	if !ok {
+		return nil
+	}
+	return apiKey.GroupID
 }
 
 func looksLikeOpenAIModel(model string) bool {

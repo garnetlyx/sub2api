@@ -8815,6 +8815,51 @@ func (s *GatewayService) listSchedulableAccountsForModels(ctx context.Context, g
 	return filterByPlatform(accounts), nil
 }
 
+// HasSchedulableModelSupportOnPlatform reports whether the requested model has
+// at least one currently schedulable native account on the specified platform.
+func (s *GatewayService) HasSchedulableModelSupportOnPlatform(ctx context.Context, groupID *int64, requestedModel string, platform string) bool {
+	if strings.TrimSpace(requestedModel) == "" || strings.TrimSpace(platform) == "" {
+		return false
+	}
+	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
+		return false
+	}
+
+	accounts, _, err := s.listSchedulableAccounts(ctx, groupID, platform, false)
+	if err != nil {
+		return false
+	}
+	for i := range accounts {
+		acc := &accounts[i]
+		if strings.HasPrefix(acc.Name, "litellm-") {
+			continue
+		}
+		if !s.isAccountAllowedForPlatform(acc, platform, false) {
+			continue
+		}
+		if !s.isAccountSchedulableForSelection(acc) {
+			continue
+		}
+		if !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
+			continue
+		}
+		if !s.isAccountSchedulableForModelSelection(ctx, acc, requestedModel) {
+			continue
+		}
+		if !s.isAccountSchedulableForQuota(acc) {
+			continue
+		}
+		if !s.isAccountSchedulableForWindowCost(ctx, acc, false) {
+			continue
+		}
+		if !s.isAccountSchedulableForRPM(ctx, acc, false) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func (s *GatewayService) addAvailableModelsForAccount(modelSet map[string]struct{}, acc Account) bool {
 	switch {
 	case acc.IsOpenAI():

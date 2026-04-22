@@ -108,6 +108,13 @@ func NewGatewayHandler(
 	}
 }
 
+func (h *GatewayHandler) SupportsModelForAnthropicEndpoints(ctx context.Context, groupID *int64, requestedModel string) bool {
+	if h == nil || h.gatewayService == nil {
+		return false
+	}
+	return h.gatewayService.HasSchedulableModelSupportOnPlatform(ctx, groupID, requestedModel, service.PlatformAnthropic)
+}
+
 // Messages handles Claude API compatible messages endpoint
 // POST /v1/messages
 func (h *GatewayHandler) Messages(c *gin.Context) {
