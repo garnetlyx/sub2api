@@ -124,7 +124,7 @@ func (s *KiroOAuthService) GenerateAuthURL(ctx context.Context, region string, i
 		return nil, infraerrors.Newf(http.StatusInternalServerError, "KIRO_PKCE_FAILED", "failed to generate PKCE: %v", err)
 	}
 
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/oauth/callback", kiro.DefaultAuthPort)
+	redirectURI := kiro.DefaultRedirectURI
 	authURL := kiro.BuildAuthURL(region, idp, redirectURI, pkce)
 
 	sessionID, err := randomSessionID()
@@ -176,7 +176,7 @@ func (s *KiroOAuthService) ExchangeCode(ctx context.Context, sessionID string, c
 		return nil, infraerrors.Newf(http.StatusBadRequest, "KIRO_PROXY_INVALID", "invalid proxy: %v", err)
 	}
 
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/oauth/callback", kiro.DefaultAuthPort)
+	redirectURI := kiro.DefaultRedirectURI
 	tokenResp, err := kiro.ExchangeCode(ctx, httpClient, session.Region, code, session.CodeVerifier, redirectURI)
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadGateway, "KIRO_CODE_EXCHANGE_FAILED", "code exchange failed: %v", err)

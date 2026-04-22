@@ -7,7 +7,7 @@ import (
 
 const (
 	DefaultRegion           = "us-east-1"
-	DefaultAuthPort         = 19876
+	DefaultRedirectURI = "kiro://kiro.kiroAgent/authenticate-success"
 	KiroIDEVersion          = "1.6.0"
 	KiroIDEUserAgentPrefix  = "KiroIDE"
 	AccessTokenRefreshSkew  = 5 * time.Minute
