@@ -938,8 +938,7 @@ func (s *OpenAIGatewayService) forwardKiroChatCompletions(
 		return nil, fmt.Errorf("get kiro access token: %w", err)
 	}
 
-	profileArn := account.GetExtraString("profile_arn")
-	kiroReq, err := kiro.ConvertOpenAIToKiro(body, profileArn)
+	kiroReq, err := kiro.ConvertOpenAIToKiro(body, account.GetExtraString("profile_arn"))
 	if err != nil {
 		return nil, fmt.Errorf("convert request to kiro format: %w", err)
 	}

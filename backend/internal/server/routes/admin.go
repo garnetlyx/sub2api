@@ -356,9 +356,13 @@ func registerAntigravityOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers)
 func registerKiroOAuthRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	kiro := admin.Group("/kiro")
 	{
+		kiro.POST("/device-code/start", h.Admin.KiroOAuth.StartDeviceFlow)
+		kiro.POST("/device-code/poll", h.Admin.KiroOAuth.PollDeviceFlow)
+		kiro.POST("/create-from-device-code", h.Admin.KiroOAuth.CreateFromDeviceFlow)
 		kiro.POST("/auth-url", h.Admin.KiroOAuth.GenerateAuthURL)
 		kiro.POST("/exchange-code", h.Admin.KiroOAuth.ExchangeCode)
 		kiro.POST("/create-from-oauth", h.Admin.KiroOAuth.CreateFromOAuth)
+		kiro.POST("/create-from-import", h.Admin.KiroOAuth.CreateFromImport)
 		kiro.POST("/accounts/:id/refresh", h.Admin.KiroOAuth.RefreshAccountToken)
 		kiro.POST("/import", h.Admin.KiroOAuth.ImportRefreshToken)
 	}

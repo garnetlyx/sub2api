@@ -1,16 +1,18 @@
 package kiro
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"time"
 )
 
 const (
-	DefaultRegion           = "us-east-1"
-	DefaultRedirectURI = "kiro://kiro.kiroAgent/authenticate-success"
-	KiroIDEVersion          = "1.6.0"
-	KiroIDEUserAgentPrefix  = "KiroIDE"
-	AccessTokenRefreshSkew  = 5 * time.Minute
+	DefaultRegion          = "us-east-1"
+	DefaultRedirectURI     = "kiro://kiro.kiroAgent/authenticate-success"
+	KiroIDEVersion         = "1.6.0"
+	KiroIDEUserAgentPrefix = "KiroIDE"
+	AccessTokenRefreshSkew = 5 * time.Minute
 )
 
 func AuthEndpoint(region string) string {
@@ -35,6 +37,30 @@ type TokenExchangeResponse struct {
 	ExpiresIn    int64  `json:"expiresIn"`
 }
 
+type DeviceCodeStartResponse struct {
+	DeviceCode              string `json:"deviceCode"`
+	UserCode                string `json:"userCode"`
+	VerificationURI         string `json:"verificationUri"`
+	VerificationURIComplete string `json:"verificationUriComplete"`
+	ExpiresIn               int64  `json:"expiresIn"`
+	Interval                int64  `json:"interval"`
+}
+
+type DeviceClientRegistrationResponse struct {
+	ClientID              string `json:"clientId"`
+	ClientSecret          string `json:"clientSecret"`
+	ClientSecretExpiresAt int64  `json:"clientSecretExpiresAt"`
+}
+
+type OIDCTokenResponse struct {
+	AccessToken           string `json:"accessToken"`
+	RefreshToken          string `json:"refreshToken"`
+	ExpiresIn             int64  `json:"expiresIn"`
+	Error                 string `json:"error"`
+	ErrorDescription      string `json:"error_description"`
+	ClientSecretExpiresAt int64  `json:"clientSecretExpiresAt,omitempty"`
+}
+
 type RefreshTokenRequest struct {
 	RefreshToken string `json:"refreshToken"`
 }
@@ -46,7 +72,7 @@ type OAuthTokenRequest struct {
 }
 
 type GenerateAssistantResponseRequest struct {
-	ProfileArn       string            `json:"profileArn"`
+	ProfileArn        string             `json:"profileArn,omitempty"`
 	ConversationState *ConversationState `json:"conversationState"`
 }
 
@@ -66,8 +92,8 @@ type UserInputMessage struct {
 }
 
 type HistoryItem struct {
-	Role                 string               `json:"role"`
-	UserInputMessage     *UserInputMessage    `json:"userInputMessage,omitempty"`
+	Role                     string                    `json:"role"`
+	UserInputMessage         *UserInputMessage         `json:"userInputMessage,omitempty"`
 	AssistantResponseMessage *AssistantResponseMessage `json:"assistantResponseMessage,omitempty"`
 }
 
@@ -77,9 +103,9 @@ type AssistantResponseMessage struct {
 }
 
 type ModelInfo struct {
-	ModelID           string `json:"modelId"`
-	ModelDisplayName  string `json:"modelDisplayName,omitempty"`
-	ProviderName      string `json:"providerName,omitempty"`
+	ModelID          string `json:"modelId"`
+	ModelDisplayName string `json:"modelDisplayName,omitempty"`
+	ProviderName     string `json:"providerName,omitempty"`
 }
 
 func ExtractRegionFromProfileArn(arn string) string {
@@ -98,13 +124,35 @@ func ExtractRegionFromProfileArn(arn string) string {
 	return ""
 }
 
+func ExtractSubjectFromAccessToken(token string) string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ""
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Subject string `json:"sub"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(claims.Subject)
+}
+
 var DefaultModelMapping = map[string]string{
-	"claude-sonnet-4-5-20250929":  "CLAUDE_SONNET_4_5_20250929_V1_0",
-	"claude-sonnet-4-5":           "CLAUDE_SONNET_4_5_20250929_V1_0",
-	"claude-opus-4-20250514":      "CLAUDE_OPUS_4_20250514_V1_0",
-	"claude-opus-4":               "CLAUDE_OPUS_4_20250514_V1_0",
-	"claude-haiku-4-5-20251001":   "CLAUDE_HAIKU_4_5_20251001_V1_0",
-	"claude-haiku-4-5":            "CLAUDE_HAIKU_4_5_20251001_V1_0",
-	"claude-sonnet-4-6":           "CLAUDE_SONNET_4_6",
-	"claude-opus-4-6":             "CLAUDE_OPUS_4_6",
+	"claude-sonnet-4-5-20250929": "CLAUDE_SONNET_4_5_20250929_V1_0",
+	"claude-sonnet-4-5":          "CLAUDE_SONNET_4_5_20250929_V1_0",
+	"claude-opus-4-20250514":     "CLAUDE_OPUS_4_20250514_V1_0",
+	"claude-opus-4":              "CLAUDE_OPUS_4_20250514_V1_0",
+	"claude-haiku-4-5-20251001":  "CLAUDE_HAIKU_4_5_20251001_V1_0",
+	"claude-haiku-4-5":           "CLAUDE_HAIKU_4_5_20251001_V1_0",
+	"claude-sonnet-4-6":          "CLAUDE_SONNET_4_6",
+	"claude-opus-4-6":            "CLAUDE_OPUS_4_6",
 }

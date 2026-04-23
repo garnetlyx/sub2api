@@ -241,6 +241,13 @@ func (a *Account) GetCredentialAsTime(key string) *time.Time {
 	return nil
 }
 
+func (a *Account) GetCredentialAsTimeValue(key string) time.Time {
+	if t := a.GetCredentialAsTime(key); t != nil {
+		return *t
+	}
+	return time.Time{}
+}
+
 // GetCredentialAsInt64 解析凭证中的 int64 字段
 // 用于读取 _token_version 等内部字段
 func (a *Account) GetCredentialAsInt64(key string) int64 {

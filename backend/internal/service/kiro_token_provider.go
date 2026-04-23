@@ -68,20 +68,37 @@ func (p *KiroTokenProvider) GetAccessToken(ctx context.Context, account *Account
 		return "", errors.New("no refresh_token stored for kiro account")
 	}
 
-	tokenInfo, err := kiro.RefreshSocialToken(ctx, httpClient, region, refreshToken)
-	if err != nil {
-		return "", err
+	var (
+		accessToken string
+		expiresIn   int64
+	)
+	if strings.EqualFold(account.GetExtraString("auth_type"), "device_code") {
+		clientID := account.GetCredential("client_id")
+		clientSecret := account.GetCredential("client_secret")
+		tokenInfo, refreshErr := kiro.RefreshOIDCToken(ctx, httpClient, region, clientID, clientSecret, refreshToken)
+		if refreshErr != nil {
+			return "", refreshErr
+		}
+		accessToken = tokenInfo.AccessToken
+		expiresIn = tokenInfo.ExpiresIn
+	} else {
+		tokenInfo, refreshErr := kiro.RefreshSocialToken(ctx, httpClient, region, refreshToken)
+		if refreshErr != nil {
+			return "", refreshErr
+		}
+		accessToken = tokenInfo.AccessToken
+		expiresIn = tokenInfo.ExpiresIn
 	}
 
 	if p.tokenCache != nil {
-		ttl := time.Duration(tokenInfo.ExpiresIn)*time.Second - kiroTokenRefreshSkew
+		ttl := time.Duration(expiresIn)*time.Second - kiroTokenRefreshSkew
 		if ttl <= 0 {
 			ttl = 5 * time.Minute
 		}
-		_ = p.tokenCache.SetAccessToken(ctx, cacheKey, tokenInfo.AccessToken, ttl)
+		_ = p.tokenCache.SetAccessToken(ctx, cacheKey, accessToken, ttl)
 	}
 
-	return tokenInfo.AccessToken, nil
+	return accessToken, nil
 }
 
 func (p *KiroTokenProvider) proxyURLForAccount(ctx context.Context, account *Account) string {

@@ -40,6 +40,10 @@ func NewHTTPClient(proxyURL string) (*http.Client, error) {
 	return client, nil
 }
 
+func oidcEndpoint(region string) string {
+	return "https://oidc." + strings.TrimSpace(region) + ".amazonaws.com"
+}
+
 type PKCEParams struct {
 	CodeVerifier  string
 	CodeChallenge string
@@ -79,6 +83,175 @@ func BuildAuthURL(region string, idp SocialProvider, redirectURI string, pkce *P
 	params.Set("state", pkce.State)
 	params.Set("prompt", "select_account")
 	return base + "/login?" + params.Encode()
+}
+
+func RegisterOIDCClient(ctx context.Context, httpClient *http.Client, region string, clientName string) (*DeviceClientRegistrationResponse, error) {
+	endpoint := oidcEndpoint(region) + "/client/register"
+	reqBody := map[string]any{
+		"clientName": clientName,
+		"clientType": "public",
+		"scopes": []string{
+			"codewhisperer:completions",
+			"codewhisperer:analysis",
+			"codewhisperer:conversations",
+			"codewhisperer:transformations",
+			"codewhisperer:taskassist",
+		},
+		"grantTypes": []string{"urn:ietf:params:oauth:grant-type:device_code", "refresh_token"},
+		"issuerUrl":  "https://view.awsapps.com/start",
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal oidc registration request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(bodyBytes)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("oidc client register request: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
+	if err != nil {
+		return nil, fmt.Errorf("read oidc register response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("oidc client register failed: status %d body %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	var out DeviceClientRegistrationResponse
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, fmt.Errorf("decode oidc register response: %w", err)
+	}
+	if strings.TrimSpace(out.ClientID) == "" || strings.TrimSpace(out.ClientSecret) == "" {
+		return nil, fmt.Errorf("oidc client register returned empty client credentials")
+	}
+	return &out, nil
+}
+
+func StartDeviceAuthorization(ctx context.Context, httpClient *http.Client, region, clientID, clientSecret string) (*DeviceCodeStartResponse, error) {
+	endpoint := oidcEndpoint(region) + "/device_authorization"
+	reqBody := map[string]any{
+		"clientId":     strings.TrimSpace(clientID),
+		"clientSecret": strings.TrimSpace(clientSecret),
+		"startUrl":     "https://view.awsapps.com/start",
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal device authorization request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(bodyBytes)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("device authorization request: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
+	if err != nil {
+		return nil, fmt.Errorf("read device authorization response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("device authorization failed: status %d body %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	var out DeviceCodeStartResponse
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, fmt.Errorf("decode device authorization response: %w", err)
+	}
+	if strings.TrimSpace(out.DeviceCode) == "" || strings.TrimSpace(out.UserCode) == "" {
+		return nil, fmt.Errorf("device authorization returned empty codes")
+	}
+	return &out, nil
+}
+
+func PollDeviceAuthorization(ctx context.Context, httpClient *http.Client, region, clientID, clientSecret, deviceCode string) (*OIDCTokenResponse, error) {
+	endpoint := oidcEndpoint(region) + "/token"
+	reqBody := map[string]any{
+		"clientId":     strings.TrimSpace(clientID),
+		"clientSecret": strings.TrimSpace(clientSecret),
+		"grantType":    "urn:ietf:params:oauth:grant-type:device_code",
+		"deviceCode":   strings.TrimSpace(deviceCode),
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal device token request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(bodyBytes)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("device token request: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
+	if err != nil {
+		return nil, fmt.Errorf("read device token response: %w", err)
+	}
+	var out OIDCTokenResponse
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, fmt.Errorf("decode device token response: %w", err)
+	}
+	if resp.StatusCode == http.StatusOK {
+		return &out, nil
+	}
+	if strings.TrimSpace(out.Error) != "" {
+		return &out, nil
+	}
+	return nil, fmt.Errorf("device token failed: status %d body %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+}
+
+func RefreshOIDCToken(ctx context.Context, httpClient *http.Client, region, clientID, clientSecret, refreshToken string) (*OIDCTokenResponse, error) {
+	endpoint := oidcEndpoint(region) + "/token"
+	reqBody := map[string]any{
+		"clientId":     strings.TrimSpace(clientID),
+		"clientSecret": strings.TrimSpace(clientSecret),
+		"grantType":    "refresh_token",
+		"refreshToken": strings.TrimSpace(refreshToken),
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal oidc refresh request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(bodyBytes)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("oidc refresh request: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
+	if err != nil {
+		return nil, fmt.Errorf("read oidc refresh response: %w", err)
+	}
+	var out OIDCTokenResponse
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return nil, fmt.Errorf("decode oidc refresh response: %w", err)
+	}
+	if resp.StatusCode == http.StatusOK {
+		if strings.TrimSpace(out.AccessToken) == "" {
+			return nil, fmt.Errorf("oidc refresh returned empty accessToken")
+		}
+		return &out, nil
+	}
+	if strings.TrimSpace(out.Error) != "" {
+		return nil, fmt.Errorf("oidc refresh failed: %s", out.Error)
+	}
+	return nil, fmt.Errorf("oidc refresh failed: status %d body %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 }
 
 func ExchangeCode(ctx context.Context, httpClient *http.Client, region string, code string, codeVerifier string, redirectURI string) (*TokenExchangeResponse, error) {
