@@ -180,6 +180,14 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 				RetryableOnSameAccount: account.IsPoolMode() && (isPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
 			}
 		}
+		if shouldBridgeOpenAICompatibilityError(account, resp.StatusCode, upstreamMsg) {
+			return nil, &OpenAIBridgeFallbackError{
+				BridgePlatform: PlatformAnthropic,
+				Endpoint:       openAIBridgeEndpointMessages,
+				StatusCode:     resp.StatusCode,
+				Message:        upstreamMsg,
+			}
+		}
 		// Non-failover error: return Anthropic-formatted error to client
 		return s.handleAnthropicErrorResponse(resp, c, account)
 	}

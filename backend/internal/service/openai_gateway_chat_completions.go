@@ -198,6 +198,14 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 				RetryableOnSameAccount: account.IsPoolMode() && (isPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
 			}
 		}
+		if shouldBridgeOpenAICompatibilityError(account, resp.StatusCode, upstreamMsg) {
+			return nil, &OpenAIBridgeFallbackError{
+				BridgePlatform: PlatformOpenAI,
+				Endpoint:       openAIBridgeEndpointChat,
+				StatusCode:     resp.StatusCode,
+				Message:        upstreamMsg,
+			}
+		}
 		return s.handleChatCompletionsErrorResponse(resp, c, account)
 	}
 
