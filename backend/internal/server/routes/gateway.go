@@ -279,9 +279,5 @@ func looksLikeOpenAIModel(model string) bool {
 	if strings.HasPrefix(model, "chatgpt-") {
 		return true
 	}
-	// Copilot supports claude-* models via OpenAI-compatible API.
-	if strings.HasPrefix(model, "claude-") {
-		return true
-	}
 	return false
 }

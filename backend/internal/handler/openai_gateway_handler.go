@@ -84,7 +84,18 @@ func (h *OpenAIGatewayHandler) SupportsModelForPublicOpenAIEndpoints(ctx context
 	// Local omlx OpenAI passthrough exists, but the public local-model contract
 	// still relies on the anthropic-compatible gateway path to preserve local
 	// request features that OpenAI-native handlers do not normalize.
-	return h.gatewayService.HasSchedulableModelSupport(ctx, groupID, requestedModel, "omlx-openai-internal")
+	//
+	// Likewise, the internal LiteLLM OpenAI bridge must not drive public route
+	// selection. It has no scoped model mapping and would otherwise over-claim
+	// support for arbitrary model names such as Claude-family account-pool
+	// models, causing misrouting before native-first selection can happen.
+	return h.gatewayService.HasSchedulableModelSupport(
+		ctx,
+		groupID,
+		requestedModel,
+		"omlx-openai-internal",
+		"litellm-openai-internal",
+	)
 }
 
 func (h *OpenAIGatewayHandler) SupportsModelForPublicOpenAIResponses(ctx context.Context, groupID *int64, requestedModel string) bool {

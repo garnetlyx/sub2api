@@ -1870,13 +1870,6 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 	return latest
 }
 
-func requiresOpenAIFamilyModelName(account *Account) bool {
-	if account == nil {
-		return false
-	}
-	return account.IsOpenAIOAuth() || account.IsCopilot() || account.IsKiro()
-}
-
 func supportsOpenAIGatewayRequestedModel(account *Account, requestedModel string) bool {
 	if account == nil || !account.IsSchedulable() || !account.UsesOpenAIGateway() {
 		return false
@@ -1884,8 +1877,30 @@ func supportsOpenAIGatewayRequestedModel(account *Account, requestedModel string
 	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
 		return false
 	}
-	if requestedModel != "" && requiresOpenAIFamilyModelName(account) && !looksLikeOpenAIModel(requestedModel) {
-		return false
+	if requestedModel != "" {
+		switch {
+		case account.IsCopilot():
+			available := account.GetCopilotAvailableModels()
+			if len(available) > 0 {
+				for _, model := range available {
+					if strings.EqualFold(strings.TrimSpace(model), strings.TrimSpace(requestedModel)) {
+						return true
+					}
+				}
+				return false
+			}
+			if !looksLikeOpenAIModel(requestedModel) && !looksLikeAnthropicModel(requestedModel) {
+				return false
+			}
+		case account.IsOpenAIOAuth() || account.IsKiro():
+			if !looksLikeOpenAIModel(requestedModel) {
+				return false
+			}
+		case account.IsOpenAIApiKey():
+			if len(account.GetModelMapping()) == 0 && !looksLikeOpenAIModel(requestedModel) {
+				return false
+			}
+		}
 	}
 	return true
 }

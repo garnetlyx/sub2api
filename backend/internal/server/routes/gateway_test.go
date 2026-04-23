@@ -56,6 +56,7 @@ func TestRequestTargetsOpenAIModel_UsesServiceSupport(t *testing.T) {
 
 	require.True(t, looksLikeOpenAIModel("gpt-5.4"))
 	require.False(t, looksLikeOpenAIModel("glm-5.1-zhipu"))
+	require.False(t, looksLikeOpenAIModel("claude-opus-4.7"))
 }
 
 func TestRequestTargetsOpenAIResponsesModel_FallsBackForNonOpenAIFamilyProxyNames(t *testing.T) {
@@ -72,6 +73,12 @@ func TestRequestTargetsOpenAIResponsesModel_FallsBackForNonOpenAIFamilyProxyName
 	c2.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.4"}`))
 	c2.Request.Header.Set("Content-Type", "application/json")
 	require.True(t, requestTargetsOpenAIResponsesModel(c2, &handler.Handlers{}))
+
+	c3rec := httptest.NewRecorder()
+	c3, _ := gin.CreateTestContext(c3rec)
+	c3.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"claude-opus-4.7"}`))
+	c3.Request.Header.Set("Content-Type", "application/json")
+	require.False(t, requestTargetsOpenAIResponsesModel(c3, &handler.Handlers{}))
 }
 
 func TestGetAPIKeyGroupID(t *testing.T) {

@@ -219,6 +219,46 @@ func TestOpenAIGatewayService_GenerateSessionHash_AttachesLegacyHashToContext(t 
 	require.NotEmpty(t, openAILegacySessionHashFromContext(c.Request.Context()))
 }
 
+func TestSupportsOpenAIGatewayRequestedModel_CopilotUsesAvailableModels(t *testing.T) {
+	account := &Account{
+		Platform:    PlatformCopilot,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra: map[string]any{
+			"available_models": []any{"claude-opus-4.7", "gpt-5.4"},
+		},
+	}
+
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "claude-opus-4.7"))
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.4"))
+	require.False(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4.6"))
+}
+
+func TestSupportsOpenAIGatewayRequestedModel_OpenAIOAuthRejectsClaudeFamily(t *testing.T) {
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.4"))
+	require.False(t, supportsOpenAIGatewayRequestedModel(account, "claude-opus-4.7"))
+}
+
+func TestSupportsOpenAIGatewayRequestedModel_OpenAIAPIKeyWithoutMappingRejectsClaudeFamily(t *testing.T) {
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.4"))
+	require.False(t, supportsOpenAIGatewayRequestedModel(account, "claude-opus-4.7"))
+}
+
 func TestOpenAIGatewayService_GenerateSessionHashWithFallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
