@@ -2249,6 +2249,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
+	// Copilot (direct or via LiteLLM model routing) doesn't support built-in tools like image_generation.
+	if account.IsCopilot() || strings.Contains(strings.ToLower(upstreamModel), "copilot") {
+		if stripped := stripUnsupportedToolsForCopilotMap(reqBody); stripped {
+			bodyModified = true
+			disablePatch()
+		}
+	}
+
 	// Handle max_output_tokens based on platform and account type
 	if !isCodexCLI {
 		if maxOutputTokens, hasMaxOutputTokens := reqBody["max_output_tokens"]; hasMaxOutputTokens {
@@ -2751,6 +2759,16 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 	if sanitized {
 		body = sanitizedBody
+	}
+
+	if account != nil && account.IsCopilot() {
+		strippedBody, stripped, stripErr := stripUnsupportedToolsForCopilot(body)
+		if stripErr != nil {
+			return nil, stripErr
+		}
+		if stripped {
+			body = strippedBody
+		}
 	}
 
 	logger.LegacyPrintf("service.openai_gateway",
@@ -5510,4 +5528,92 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 		// Only store known effort levels for now to keep UI consistent.
 		return ""
 	}
+}
+
+// copilotUnsupportedBuiltinTools lists Responses API built-in tools that Copilot's
+// upstream rejects with 400 "unsupported". Strip them before forwarding.
+var copilotUnsupportedBuiltinTools = map[string]bool{
+	"image_generation":   true,
+	"code_interpreter":   true,
+	"web_search_preview": true,
+}
+
+// stripUnsupportedToolsForCopilotMap removes unsupported built-in tools from an
+// already-parsed request body map. Returns true if anything was removed.
+func stripUnsupportedToolsForCopilotMap(reqBody map[string]any) bool {
+	rawTools, ok := reqBody["tools"]
+	if !ok {
+		return false
+	}
+	tools, ok := rawTools.([]any)
+	if !ok || len(tools) == 0 {
+		return false
+	}
+	filtered := tools[:0]
+	for _, t := range tools {
+		toolMap, ok := t.(map[string]any)
+		if !ok {
+			filtered = append(filtered, t)
+			continue
+		}
+		toolType, _ := toolMap["type"].(string)
+		if !copilotUnsupportedBuiltinTools[toolType] {
+			filtered = append(filtered, t)
+		}
+	}
+	if len(filtered) == len(tools) {
+		return false
+	}
+	if len(filtered) == 0 {
+		delete(reqBody, "tools")
+	} else {
+		reqBody["tools"] = filtered
+	}
+	return true
+}
+
+// stripUnsupportedToolsForCopilot removes built-in tools that Copilot doesn't
+// support from the request body. Returns the (possibly modified) body and whether
+// it was changed.
+func stripUnsupportedToolsForCopilot(body []byte) ([]byte, bool, error) {
+	if !bytes.Contains(body, []byte(`"tools"`)) {
+		return body, false, nil
+	}
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body, false, fmt.Errorf("strip copilot tools: %w", err)
+	}
+	rawTools, ok := req["tools"]
+	if !ok {
+		return body, false, nil
+	}
+	tools, ok := rawTools.([]any)
+	if !ok || len(tools) == 0 {
+		return body, false, nil
+	}
+	filtered := tools[:0]
+	for _, t := range tools {
+		toolMap, ok := t.(map[string]any)
+		if !ok {
+			filtered = append(filtered, t)
+			continue
+		}
+		toolType, _ := toolMap["type"].(string)
+		if !copilotUnsupportedBuiltinTools[toolType] {
+			filtered = append(filtered, t)
+		}
+	}
+	if len(filtered) == len(tools) {
+		return body, false, nil
+	}
+	if len(filtered) == 0 {
+		delete(req, "tools")
+	} else {
+		req["tools"] = filtered
+	}
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body, false, fmt.Errorf("serialize stripped tools body: %w", err)
+	}
+	return out, true, nil
 }
