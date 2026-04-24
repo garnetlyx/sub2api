@@ -259,6 +259,21 @@ func TestSupportsOpenAIGatewayRequestedModel_OpenAIAPIKeyWithoutMappingRejectsCl
 	require.False(t, supportsOpenAIGatewayRequestedModel(account, "claude-opus-4.7"))
 }
 
+func TestSupportsOpenAIGatewayRequestedModel_KiroUsesClaudeFamily(t *testing.T) {
+	account := &Account{
+		Platform:    PlatformKiro,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra: map[string]any{
+			"available_models": []any{"claude-sonnet-4-6"},
+		},
+	}
+
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4-6"))
+	require.False(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.4"))
+}
+
 func TestOpenAIGatewayService_GenerateSessionHashWithFallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

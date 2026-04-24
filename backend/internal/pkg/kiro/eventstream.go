@@ -26,7 +26,9 @@ type EventStreamEvent struct {
 }
 
 type AssistantResponseEvent struct {
-	AssistEventID       string `json:"assistEventId"`
+	AssistEventID string `json:"assistEventId"`
+	Content       string `json:"content"`
+	ModelID       string `json:"modelId"`
 	AssistantResponseEvent struct {
 		Content string `json:"content"`
 	} `json:"assistantResponseEvent"`
@@ -45,7 +47,7 @@ func ParseEventStream(reader io.Reader) ([]EventStreamEvent, error) {
 	buf := bufio.NewReader(reader)
 
 	for {
-		prelude := make([]byte, 8)
+		prelude := make([]byte, 12)
 		if _, err := io.ReadFull(buf, prelude); err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				break
@@ -54,11 +56,15 @@ func ParseEventStream(reader io.Reader) ([]EventStreamEvent, error) {
 		}
 
 		totalLen := int(binary.BigEndian.Uint32(prelude[0:4]))
-		if totalLen < 8 {
+		headersLen := int(binary.BigEndian.Uint32(prelude[4:8]))
+		if totalLen < 16 {
 			return events, fmt.Errorf("invalid message length: %d", totalLen)
 		}
+		if headersLen < 0 || headersLen > totalLen-16 {
+			return events, fmt.Errorf("invalid headers length: %d", headersLen)
+		}
 
-		remaining := make([]byte, totalLen-8)
+		remaining := make([]byte, totalLen-12)
 		if _, err := io.ReadFull(buf, remaining); err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				break
@@ -68,18 +74,15 @@ func ParseEventStream(reader io.Reader) ([]EventStreamEvent, error) {
 
 		msgData := append(prelude, remaining...)
 
-		preludeCRC := binary.BigEndian.Uint32(msgData[4:8])
-		if err := validateCRC(msgData[:4], preludeCRC); err != nil {
+		preludeCRC := binary.BigEndian.Uint32(msgData[8:12])
+		if err := validateCRC(msgData[:8], preludeCRC); err != nil {
 			continue
 		}
-
-		headersLen := int(binary.BigEndian.Uint32(msgData[2:4]))
-		if headersLen > totalLen-12 {
-			continue
-		}
-
-		headers := parseHeaders(msgData[8 : 8+headersLen])
-		payload := msgData[8+headersLen : totalLen-4]
+		headersStart := 12
+		headersEnd := headersStart + headersLen
+		payloadEnd := totalLen - 4
+		headers := parseHeaders(msgData[headersStart:headersEnd])
+		payload := msgData[headersEnd:payloadEnd]
 
 		events = append(events, EventStreamEvent{
 			Headers: headers,
@@ -160,18 +163,25 @@ done:
 func ExtractAssistantContent(events []EventStreamEvent) string {
 	var sb strings.Builder
 	for _, event := range events {
-		if len(event.Payload) == 0 {
-			continue
-		}
-		var resp AssistantResponseEvent
-		if err := json.Unmarshal(event.Payload, &resp); err != nil {
-			continue
-		}
-		if resp.AssistantResponseEvent.Content != "" {
-			sb.WriteString(resp.AssistantResponseEvent.Content)
+		if content := extractAssistantContentPayload(event.Payload); content != "" {
+			sb.WriteString(content)
 		}
 	}
 	return sb.String()
+}
+
+func extractAssistantContentPayload(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	var resp AssistantResponseEvent
+	if err := json.Unmarshal(payload, &resp); err != nil {
+		return ""
+	}
+	if resp.AssistantResponseEvent.Content != "" {
+		return resp.AssistantResponseEvent.Content
+	}
+	return resp.Content
 }
 
 func ExtractStreamingChunks(reader io.Reader) (<-chan string, <-chan error) {
@@ -192,38 +202,34 @@ func ExtractStreamingChunks(reader io.Reader) (<-chan string, <-chan error) {
 
 				for {
 					data := buffer.Bytes()
-					if len(data) < 8 {
+					if len(data) < 12 {
 						break
 					}
 
 					totalLen := int(binary.BigEndian.Uint32(data[0:4]))
-					if totalLen < 8 || totalLen > len(data) {
+					headersLen := int(binary.BigEndian.Uint32(data[4:8]))
+					if totalLen < 16 || totalLen > len(data) {
+						break
+					}
+					if headersLen < 0 || headersLen > totalLen-16 {
 						break
 					}
 
 					msg := data[:totalLen]
 					buffer.Next(totalLen)
 
-					if len(msg) < 12 {
+					if len(msg) < 16 {
 						continue
 					}
-
-					headersLen := int(binary.BigEndian.Uint32(msg[2:4]))
-					if 8+headersLen > len(msg)-4 {
-						continue
-					}
-
-					payload := msg[8+headersLen : len(msg)-4]
+					headersStart := 12
+					headersEnd := headersStart + headersLen
+					payload := msg[headersEnd : len(msg)-4]
 					if len(payload) == 0 {
 						continue
 					}
 
-					var resp AssistantResponseEvent
-					if jsonErr := json.Unmarshal(payload, &resp); jsonErr != nil {
-						continue
-					}
-					if resp.AssistantResponseEvent.Content != "" {
-						contentCh <- resp.AssistantResponseEvent.Content
+					if content := extractAssistantContentPayload(payload); content != "" {
+						contentCh <- content
 					}
 				}
 			}

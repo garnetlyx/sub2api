@@ -1892,7 +1892,11 @@ func supportsOpenAIGatewayRequestedModel(account *Account, requestedModel string
 			if !looksLikeOpenAIModel(requestedModel) && !looksLikeAnthropicModel(requestedModel) {
 				return false
 			}
-		case account.IsOpenAIOAuth() || account.IsKiro():
+		case account.IsKiro():
+			if !looksLikeAnthropicModel(requestedModel) {
+				return false
+			}
+		case account.IsOpenAIOAuth():
 			if !looksLikeOpenAIModel(requestedModel) {
 				return false
 			}

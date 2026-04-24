@@ -23,6 +23,10 @@ func QAPIEndpoint(region string) string {
 	return "https://q." + region + ".amazonaws.com"
 }
 
+func CodeWhispererEndpoint(region string) string {
+	return "https://codewhisperer." + region + ".amazonaws.com"
+}
+
 type SocialProvider string
 
 const (
@@ -88,6 +92,9 @@ type CurrentMessage struct {
 
 type UserInputMessage struct {
 	Content                 string `json:"content"`
+	ModelID                 string `json:"modelId,omitempty"`
+	Origin                  string `json:"origin,omitempty"`
+	Images                  []any  `json:"images,omitempty"`
 	UserInputMessageContext any    `json:"userInputMessageContext,omitempty"`
 }
 
@@ -147,12 +154,12 @@ func ExtractSubjectFromAccessToken(token string) string {
 }
 
 var DefaultModelMapping = map[string]string{
-	"claude-sonnet-4-5-20250929": "CLAUDE_SONNET_4_5_20250929_V1_0",
-	"claude-sonnet-4-5":          "CLAUDE_SONNET_4_5_20250929_V1_0",
-	"claude-opus-4-20250514":     "CLAUDE_OPUS_4_20250514_V1_0",
-	"claude-opus-4":              "CLAUDE_OPUS_4_20250514_V1_0",
-	"claude-haiku-4-5-20251001":  "CLAUDE_HAIKU_4_5_20251001_V1_0",
-	"claude-haiku-4-5":           "CLAUDE_HAIKU_4_5_20251001_V1_0",
-	"claude-sonnet-4-6":          "CLAUDE_SONNET_4_6",
-	"claude-opus-4-6":            "CLAUDE_OPUS_4_6",
+	"claude-sonnet-4-5-20250929": "claude-sonnet-4-5-20250929",
+	"claude-sonnet-4-5":          "claude-sonnet-4-5-20250929",
+	"claude-opus-4-20250514":     "claude-opus-4-20250514",
+	"claude-opus-4":              "claude-opus-4-20250514",
+	"claude-haiku-4-5-20251001":  "claude-haiku-4-5-20251001",
+	"claude-haiku-4-5":           "claude-haiku-4-5-20251001",
+	"claude-sonnet-4-6":          "claude-sonnet-4-6",
+	"claude-opus-4-6":            "claude-opus-4-6",
 }

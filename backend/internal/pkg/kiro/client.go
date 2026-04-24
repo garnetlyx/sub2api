@@ -383,7 +383,7 @@ func ListModels(ctx context.Context, httpClient *http.Client, region string, acc
 }
 
 func GenerateAssistantResponse(ctx context.Context, httpClient *http.Client, region string, accessToken string, reqBody *GenerateAssistantResponseRequest) (*http.Response, error) {
-	endpoint := QAPIEndpoint(region) + "/generateAssistantResponse"
+	endpoint := CodeWhispererEndpoint(region) + "/generateAssistantResponse"
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
