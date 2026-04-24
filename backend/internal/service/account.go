@@ -578,11 +578,12 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 	if len(mapping) == 0 {
 		return true // 无映射 = 允许所有
 	}
-	if mappingSupportsRequestedModel(mapping, requestedModel) {
-		return true
+	for _, candidate := range requestedModelLookupCandidates(a.Platform, requestedModel) {
+		if mappingSupportsRequestedModel(mapping, candidate) {
+			return true
+		}
 	}
-	normalized := normalizeRequestedModelForLookup(a.Platform, requestedModel)
-	return normalized != requestedModel && mappingSupportsRequestedModel(mapping, normalized)
+	return false
 }
 
 // GetMappedModel 获取映射后的模型名（支持通配符，最长优先匹配）
@@ -599,12 +600,8 @@ func (a *Account) ResolveMappedModel(requestedModel string) (mappedModel string,
 	if len(mapping) == 0 {
 		return requestedModel, false
 	}
-	if mappedModel, matched := resolveRequestedModelInMapping(mapping, requestedModel); matched {
-		return mappedModel, true
-	}
-	normalized := normalizeRequestedModelForLookup(a.Platform, requestedModel)
-	if normalized != requestedModel {
-		if mappedModel, matched := resolveRequestedModelInMapping(mapping, normalized); matched {
+	for _, candidate := range requestedModelLookupCandidates(a.Platform, requestedModel) {
+		if mappedModel, matched := resolveRequestedModelInMapping(mapping, candidate); matched {
 			return mappedModel, true
 		}
 	}

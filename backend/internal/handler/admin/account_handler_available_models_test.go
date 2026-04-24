@@ -101,5 +101,69 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthPassthroughFallsBackToDefau
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	require.NotEmpty(t, resp.Data)
-	require.NotEqual(t, "gpt-5", resp.Data[0].ID)
+	require.Greater(t, len(resp.Data), 1)
+}
+
+func TestAccountHandlerGetAvailableModels_CopilotCanonicalizesStyleAliases(t *testing.T) {
+	svc := &availableModelsAdminService{
+		stubAdminService: newStubAdminService(),
+		account: service.Account{
+			ID:       44,
+			Name:     "copilot",
+			Platform: service.PlatformCopilot,
+			Type:     service.AccountTypeOAuth,
+			Status:   service.StatusActive,
+			Extra: map[string]any{
+				"available_models": []any{"claude-sonnet-4-6", "claude-sonnet-4.6"},
+			},
+		},
+	}
+	router := setupAvailableModelsRouter(svc)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/44/models", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp.Data, 1)
+	require.Equal(t, "claude-sonnet-4.6", resp.Data[0].ID)
+}
+
+func TestAccountHandlerGetAvailableModels_KiroUsesCanonicalPublicNames(t *testing.T) {
+	svc := &availableModelsAdminService{
+		stubAdminService: newStubAdminService(),
+		account: service.Account{
+			ID:       45,
+			Name:     "kiro",
+			Platform: service.PlatformKiro,
+			Type:     service.AccountTypeOAuth,
+			Status:   service.StatusActive,
+			Extra: map[string]any{
+				"available_models": []any{"claude-sonnet-4-6"},
+			},
+		},
+	}
+	router := setupAvailableModelsRouter(svc)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/45/models", nil)
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp.Data, 1)
+	require.Equal(t, "claude-sonnet-4.6", resp.Data[0].ID)
 }

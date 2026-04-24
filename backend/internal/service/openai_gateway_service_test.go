@@ -235,6 +235,22 @@ func TestSupportsOpenAIGatewayRequestedModel_CopilotUsesAvailableModels(t *testi
 	require.False(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4.6"))
 }
 
+func TestSupportsOpenAIGatewayRequestedModel_CopilotMatchesClaudeStyleAliases(t *testing.T) {
+	account := &Account{
+		Platform:    PlatformCopilot,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra: map[string]any{
+			"available_models": []any{"claude-sonnet-4-6"},
+		},
+	}
+
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4.6"))
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4-6"))
+	require.False(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4.5"))
+}
+
 func TestSupportsOpenAIGatewayRequestedModel_OpenAIOAuthRejectsClaudeFamily(t *testing.T) {
 	account := &Account{
 		Platform:    PlatformOpenAI,
@@ -272,6 +288,21 @@ func TestSupportsOpenAIGatewayRequestedModel_KiroUsesClaudeFamily(t *testing.T) 
 
 	require.True(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4-6"))
 	require.False(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.4"))
+}
+
+func TestSupportsOpenAIGatewayRequestedModel_KiroMatchesClaudeStyleAliases(t *testing.T) {
+	account := &Account{
+		Platform:    PlatformKiro,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra: map[string]any{
+			"available_models": []any{"claude-sonnet-4-6"},
+		},
+	}
+
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4.6"))
+	require.False(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4.5"))
 }
 
 func TestOpenAIGatewayService_GenerateSessionHashWithFallback(t *testing.T) {

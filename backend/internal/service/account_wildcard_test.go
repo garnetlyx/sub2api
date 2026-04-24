@@ -197,6 +197,28 @@ func TestAccountIsModelSupported(t *testing.T) {
 			expected:       true,
 		},
 		{
+			name:     "claude dotted alias matches hyphen mapping",
+			platform: PlatformKiro,
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"claude-sonnet-4-6": "claude-sonnet-4-6",
+				},
+			},
+			requestedModel: "claude-sonnet-4.6",
+			expected:       true,
+		},
+		{
+			name:     "claude style alias does not cross versions",
+			platform: PlatformKiro,
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"claude-sonnet-4-6": "claude-sonnet-4-6",
+				},
+			},
+			requestedModel: "claude-sonnet-4.5",
+			expected:       false,
+		},
+		{
 			name: "wildcard match not supported",
 			credentials: map[string]any{
 				"model_mapping": map[string]any{
@@ -406,6 +428,42 @@ func TestAccountResolveMappedModel(t *testing.T) {
 			requestedModel: "anthropic/GLM-5.1",
 			expectedModel:  "openai/GLM-5.1",
 			expectedMatch:  true,
+		},
+		{
+			name:     "claude dotted alias resolves to kiro hyphen upstream id",
+			platform: PlatformKiro,
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"claude-sonnet-4-6": "claude-sonnet-4-6",
+				},
+			},
+			requestedModel: "claude-sonnet-4.6",
+			expectedModel:  "claude-sonnet-4-6",
+			expectedMatch:  true,
+		},
+		{
+			name:     "claude thinking alias resolves to hyphen upstream id",
+			platform: PlatformAnthropic,
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"claude-opus-4-6-thinking": "claude-opus-4-6-thinking",
+				},
+			},
+			requestedModel: "claude-opus-4.6-thinking",
+			expectedModel:  "claude-opus-4-6-thinking",
+			expectedMatch:  true,
+		},
+		{
+			name:     "dated claude ids are not style-normalized",
+			platform: PlatformKiro,
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"claude-haiku-4-5-20251001": "claude-haiku-4-5-20251001",
+				},
+			},
+			requestedModel: "claude-haiku-4.5",
+			expectedModel:  "claude-haiku-4.5",
+			expectedMatch:  false,
 		},
 		{
 			name: "missing mapping reports unmatched",

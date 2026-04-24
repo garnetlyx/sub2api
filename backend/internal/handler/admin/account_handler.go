@@ -1796,13 +1796,13 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	if account.IsOpenAI() {
 		// OpenAI 自动透传会绕过常规模型改写，测试/模型列表也应回落到默认模型集。
 		if account.IsOpenAIPassthroughEnabled() {
-			response.Success(c, openai.DefaultModels)
+			response.Success(c, canonicalizeOpenAIModels(openai.DefaultModels))
 			return
 		}
 
 		mapping := account.GetModelMapping()
 		if len(mapping) == 0 {
-			response.Success(c, openai.DefaultModels)
+			response.Success(c, canonicalizeOpenAIModels(openai.DefaultModels))
 			return
 		}
 
@@ -1826,7 +1826,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 				})
 			}
 		}
-		response.Success(c, models)
+		response.Success(c, canonicalizeOpenAIModels(models))
 		return
 	}
 
@@ -1847,7 +1847,27 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 				DisplayName: modelID,
 			})
 		}
-		response.Success(c, models)
+		response.Success(c, canonicalizeOpenAIModels(models))
+		return
+	}
+
+	if account.IsKiro() {
+		modelIDs := account.GetCopilotAvailableModels()
+		if len(modelIDs) == 0 {
+			mapping := account.GetModelMapping()
+			for requestedModel := range mapping {
+				modelIDs = append(modelIDs, requestedModel)
+			}
+		}
+		models := make([]claude.Model, 0, len(modelIDs))
+		for _, modelID := range canonicalizeModelIDs(modelIDs) {
+			models = append(models, claude.Model{
+				ID:          modelID,
+				Type:        "model",
+				DisplayName: modelID,
+			})
+		}
+		response.Success(c, canonicalizeClaudeModels(models))
 		return
 	}
 
@@ -1855,14 +1875,14 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	if account.IsGemini() {
 		// For OAuth accounts: return default Gemini models
 		if account.IsOAuth() {
-			response.Success(c, geminicli.DefaultModels)
+			response.Success(c, canonicalizeGeminiModels(geminicli.DefaultModels))
 			return
 		}
 
 		// For API Key accounts: return models based on model_mapping
 		mapping := account.GetModelMapping()
 		if len(mapping) == 0 {
-			response.Success(c, geminicli.DefaultModels)
+			response.Success(c, canonicalizeGeminiModels(geminicli.DefaultModels))
 			return
 		}
 
@@ -1885,21 +1905,21 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 				})
 			}
 		}
-		response.Success(c, models)
+		response.Success(c, canonicalizeGeminiModels(models))
 		return
 	}
 
 	// Handle Antigravity accounts: return Claude + Gemini models
 	if account.Platform == service.PlatformAntigravity {
 		// 直接复用 antigravity.DefaultModels()，与 /v1/models 端点保持同步
-		response.Success(c, antigravity.DefaultModels())
+		response.Success(c, canonicalizeAntigravityModels(antigravity.DefaultModels()))
 		return
 	}
 
 	// Handle Claude/Anthropic accounts
 	// For OAuth and Setup-Token accounts: return default models
 	if account.IsOAuth() {
-		response.Success(c, claude.DefaultModels)
+		response.Success(c, canonicalizeClaudeModels(claude.DefaultModels))
 		return
 	}
 
@@ -1907,7 +1927,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	mapping := account.GetModelMapping()
 	if len(mapping) == 0 {
 		// No mapping configured, return default models
-		response.Success(c, claude.DefaultModels)
+		response.Success(c, canonicalizeClaudeModels(claude.DefaultModels))
 		return
 	}
 
@@ -1934,7 +1954,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		}
 	}
 
-	response.Success(c, models)
+	response.Success(c, canonicalizeClaudeModels(models))
 }
 
 // SetPrivacy handles setting privacy for a single OpenAI/Antigravity OAuth account

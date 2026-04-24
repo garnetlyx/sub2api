@@ -1882,17 +1882,15 @@ func supportsOpenAIGatewayRequestedModel(account *Account, requestedModel string
 		case account.IsCopilot():
 			available := account.GetCopilotAvailableModels()
 			if len(available) > 0 {
-				for _, model := range available {
-					if strings.EqualFold(strings.TrimSpace(model), strings.TrimSpace(requestedModel)) {
-						return true
-					}
-				}
-				return false
+				return modelListContainsRequestedModel(available, requestedModel)
 			}
 			if !looksLikeOpenAIModel(requestedModel) && !looksLikeAnthropicModel(requestedModel) {
 				return false
 			}
 		case account.IsKiro():
+			if available := account.GetCopilotAvailableModels(); len(available) > 0 {
+				return modelListContainsRequestedModel(available, requestedModel)
+			}
 			if !looksLikeAnthropicModel(requestedModel) {
 				return false
 			}
@@ -2249,14 +2247,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
-	// Copilot (direct or via LiteLLM model routing) doesn't support built-in tools like image_generation.
-	if account.IsCopilot() || strings.Contains(strings.ToLower(upstreamModel), "copilot") {
-		if stripped := stripUnsupportedToolsForCopilotMap(reqBody); stripped {
-			bodyModified = true
-			disablePatch()
-		}
-	}
-
 	// Handle max_output_tokens based on platform and account type
 	if !isCodexCLI {
 		if maxOutputTokens, hasMaxOutputTokens := reqBody["max_output_tokens"]; hasMaxOutputTokens {
@@ -2570,6 +2560,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	httpInvalidEncryptedContentRetryTried := false
+	httpUnsupportedToolRetryTried := false
 	for {
 		// Build upstream request
 		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
@@ -2619,6 +2610,20 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 			upstreamCode := extractUpstreamErrorCode(respBody)
+			if !httpUnsupportedToolRetryTried && resp.StatusCode == http.StatusBadRequest {
+				if rejectedTool := extractUnsupportedBuiltinTool(respBody); rejectedTool != "" {
+					if stripUnsupportedBuiltinToolFromMap(reqBody, rejectedTool) {
+						body, err = json.Marshal(reqBody)
+						if err != nil {
+							return nil, fmt.Errorf("serialize unsupported tool retry body: %w", err)
+						}
+						setOpsUpstreamRequestBody(c, body)
+						httpUnsupportedToolRetryTried = true
+						logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Retrying non-WSv2 request once after unsupported tool %q (account: %s)", rejectedTool, account.Name)
+						continue
+					}
+				}
+			}
 			if !httpInvalidEncryptedContentRetryTried && resp.StatusCode == http.StatusBadRequest && upstreamCode == "invalid_encrypted_content" {
 				if trimOpenAIEncryptedReasoningItems(reqBody) {
 					body, err = json.Marshal(reqBody)
@@ -2761,16 +2766,6 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		body = sanitizedBody
 	}
 
-	if account != nil && account.IsCopilot() {
-		strippedBody, stripped, stripErr := stripUnsupportedToolsForCopilot(body)
-		if stripErr != nil {
-			return nil, stripErr
-		}
-		if stripped {
-			body = strippedBody
-		}
-	}
-
 	logger.LegacyPrintf("service.openai_gateway",
 		"[OpenAI 自动透传] 命中自动透传分支: account=%d name=%s type=%s model=%s stream=%v",
 		account.ID,
@@ -2843,6 +2838,20 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
+		retryTried, _ := c.Get("openai_passthrough_unsupported_tool_retry_tried")
+		if resp.StatusCode == http.StatusBadRequest && retryTried != true {
+			if rejectedTool := extractUnsupportedBuiltinToolFromRequestError(body, resp); rejectedTool != "" {
+				retriedBody, stripped, stripErr := stripUnsupportedBuiltinTool(body, rejectedTool)
+				if stripErr != nil {
+					return nil, stripErr
+				}
+				if stripped {
+					c.Set("openai_passthrough_unsupported_tool_retry_tried", true)
+					logger.LegacyPrintf("service.openai_gateway", "[OpenAI passthrough] Retrying once after unsupported tool %q (account: %s)", rejectedTool, account.Name)
+					return s.forwardOpenAIPassthrough(ctx, c, account, retriedBody, reqModel, reasoningEffort, reqStream, startTime)
+				}
+			}
+		}
 		// 透传模式默认保持原样代理；但 429/529 属于网关必须兜底的
 		// 上游容量类错误，应先触发多账号 failover 以维持基础 SLA。
 		if shouldFailoverOpenAIPassthroughResponse(resp.StatusCode) {
@@ -5530,17 +5539,51 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 	}
 }
 
-// copilotUnsupportedBuiltinTools lists Responses API built-in tools that Copilot's
-// upstream rejects with 400 "unsupported". Strip them before forwarding.
-var copilotUnsupportedBuiltinTools = map[string]bool{
+// openAIUnsupportedBuiltinTools lists built-in Responses tools that some
+// upstream OpenAI-compatible providers reject with error.param="tools".
+var openAIUnsupportedBuiltinTools = map[string]bool{
 	"image_generation":   true,
 	"code_interpreter":   true,
 	"web_search_preview": true,
 }
 
-// stripUnsupportedToolsForCopilotMap removes unsupported built-in tools from an
-// already-parsed request body map. Returns true if anything was removed.
-func stripUnsupportedToolsForCopilotMap(reqBody map[string]any) bool {
+func extractUnsupportedBuiltinTool(upstreamBody []byte) string {
+	if extractUpstreamErrorCode(upstreamBody) != "unsupported_value" {
+		return ""
+	}
+	if strings.TrimSpace(gjson.GetBytes(upstreamBody, "error.param").String()) != "tools" {
+		return ""
+	}
+
+	message := strings.ToLower(sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(upstreamBody))))
+	if message == "" {
+		return ""
+	}
+
+	for toolType := range openAIUnsupportedBuiltinTools {
+		if strings.Contains(message, strings.ToLower(toolType)) {
+			return toolType
+		}
+	}
+	return ""
+}
+
+func extractUnsupportedBuiltinToolFromRequestError(requestBody []byte, resp *http.Response) string {
+	if resp == nil || resp.Body == nil {
+		return ""
+	}
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(respBody))
+	return extractUnsupportedBuiltinTool(respBody)
+}
+
+// stripUnsupportedBuiltinToolFromMap removes the specific rejected built-in tool
+// from an already-parsed request body map. Returns true if anything was removed.
+func stripUnsupportedBuiltinToolFromMap(reqBody map[string]any, rejectedTool string) bool {
+	if !openAIUnsupportedBuiltinTools[rejectedTool] {
+		return false
+	}
 	rawTools, ok := reqBody["tools"]
 	if !ok {
 		return false
@@ -5557,7 +5600,7 @@ func stripUnsupportedToolsForCopilotMap(reqBody map[string]any) bool {
 			continue
 		}
 		toolType, _ := toolMap["type"].(string)
-		if !copilotUnsupportedBuiltinTools[toolType] {
+		if toolType != rejectedTool {
 			filtered = append(filtered, t)
 		}
 	}
@@ -5572,48 +5615,25 @@ func stripUnsupportedToolsForCopilotMap(reqBody map[string]any) bool {
 	return true
 }
 
-// stripUnsupportedToolsForCopilot removes built-in tools that Copilot doesn't
-// support from the request body. Returns the (possibly modified) body and whether
-// it was changed.
-func stripUnsupportedToolsForCopilot(body []byte) ([]byte, bool, error) {
+// stripUnsupportedBuiltinTool removes the specific rejected built-in tool from
+// the request body. Returns the updated body and whether it changed.
+func stripUnsupportedBuiltinTool(body []byte, rejectedTool string) ([]byte, bool, error) {
+	if !openAIUnsupportedBuiltinTools[rejectedTool] {
+		return body, false, nil
+	}
 	if !bytes.Contains(body, []byte(`"tools"`)) {
 		return body, false, nil
 	}
 	var req map[string]any
 	if err := json.Unmarshal(body, &req); err != nil {
-		return body, false, fmt.Errorf("strip copilot tools: %w", err)
+		return body, false, fmt.Errorf("strip unsupported tool: %w", err)
 	}
-	rawTools, ok := req["tools"]
-	if !ok {
+	if !stripUnsupportedBuiltinToolFromMap(req, rejectedTool) {
 		return body, false, nil
-	}
-	tools, ok := rawTools.([]any)
-	if !ok || len(tools) == 0 {
-		return body, false, nil
-	}
-	filtered := tools[:0]
-	for _, t := range tools {
-		toolMap, ok := t.(map[string]any)
-		if !ok {
-			filtered = append(filtered, t)
-			continue
-		}
-		toolType, _ := toolMap["type"].(string)
-		if !copilotUnsupportedBuiltinTools[toolType] {
-			filtered = append(filtered, t)
-		}
-	}
-	if len(filtered) == len(tools) {
-		return body, false, nil
-	}
-	if len(filtered) == 0 {
-		delete(req, "tools")
-	} else {
-		req["tools"] = filtered
 	}
 	out, err := json.Marshal(req)
 	if err != nil {
-		return body, false, fmt.Errorf("serialize stripped tools body: %w", err)
+		return body, false, fmt.Errorf("serialize stripped unsupported tool body: %w", err)
 	}
 	return out, true, nil
 }

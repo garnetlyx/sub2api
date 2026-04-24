@@ -8867,58 +8867,78 @@ func (s *GatewayService) HasSchedulableModelSupportOnPlatform(ctx context.Contex
 }
 
 func (s *GatewayService) addAvailableModelsForAccount(modelSet map[string]struct{}, acc Account) bool {
+	addModel := func(model string) {
+		canonical := CanonicalizePublicModel(model)
+		if canonical == "" {
+			return
+		}
+		modelSet[canonical] = struct{}{}
+	}
+
 	switch {
 	case acc.IsOpenAI():
 		mapping := acc.GetModelMapping()
 		if acc.IsOpenAIPassthroughEnabled() || len(mapping) == 0 {
 			for _, model := range openai.DefaultModels {
-				modelSet[model.ID] = struct{}{}
+				addModel(model.ID)
 			}
 			return true
 		}
 		for model := range mapping {
-			modelSet[model] = struct{}{}
+			addModel(model)
 		}
 		return true
 	case acc.IsCopilot():
 		mapping := acc.GetModelMapping()
 		if len(mapping) > 0 {
 			for model := range mapping {
-				modelSet[model] = struct{}{}
+				addModel(model)
 			}
 			return true
 		}
 		for _, model := range acc.GetCopilotAvailableModels() {
-			modelSet[model] = struct{}{}
+			addModel(model)
+		}
+		return len(acc.GetCopilotAvailableModels()) > 0
+	case acc.IsKiro():
+		mapping := acc.GetModelMapping()
+		if len(mapping) > 0 {
+			for model := range mapping {
+				addModel(model)
+			}
+			return true
+		}
+		for _, model := range acc.GetCopilotAvailableModels() {
+			addModel(model)
 		}
 		return len(acc.GetCopilotAvailableModels()) > 0
 	case acc.IsGemini():
 		mapping := acc.GetModelMapping()
 		if acc.IsOAuth() || len(mapping) == 0 {
 			for _, model := range geminicli.DefaultModels {
-				modelSet[model.ID] = struct{}{}
+				addModel(model.ID)
 			}
 			return true
 		}
 		for model := range mapping {
-			modelSet[model] = struct{}{}
+			addModel(model)
 		}
 		return true
 	case acc.Platform == PlatformAntigravity:
 		for _, model := range antigravity.DefaultModels() {
-			modelSet[model.ID] = struct{}{}
+			addModel(model.ID)
 		}
 		return true
 	default:
 		mapping := acc.GetModelMapping()
 		if acc.IsOAuth() || len(mapping) == 0 {
 			for _, model := range claude.DefaultModels {
-				modelSet[model.ID] = struct{}{}
+				addModel(model.ID)
 			}
 			return true
 		}
 		for model := range mapping {
-			modelSet[model] = struct{}{}
+			addModel(model)
 		}
 		return true
 	}

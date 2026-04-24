@@ -580,6 +580,41 @@ func TestGetAvailableModels_ErrorAndGlobalListBranches(t *testing.T) {
 	require.Equal(t, int64(1), okRepo.listAllCalls.Load())
 }
 
+func TestGetAvailableModels_CanonicalizesStyleAliasesAcrossProviders(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	groupID := int64(77)
+	repo := &modelsListAccountRepoStub{
+		byGroup: map[int64][]Account{
+			groupID: {
+				{
+					ID:       1,
+					Platform: PlatformCopilot,
+					Extra: map[string]any{
+						"available_models": []any{"claude-sonnet-4.6", "gpt-5.4"},
+					},
+				},
+				{
+					ID:       2,
+					Platform: PlatformKiro,
+					Extra: map[string]any{
+						"available_models": []any{"claude-sonnet-4-6"},
+					},
+				},
+			},
+		},
+	}
+
+	svc := &GatewayService{
+		accountRepo:        repo,
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+	}
+
+	models := svc.GetAvailableModels(context.Background(), &groupID, "")
+	require.Equal(t, []string{"claude-sonnet-4.6", "gpt-5.4"}, models)
+}
+
 func TestGatewayHotpathHelpers_CacheTTLAndStickyContext(t *testing.T) {
 	t.Run("resolve_user_group_rate_cache_ttl", func(t *testing.T) {
 		require.Equal(t, defaultUserGroupRateCacheTTL, resolveUserGroupRateCacheTTL(nil))
