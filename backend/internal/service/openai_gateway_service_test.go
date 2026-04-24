@@ -405,8 +405,9 @@ func (c stubConcurrencyCache) GetAccountWaitingCount(ctx context.Context, accoun
 }
 
 type stubGatewayCache struct {
-	sessionBindings map[string]int64
-	deletedSessions map[string]int
+	sessionBindings        map[string]int64
+	deletedSessions        map[string]int
+	compatibilityExclusion map[string]map[string]time.Time
 }
 
 func (c *stubGatewayCache) GetSessionAccountID(ctx context.Context, groupID int64, sessionHash string) (int64, error) {
@@ -437,6 +438,28 @@ func (c *stubGatewayCache) DeleteSessionAccountID(ctx context.Context, groupID i
 	}
 	c.deletedSessions[sessionHash]++
 	delete(c.sessionBindings, sessionHash)
+	return nil
+}
+
+func (c *stubGatewayCache) GetCompatibilityExcludedPlatforms(ctx context.Context, groupID int64, scopeKey string) (map[string]time.Time, error) {
+	if c.compatibilityExclusion == nil || len(c.compatibilityExclusion[scopeKey]) == 0 {
+		return map[string]time.Time{}, nil
+	}
+	out := make(map[string]time.Time, len(c.compatibilityExclusion[scopeKey]))
+	for platform, ts := range c.compatibilityExclusion[scopeKey] {
+		out[platform] = ts
+	}
+	return out, nil
+}
+
+func (c *stubGatewayCache) SetCompatibilityExcludedPlatform(ctx context.Context, groupID int64, scopeKey string, platform string, observedAt time.Time, ttl time.Duration) error {
+	if c.compatibilityExclusion == nil {
+		c.compatibilityExclusion = make(map[string]map[string]time.Time)
+	}
+	if c.compatibilityExclusion[scopeKey] == nil {
+		c.compatibilityExclusion[scopeKey] = make(map[string]time.Time)
+	}
+	c.compatibilityExclusion[scopeKey][platform] = observedAt
 	return nil
 }
 
@@ -483,6 +506,35 @@ func TestOpenAISelectAccountWithLoadAwareness_FiltersUnschedulable(t *testing.T)
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
 	}
+}
+
+func TestBuildOpenAICompatibilityScopeKey_IgnoresPromptTextButKeepsShape(t *testing.T) {
+	svc := &OpenAIGatewayService{}
+
+	left := svc.BuildOpenAICompatibilityScopeKey("responses", "gpt-5.4", []byte(`{"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}],"service_tier":"fast"}`))
+	right := svc.BuildOpenAICompatibilityScopeKey("responses", "gpt-5.4", []byte(`{"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"different text"}]}],"service_tier":"fast"}`))
+	withTool := svc.BuildOpenAICompatibilityScopeKey("responses", "gpt-5.4", []byte(`{"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}],"tools":[{"type":"image_generation"}],"service_tier":"fast"}`))
+
+	require.Equal(t, left, right, "prompt text should not change compatibility scope")
+	require.NotEqual(t, left, withTool, "request shape changes should produce a different compatibility scope")
+}
+
+func TestOpenAIGatewayService_CompatibilityExclusionCacheRoundTrip(t *testing.T) {
+	cache := &stubGatewayCache{}
+	svc := &OpenAIGatewayService{cache: cache}
+	groupID := int64(9)
+	scopeKey := svc.BuildOpenAICompatibilityScopeKey("chat_completions", "claude-sonnet-4-6", []byte(`{"model":"claude-sonnet-4.6","messages":[{"role":"user","content":"hi"}]}`))
+	failoverErr := &UpstreamFailoverError{
+		Reason:                UpstreamFailoverReasonCompatibilityMismatch,
+		CompatibilityCategory: "unsupported_parameter",
+	}
+
+	require.NoError(t, svc.RememberCompatibilityExclusion(context.Background(), &groupID, scopeKey, "CoPiLoT", failoverErr))
+
+	cached, err := svc.LoadCompatibilityExcludedPlatforms(context.Background(), &groupID, scopeKey)
+	require.NoError(t, err)
+	require.Contains(t, cached, PlatformCopilot)
+	require.Len(t, cached, 1)
 }
 
 func TestOpenAISelectAccountWithLoadAwareness_FiltersUnschedulableWhenNoConcurrencyService(t *testing.T) {
@@ -2072,6 +2124,28 @@ func TestClassifyOpenAICompatibilityMismatch(t *testing.T) {
 		require.False(t, ok)
 		require.Empty(t, category)
 	})
+}
+
+func TestExtractUnsupportedOpenAIParameter(t *testing.T) {
+	param := extractUnsupportedOpenAIParameter([]byte(`{
+		"error":{"code":"unsupported_value","param":"service_tier","message":"service_tier is not supported"}
+	}`))
+	require.Equal(t, "service_tier", param)
+}
+
+func TestStripUnsupportedOpenAIParameterFromMap(t *testing.T) {
+	reqBody := map[string]any{
+		"model":        "gpt-5.4",
+		"service_tier": "fast",
+		"stream":       false,
+	}
+
+	changed := stripUnsupportedOpenAIParameterFromMap(reqBody, "service_tier")
+
+	require.True(t, changed)
+	_, exists := reqBody["service_tier"]
+	require.False(t, exists)
+	require.Equal(t, "gpt-5.4", reqBody["model"])
 }
 
 func TestBuildOpenAIUpstreamFailoverError_CompatibilityMismatchDisablesSameAccountRetry(t *testing.T) {

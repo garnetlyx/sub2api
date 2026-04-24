@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	RunModeStandard = "standard"
-	RunModeSimple   = "simple"
+	RunModeStandard                                = "standard"
+	RunModeSimple                                  = "simple"
+	DefaultGatewayCompatibilityExclusionTTLSeconds = 86400
 )
 
 // 使用量记录队列溢出策略
@@ -367,6 +368,9 @@ type GatewayConfig struct {
 
 	// 是否允许对部分 400 错误触发 failover（默认关闭以避免改变语义）
 	FailoverOn400 bool `mapstructure:"failover_on_400"`
+	// CompatibilityExclusionTTLSeconds: 兼容性失败 provider family 排除记录 TTL（秒）
+	// 用于 endpoint + canonical model + request shape 级别的短期排除缓存
+	CompatibilityExclusionTTLSeconds int `mapstructure:"compatibility_exclusion_ttl_seconds"`
 
 	// 账户切换最大次数（遇到上游错误时切换到其他账户的次数上限）
 	MaxAccountSwitches int `mapstructure:"max_account_switches"`
@@ -1266,6 +1270,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.log_upstream_error_body_max_bytes", 2048)
 	viper.SetDefault("gateway.inject_beta_for_apikey", false)
 	viper.SetDefault("gateway.failover_on_400", false)
+	viper.SetDefault("gateway.compatibility_exclusion_ttl_seconds", DefaultGatewayCompatibilityExclusionTTLSeconds)
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
 	viper.SetDefault("gateway.force_codex_cli", false)
@@ -1790,6 +1795,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.ConcurrencySlotTTLMinutes <= 0 {
 		return fmt.Errorf("gateway.concurrency_slot_ttl_minutes must be positive")
+	}
+	if c.Gateway.CompatibilityExclusionTTLSeconds <= 0 {
+		return fmt.Errorf("gateway.compatibility_exclusion_ttl_seconds must be positive")
 	}
 	if c.Gateway.StreamDataIntervalTimeout < 0 {
 		return fmt.Errorf("gateway.stream_data_interval_timeout must be non-negative")

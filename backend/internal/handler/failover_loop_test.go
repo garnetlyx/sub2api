@@ -51,6 +51,8 @@ func TestNewFailoverState(t *testing.T) {
 		require.Equal(t, 0, fs.SwitchCount)
 		require.NotNil(t, fs.FailedAccountIDs)
 		require.Empty(t, fs.FailedAccountIDs)
+		require.NotNil(t, fs.ExcludedPlatforms)
+		require.Empty(t, fs.ExcludedPlatforms)
 		require.NotNil(t, fs.SameAccountRetryCount)
 		require.Empty(t, fs.SameAccountRetryCount)
 		require.Nil(t, fs.LastFailoverErr)
@@ -138,9 +140,24 @@ func TestHandleFailoverError_BasicSwitch(t *testing.T) {
 		require.Equal(t, FailoverContinue, action)
 		require.Equal(t, 1, fs.SwitchCount)
 		require.Contains(t, fs.FailedAccountIDs, int64(100))
+		require.Empty(t, fs.ExcludedPlatforms)
 		require.Equal(t, err, fs.LastFailoverErr)
 		require.False(t, fs.ForceCacheBilling)
 		require.Empty(t, mock.calls, "不应调用 TempUnschedule")
+	})
+
+	t.Run("兼容性错误会排除当前provider family", func(t *testing.T) {
+		mock := &mockTempUnscheduler{}
+		fs := NewFailoverState(3, false)
+		err := newTestFailoverErr(400, false, false)
+		err.Reason = service.UpstreamFailoverReasonCompatibilityMismatch
+		err.CompatibilityCategory = "unsupported_parameter"
+
+		action := fs.HandleFailoverError(context.Background(), mock, 101, service.PlatformCopilot, err)
+
+		require.Equal(t, FailoverContinue, action)
+		require.Contains(t, fs.FailedAccountIDs, int64(101))
+		require.Contains(t, fs.ExcludedPlatforms, service.PlatformCopilot)
 	})
 
 	t.Run("非重试错误_Antigravity_第一次切换无延迟", func(t *testing.T) {

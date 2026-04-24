@@ -114,11 +114,16 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	currentChannelMapping := channelMapping
 	compatibilityFallbackUsed := false
 	var compatibilityFallbackSourceErr *service.UpstreamFailoverError
+	compatibilityScopeKey := h.gatewayService.BuildOpenAICompatibilityScopeKey("chat_completions", reqModel, body)
 	fs := NewFailoverState(h.maxAccountSwitches, false)
+	loadCompatibilityExcludedPlatforms(c.Request.Context(), reqLog, h.gatewayService, currentAPIKey.GroupID, compatibilityScopeKey, fs, "openai_chat_completions.compatibility_exclusion_cache_hit")
 
 	for {
 		c.Set("openai_chat_completions_fallback_model", "")
-		reqLog.Debug("openai_chat_completions.account_selecting", zap.Int("excluded_account_count", len(fs.FailedAccountIDs)))
+		reqLog.Debug("openai_chat_completions.account_selecting",
+			zap.Int("excluded_account_count", len(fs.FailedAccountIDs)),
+			zap.Int("excluded_platform_count", len(fs.ExcludedPlatforms)),
+		)
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
 			c.Request.Context(),
 			currentAPIKey.GroupID,
@@ -126,12 +131,14 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			sessionHash,
 			reqModel,
 			fs.FailedAccountIDs,
+			fs.ExcludedPlatforms,
 			service.OpenAIUpstreamTransportAny,
 		)
 		if err != nil {
 			reqLog.Warn("openai_chat_completions.account_select_failed",
 				zap.Error(err),
 				zap.Int("excluded_account_count", len(fs.FailedAccountIDs)),
+				zap.Int("excluded_platform_count", len(fs.ExcludedPlatforms)),
 			)
 			if len(fs.FailedAccountIDs) == 0 {
 				defaultModel := ""
@@ -149,6 +156,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 						sessionHash,
 						defaultModel,
 						fs.FailedAccountIDs,
+						fs.ExcludedPlatforms,
 						service.OpenAIUpstreamTransportAny,
 					)
 					if err == nil && selection != nil {
@@ -232,6 +240,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
+				recordCompatibilityExclusion(c.Request.Context(), reqLog, h.gatewayService, currentAPIKey.GroupID, compatibilityScopeKey, account.Platform, failoverErr, "openai_chat_completions.compatibility_exclusion_cache_store_failed")
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 				fallbackAPIKey, fallbackChannelMapping, switched, fallbackErr := tryCompatibilityFallbackGroup(
 					c.Request.Context(),
@@ -256,6 +265,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 					compatibilityFallbackUsed = true
 					compatibilityFallbackSourceErr = failoverErr
 					fs = NewFailoverState(h.maxAccountSwitches, false)
+					loadCompatibilityExcludedPlatforms(c.Request.Context(), reqLog, h.gatewayService, currentAPIKey.GroupID, compatibilityScopeKey, fs, "openai_chat_completions.compatibility_exclusion_cache_hit")
 					fs.SwitchCount = 1
 					fs.LastFailoverErr = failoverErr
 					h.gatewayService.RecordOpenAIAccountSwitch()

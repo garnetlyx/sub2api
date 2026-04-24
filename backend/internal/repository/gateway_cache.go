@@ -10,6 +10,7 @@ import (
 )
 
 const stickySessionPrefix = "sticky_session:"
+const compatibilityExclusionPrefix = "compatibility_exclusion:"
 
 type gatewayCache struct {
 	rdb *redis.Client
@@ -23,6 +24,10 @@ func NewGatewayCache(rdb *redis.Client) service.GatewayCache {
 // 格式: sticky_session:{groupID}:{sessionHash}
 func buildSessionKey(groupID int64, sessionHash string) string {
 	return fmt.Sprintf("%s%d:%s", stickySessionPrefix, groupID, sessionHash)
+}
+
+func buildCompatibilityExclusionKey(groupID int64, scopeKey string) string {
+	return fmt.Sprintf("%s%d:%s", compatibilityExclusionPrefix, groupID, scopeKey)
 }
 
 func (c *gatewayCache) GetSessionAccountID(ctx context.Context, groupID int64, sessionHash string) (int64, error) {
@@ -50,4 +55,34 @@ func (c *gatewayCache) RefreshSessionTTL(ctx context.Context, groupID int64, ses
 func (c *gatewayCache) DeleteSessionAccountID(ctx context.Context, groupID int64, sessionHash string) error {
 	key := buildSessionKey(groupID, sessionHash)
 	return c.rdb.Del(ctx, key).Err()
+}
+
+func (c *gatewayCache) GetCompatibilityExcludedPlatforms(ctx context.Context, groupID int64, scopeKey string) (map[string]time.Time, error) {
+	key := buildCompatibilityExclusionKey(groupID, scopeKey)
+	values, err := c.rdb.HGetAll(ctx, key).Result()
+	if err != nil {
+		return nil, err
+	}
+	if len(values) == 0 {
+		return map[string]time.Time{}, nil
+	}
+
+	result := make(map[string]time.Time, len(values))
+	for platform, raw := range values {
+		unixSeconds, parseErr := time.Parse(time.RFC3339Nano, raw)
+		if parseErr != nil {
+			continue
+		}
+		result[platform] = unixSeconds
+	}
+	return result, nil
+}
+
+func (c *gatewayCache) SetCompatibilityExcludedPlatform(ctx context.Context, groupID int64, scopeKey string, platform string, observedAt time.Time, ttl time.Duration) error {
+	key := buildCompatibilityExclusionKey(groupID, scopeKey)
+	pipe := c.rdb.TxPipeline()
+	pipe.HSet(ctx, key, platform, observedAt.UTC().Format(time.RFC3339Nano))
+	pipe.Expire(ctx, key, ttl)
+	_, err := pipe.Exec(ctx)
+	return err
 }

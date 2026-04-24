@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // stubSmartRetryCache 用于 handleSmartRetry 测试的 GatewayCache mock
@@ -27,6 +28,14 @@ type deleteSessionCall struct {
 
 func (c *stubSmartRetryCache) DeleteSessionAccountID(_ context.Context, groupID int64, sessionHash string) error {
 	c.deleteCalls = append(c.deleteCalls, deleteSessionCall{groupID: groupID, sessionHash: sessionHash})
+	return nil
+}
+
+func (c *stubSmartRetryCache) GetCompatibilityExcludedPlatforms(_ context.Context, _ int64, _ string) (map[string]time.Time, error) {
+	return map[string]time.Time{}, nil
+}
+
+func (c *stubSmartRetryCache) SetCompatibilityExcludedPlatform(_ context.Context, _ int64, _ string, _ string, _ time.Time, _ time.Duration) error {
 	return nil
 }
 

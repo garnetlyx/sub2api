@@ -288,6 +288,14 @@ func (m *mockGatewayCacheForGemini) DeleteSessionAccountID(ctx context.Context, 
 	return nil
 }
 
+func (m *mockGatewayCacheForGemini) GetCompatibilityExcludedPlatforms(ctx context.Context, groupID int64, scopeKey string) (map[string]time.Time, error) {
+	return map[string]time.Time{}, nil
+}
+
+func (m *mockGatewayCacheForGemini) SetCompatibilityExcludedPlatform(ctx context.Context, groupID int64, scopeKey string, platform string, observedAt time.Time, ttl time.Duration) error {
+	return nil
+}
+
 // TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_GeminiPlatform 测试 Gemini 单平台选择
 func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_GeminiPlatform(t *testing.T) {
 	ctx := context.Background()

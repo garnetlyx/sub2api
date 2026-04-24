@@ -329,6 +329,9 @@ gateway:
   # Allow failover on selected 400 errors (default: off)
   # 允许在特定 400 错误时进行故障转移（默认：关闭）
   failover_on_400: false
+  # Compatibility exclusion cache TTL (seconds)
+  # 兼容性排除缓存 TTL（秒）；按 endpoint + canonical model + request shape 记住最近不兼容的 provider family
+  compatibility_exclusion_ttl_seconds: 86400
   # Scheduling configuration
   # 调度配置
   scheduling:

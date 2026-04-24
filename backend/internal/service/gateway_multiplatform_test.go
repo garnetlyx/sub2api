@@ -200,8 +200,9 @@ var _ AccountRepository = (*mockAccountRepoForPlatform)(nil)
 
 // mockGatewayCacheForPlatform 单平台测试用的 cache mock
 type mockGatewayCacheForPlatform struct {
-	sessionBindings map[string]int64
-	deletedSessions map[string]int
+	sessionBindings        map[string]int64
+	deletedSessions        map[string]int
+	compatibilityExclusion map[string]map[string]time.Time
 }
 
 func (m *mockGatewayCacheForPlatform) GetSessionAccountID(ctx context.Context, groupID int64, sessionHash string) (int64, error) {
@@ -232,6 +233,28 @@ func (m *mockGatewayCacheForPlatform) DeleteSessionAccountID(ctx context.Context
 	}
 	m.deletedSessions[sessionHash]++
 	delete(m.sessionBindings, sessionHash)
+	return nil
+}
+
+func (m *mockGatewayCacheForPlatform) GetCompatibilityExcludedPlatforms(ctx context.Context, groupID int64, scopeKey string) (map[string]time.Time, error) {
+	if m.compatibilityExclusion == nil || len(m.compatibilityExclusion[scopeKey]) == 0 {
+		return map[string]time.Time{}, nil
+	}
+	out := make(map[string]time.Time, len(m.compatibilityExclusion[scopeKey]))
+	for platform, ts := range m.compatibilityExclusion[scopeKey] {
+		out[platform] = ts
+	}
+	return out, nil
+}
+
+func (m *mockGatewayCacheForPlatform) SetCompatibilityExcludedPlatform(ctx context.Context, groupID int64, scopeKey string, platform string, observedAt time.Time, ttl time.Duration) error {
+	if m.compatibilityExclusion == nil {
+		m.compatibilityExclusion = make(map[string]map[string]time.Time)
+	}
+	if m.compatibilityExclusion[scopeKey] == nil {
+		m.compatibilityExclusion[scopeKey] = make(map[string]time.Time)
+	}
+	m.compatibilityExclusion[scopeKey][platform] = observedAt
 	return nil
 }
 

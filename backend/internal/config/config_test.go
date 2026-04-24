@@ -158,6 +158,19 @@ func TestLoadDefaultOpenAIWSConfig(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultGatewayCompatibilityExclusionConfig(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.Gateway.CompatibilityExclusionTTLSeconds != DefaultGatewayCompatibilityExclusionTTLSeconds {
+		t.Fatalf("Gateway.CompatibilityExclusionTTLSeconds = %d, want %d", cfg.Gateway.CompatibilityExclusionTTLSeconds, DefaultGatewayCompatibilityExclusionTTLSeconds)
+	}
+}
+
 func TestLoadOpenAIWSStickyTTLCompatibility(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("GATEWAY_OPENAI_WS_STICKY_RESPONSE_ID_TTL_SECONDS", "0")
@@ -1120,6 +1133,11 @@ func TestValidateConfigErrors(t *testing.T) {
 			name:    "gateway openai ws apikey max conns factor",
 			mutate:  func(c *Config) { c.Gateway.OpenAIWS.APIKeyMaxConnsFactor = 0 },
 			wantErr: "gateway.openai_ws.apikey_max_conns_factor",
+		},
+		{
+			name:    "gateway compatibility exclusion ttl",
+			mutate:  func(c *Config) { c.Gateway.CompatibilityExclusionTTLSeconds = 0 },
+			wantErr: "gateway.compatibility_exclusion_ttl_seconds",
 		},
 		{
 			name:    "gateway stream data interval range",

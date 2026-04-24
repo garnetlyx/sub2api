@@ -394,6 +394,10 @@ type GatewayCache interface {
 	// DeleteSessionAccountID 删除粘性会话绑定，用于账号不可用时主动清理
 	// Delete sticky session binding, used to proactively clean up when account becomes unavailable
 	DeleteSessionAccountID(ctx context.Context, groupID int64, sessionHash string) error
+	// GetCompatibilityExcludedPlatforms 返回仍在 TTL 内的 provider family 兼容性排除记录及其写入时间戳。
+	GetCompatibilityExcludedPlatforms(ctx context.Context, groupID int64, scopeKey string) (map[string]time.Time, error)
+	// SetCompatibilityExcludedPlatform 为指定 scope 写入一个 provider family 兼容性排除记录。
+	SetCompatibilityExcludedPlatform(ctx context.Context, groupID int64, scopeKey string, platform string, observedAt time.Time, ttl time.Duration) error
 }
 
 // derefGroupID safely dereferences *int64 to int64, returning 0 if nil

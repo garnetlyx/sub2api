@@ -193,6 +193,14 @@ func (c *openAIWSStateStoreTimeoutProbeCache) DeleteSessionAccountID(ctx context
 	return nil
 }
 
+func (c *openAIWSStateStoreTimeoutProbeCache) GetCompatibilityExcludedPlatforms(context.Context, int64, string) (map[string]time.Time, error) {
+	return map[string]time.Time{}, nil
+}
+
+func (c *openAIWSStateStoreTimeoutProbeCache) SetCompatibilityExcludedPlatform(context.Context, int64, string, string, time.Time, time.Duration) error {
+	return nil
+}
+
 func TestOpenAIWSStateStore_RedisOpsUseShortTimeout(t *testing.T) {
 	probe := &openAIWSStateStoreTimeoutProbeCache{}
 	store := NewOpenAIWSStateStore(probe)

@@ -104,6 +104,23 @@ func (s *GatewayCacheSuite) TestGetSessionAccountID_CorruptedValue() {
 	require.False(s.T(), errors.Is(err, redis.Nil), "expected parsing error, not redis.Nil")
 }
 
+func (s *GatewayCacheSuite) TestCompatibilityExclusionRoundTrip() {
+	groupID := int64(7)
+	scopeKey := "v1:responses:gpt-5.4:deadbeef"
+	now := time.Now().UTC().Truncate(time.Second)
+	ttl := 2 * time.Minute
+
+	require.NoError(s.T(), s.cache.SetCompatibilityExcludedPlatform(s.ctx, groupID, scopeKey, "copilot", now, ttl))
+
+	cached, err := s.cache.GetCompatibilityExcludedPlatforms(s.ctx, groupID, scopeKey)
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), now, cached["copilot"])
+
+	ttlResult, ttlErr := s.rdb.TTL(s.ctx, buildCompatibilityExclusionKey(groupID, scopeKey)).Result()
+	require.NoError(s.T(), ttlErr)
+	s.AssertTTLWithin(ttlResult, 1*time.Second, ttl)
+}
+
 func TestGatewayCacheSuite(t *testing.T) {
 	suite.Run(t, new(GatewayCacheSuite))
 }

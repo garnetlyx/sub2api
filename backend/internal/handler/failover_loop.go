@@ -3,6 +3,8 @@ package handler
 import (
 	"context"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -14,6 +16,14 @@ import (
 // GatewayService 隐式实现此接口。
 type TempUnscheduler interface {
 	TempUnscheduleRetryableError(ctx context.Context, accountID int64, failoverErr *service.UpstreamFailoverError)
+}
+
+type compatibilityExclusionLoader interface {
+	LoadCompatibilityExcludedPlatforms(ctx context.Context, groupID *int64, scopeKey string) (map[string]time.Time, error)
+}
+
+type compatibilityExclusionRecorder interface {
+	RememberCompatibilityExclusion(ctx context.Context, groupID *int64, scopeKey string, platform string, failoverErr *service.UpstreamFailoverError) error
 }
 
 // FailoverAction 表示 failover 错误处理后的下一步动作
@@ -44,6 +54,7 @@ type FailoverState struct {
 	SwitchCount           int
 	MaxSwitches           int
 	FailedAccountIDs      map[int64]struct{}
+	ExcludedPlatforms     map[string]struct{}
 	SameAccountRetryCount map[int64]int
 	LastFailoverErr       *service.UpstreamFailoverError
 	ForceCacheBilling     bool
@@ -55,6 +66,7 @@ func NewFailoverState(maxSwitches int, hasBoundSession bool) *FailoverState {
 	return &FailoverState{
 		MaxSwitches:           maxSwitches,
 		FailedAccountIDs:      make(map[int64]struct{}),
+		ExcludedPlatforms:     make(map[string]struct{}),
 		SameAccountRetryCount: make(map[int64]int),
 		hasBoundSession:       hasBoundSession,
 	}
@@ -98,6 +110,11 @@ func (s *FailoverState) HandleFailoverError(
 
 	// 加入失败列表
 	s.FailedAccountIDs[accountID] = struct{}{}
+	if failoverErr != nil && failoverErr.Reason == service.UpstreamFailoverReasonCompatibilityMismatch {
+		if normalizedPlatform := normalizeExcludedPlatform(platform); normalizedPlatform != "" {
+			s.ExcludedPlatforms[normalizedPlatform] = struct{}{}
+		}
+	}
 
 	// 检查是否耗尽
 	if s.SwitchCount >= s.MaxSwitches {
@@ -108,9 +125,11 @@ func (s *FailoverState) HandleFailoverError(
 	s.SwitchCount++
 	logger.FromContext(ctx).Warn("gateway.failover_switch_account",
 		zap.Int64("account_id", accountID),
+		zap.String("platform", platform),
 		zap.Int("upstream_status", failoverErr.StatusCode),
 		zap.Int("switch_count", s.SwitchCount),
 		zap.Int("max_switches", s.MaxSwitches),
+		zap.Int("excluded_platform_count", len(s.ExcludedPlatforms)),
 	)
 
 	// Antigravity 平台换号线性递增延时
@@ -149,9 +168,88 @@ func (s *FailoverState) HandleSelectionExhausted(ctx context.Context) FailoverAc
 			zap.Int("max_switches", s.MaxSwitches),
 		)
 		s.FailedAccountIDs = make(map[int64]struct{})
+		s.ExcludedPlatforms = make(map[string]struct{})
 		return FailoverContinue
 	}
 	return FailoverExhausted
+}
+
+func normalizeExcludedPlatform(platform string) string {
+	return strings.ToLower(strings.TrimSpace(platform))
+}
+
+func seedFailoverStateExcludedPlatforms(fs *FailoverState, cached map[string]time.Time) {
+	if fs == nil || len(cached) == 0 {
+		return
+	}
+	for platform := range cached {
+		if normalized := normalizeExcludedPlatform(platform); normalized != "" {
+			fs.ExcludedPlatforms[normalized] = struct{}{}
+		}
+	}
+}
+
+func loadCompatibilityExcludedPlatforms(
+	ctx context.Context,
+	reqLog *zap.Logger,
+	gatewayService compatibilityExclusionLoader,
+	groupID *int64,
+	scopeKey string,
+	fs *FailoverState,
+	logEvent string,
+) {
+	if gatewayService == nil || fs == nil || strings.TrimSpace(scopeKey) == "" {
+		return
+	}
+	cached, err := gatewayService.LoadCompatibilityExcludedPlatforms(ctx, groupID, scopeKey)
+	if err != nil {
+		if reqLog != nil {
+			reqLog.Warn(logEvent+"_load_failed", zap.Error(err))
+		}
+		return
+	}
+	if len(cached) == 0 {
+		return
+	}
+	seedFailoverStateExcludedPlatforms(fs, cached)
+	if reqLog != nil {
+		reqLog.Info(logEvent,
+			zap.Int("excluded_platform_count", len(cached)),
+			zap.Strings("platforms", compatibilityExcludedPlatformNames(cached)),
+		)
+	}
+}
+
+func recordCompatibilityExclusion(
+	ctx context.Context,
+	reqLog *zap.Logger,
+	gatewayService compatibilityExclusionRecorder,
+	groupID *int64,
+	scopeKey string,
+	platform string,
+	failoverErr *service.UpstreamFailoverError,
+	logEvent string,
+) {
+	if gatewayService == nil || failoverErr == nil || !failoverErr.IsCompatibilityMismatch() || strings.TrimSpace(scopeKey) == "" {
+		return
+	}
+	if err := gatewayService.RememberCompatibilityExclusion(ctx, groupID, scopeKey, platform, failoverErr); err != nil && reqLog != nil {
+		reqLog.Warn(logEvent, zap.Error(err), zap.String("platform", platform))
+	}
+}
+
+func compatibilityExcludedPlatformNames(cached map[string]time.Time) []string {
+	if len(cached) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(cached))
+	for platform := range cached {
+		if normalized := normalizeExcludedPlatform(platform); normalized != "" {
+			names = append(names, normalized)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // needForceCacheBilling 判断 failover 时是否需要强制缓存计费。

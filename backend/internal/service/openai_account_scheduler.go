@@ -1,8 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"container/heap"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -13,6 +17,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -29,6 +36,7 @@ type OpenAIAccountScheduleRequest struct {
 	RequestedModel     string
 	RequiredTransport  OpenAIUpstreamTransport
 	ExcludedIDs        map[int64]struct{}
+	ExcludedPlatforms  map[string]struct{}
 }
 
 type OpenAIAccountScheduleDecision struct {
@@ -246,6 +254,11 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			return nil, decision, err
 		}
 		if selection != nil && selection.Account != nil {
+			if isOpenAIPlatformExcluded(req.ExcludedPlatforms, selection.Account.Platform) {
+				selection = nil
+			}
+		}
+		if selection != nil && selection.Account != nil {
 			if !s.isAccountTransportCompatible(selection.Account, req.RequiredTransport) {
 				selection = nil
 			}
@@ -322,6 +335,9 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	}
 	if shouldClearStickySession(account, req.RequestedModel) || !account.UsesOpenAIGateway() || !account.IsSchedulable() {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+		return nil, nil
+	}
+	if isOpenAIPlatformExcluded(req.ExcludedPlatforms, account.Platform) {
 		return nil, nil
 	}
 	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
@@ -591,6 +607,9 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 				continue
 			}
 		}
+		if isOpenAIPlatformExcluded(req.ExcludedPlatforms, account.Platform) {
+			continue
+		}
 		if !account.IsSchedulable() || !account.UsesOpenAIGateway() {
 			continue
 		}
@@ -827,6 +846,7 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 	sessionHash string,
 	requestedModel string,
 	excludedIDs map[int64]struct{},
+	excludedPlatforms map[string]struct{},
 	requiredTransport OpenAIUpstreamTransport,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	decision := OpenAIAccountScheduleDecision{}
@@ -852,7 +872,16 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 		RequestedModel:     requestedModel,
 		RequiredTransport:  requiredTransport,
 		ExcludedIDs:        excludedIDs,
+		ExcludedPlatforms:  excludedPlatforms,
 	})
+}
+
+func isOpenAIPlatformExcluded(excludedPlatforms map[string]struct{}, platform string) bool {
+	if len(excludedPlatforms) == 0 {
+		return false
+	}
+	_, excluded := excludedPlatforms[strings.ToLower(strings.TrimSpace(platform))]
+	return excluded
 }
 
 func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(accountID int64, success bool, firstTokenMs *int) {
@@ -884,6 +913,153 @@ func (s *OpenAIGatewayService) openAIWSSessionStickyTTL() time.Duration {
 		return time.Duration(s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds) * time.Second
 	}
 	return openaiStickySessionTTL
+}
+
+func (s *OpenAIGatewayService) openAICompatibilityExclusionTTL() time.Duration {
+	if s != nil && s.cfg != nil && s.cfg.Gateway.CompatibilityExclusionTTLSeconds > 0 {
+		return time.Duration(s.cfg.Gateway.CompatibilityExclusionTTLSeconds) * time.Second
+	}
+	return time.Duration(config.DefaultGatewayCompatibilityExclusionTTLSeconds) * time.Second
+}
+
+func (s *OpenAIGatewayService) BuildOpenAICompatibilityScopeKey(endpointName string, requestedModel string, requestBody []byte) string {
+	endpointName = strings.ToLower(strings.TrimSpace(endpointName))
+	if endpointName == "" {
+		endpointName = "unknown"
+	}
+	model := strings.TrimSpace(requestedModel)
+	if model == "" {
+		model = gjson.GetBytes(requestBody, "model").String()
+	}
+	canonicalModel := CanonicalizePublicModel(model)
+	if canonicalModel == "" {
+		canonicalModel = "_"
+	}
+	return fmt.Sprintf("v1:%s:%s:%s", endpointName, canonicalModel, hashOpenAICompatibilityRequestShape(requestBody))
+}
+
+func (s *OpenAIGatewayService) LoadCompatibilityExcludedPlatforms(ctx context.Context, groupID *int64, scopeKey string) (map[string]time.Time, error) {
+	if s == nil || s.cache == nil || strings.TrimSpace(scopeKey) == "" {
+		return map[string]time.Time{}, nil
+	}
+	cached, err := s.cache.GetCompatibilityExcludedPlatforms(ctx, derefGroupID(groupID), scopeKey)
+	if err != nil {
+		return nil, err
+	}
+	if len(cached) == 0 {
+		return map[string]time.Time{}, nil
+	}
+	normalized := make(map[string]time.Time, len(cached))
+	for platform, observedAt := range cached {
+		normalizedPlatform := strings.ToLower(strings.TrimSpace(platform))
+		if normalizedPlatform == "" {
+			continue
+		}
+		normalized[normalizedPlatform] = observedAt
+	}
+	return normalized, nil
+}
+
+func (s *OpenAIGatewayService) RememberCompatibilityExclusion(ctx context.Context, groupID *int64, scopeKey string, platform string, failoverErr *UpstreamFailoverError) error {
+	if s == nil || s.cache == nil || failoverErr == nil || !failoverErr.IsCompatibilityMismatch() {
+		return nil
+	}
+	scopeKey = strings.TrimSpace(scopeKey)
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	if scopeKey == "" || platform == "" {
+		return nil
+	}
+	return s.cache.SetCompatibilityExcludedPlatform(
+		ctx,
+		derefGroupID(groupID),
+		scopeKey,
+		platform,
+		time.Now().UTC(),
+		s.openAICompatibilityExclusionTTL(),
+	)
+}
+
+func hashOpenAICompatibilityRequestShape(requestBody []byte) string {
+	trimmed := bytes.TrimSpace(requestBody)
+	if len(trimmed) == 0 {
+		return "empty"
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.UseNumber()
+	var payload any
+	if err := decoder.Decode(&payload); err != nil {
+		sum := sha256.Sum256(trimmed)
+		return "raw:" + hex.EncodeToString(sum[:8])
+	}
+
+	normalized, err := json.Marshal(normalizeOpenAICompatibilityShape("", payload))
+	if err != nil {
+		sum := sha256.Sum256(trimmed)
+		return "raw:" + hex.EncodeToString(sum[:8])
+	}
+
+	sum := sha256.Sum256(normalized)
+	return hex.EncodeToString(sum[:8])
+}
+
+func normalizeOpenAICompatibilityShape(key string, value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		if len(typed) == 0 {
+			return map[string]any{}
+		}
+		keys := make([]string, 0, len(typed))
+		for k := range typed {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		out := make(map[string]any, len(typed))
+		for _, childKey := range keys {
+			out[childKey] = normalizeOpenAICompatibilityShape(childKey, typed[childKey])
+		}
+		return out
+	case []any:
+		limit := len(typed)
+		if limit > 8 {
+			limit = 8
+		}
+		out := make([]any, 0, limit+1)
+		for i := 0; i < limit; i++ {
+			out = append(out, normalizeOpenAICompatibilityShape(key, typed[i]))
+		}
+		if len(typed) > limit {
+			out = append(out, "__truncated_array__")
+		}
+		return out
+	case string:
+		if shouldPreserveOpenAICompatibilityScalar(key) {
+			return strings.ToLower(strings.TrimSpace(typed))
+		}
+		return "__string__"
+	case json.Number:
+		return "__number__"
+	case bool:
+		if typed {
+			return "__bool_true__"
+		}
+		return "__bool_false__"
+	case nil:
+		return nil
+	case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return "__number__"
+	default:
+		return "__value__"
+	}
+}
+
+func shouldPreserveOpenAICompatibilityScalar(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "type", "role", "tool_choice", "modalities", "detail", "service_tier", "format":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *OpenAIGatewayService) openAIWSLBTopK() int {

@@ -257,11 +257,16 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	currentChannelMapping := channelMapping
 	compatibilityFallbackUsed := false
 	var compatibilityFallbackSourceErr *service.UpstreamFailoverError
+	compatibilityScopeKey := h.gatewayService.BuildOpenAICompatibilityScopeKey("responses", reqModel, body)
 	fs := NewFailoverState(h.maxAccountSwitches, false)
+	loadCompatibilityExcludedPlatforms(c.Request.Context(), reqLog, h.gatewayService, currentAPIKey.GroupID, compatibilityScopeKey, fs, "openai.compatibility_exclusion_cache_hit")
 
 	for {
 		// Select account supporting the requested model
-		reqLog.Debug("openai.account_selecting", zap.Int("excluded_account_count", len(fs.FailedAccountIDs)))
+		reqLog.Debug("openai.account_selecting",
+			zap.Int("excluded_account_count", len(fs.FailedAccountIDs)),
+			zap.Int("excluded_platform_count", len(fs.ExcludedPlatforms)),
+		)
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
 			c.Request.Context(),
 			currentAPIKey.GroupID,
@@ -269,12 +274,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			sessionHash,
 			reqModel,
 			fs.FailedAccountIDs,
+			fs.ExcludedPlatforms,
 			service.OpenAIUpstreamTransportAny,
 		)
 		if err != nil {
 			reqLog.Warn("openai.account_select_failed",
 				zap.Error(err),
 				zap.Int("excluded_account_count", len(fs.FailedAccountIDs)),
+				zap.Int("excluded_platform_count", len(fs.ExcludedPlatforms)),
 			)
 			if len(fs.FailedAccountIDs) == 0 {
 				if compatibilityFallbackSourceErr != nil {
@@ -369,6 +376,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
+				recordCompatibilityExclusion(c.Request.Context(), reqLog, h.gatewayService, currentAPIKey.GroupID, compatibilityScopeKey, account.Platform, failoverErr, "openai.compatibility_exclusion_cache_store_failed")
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 				fallbackAPIKey, fallbackChannelMapping, switched, fallbackErr := tryCompatibilityFallbackGroup(
 					c.Request.Context(),
@@ -393,6 +401,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					compatibilityFallbackUsed = true
 					compatibilityFallbackSourceErr = failoverErr
 					fs = NewFailoverState(h.maxAccountSwitches, false)
+					loadCompatibilityExcludedPlatforms(c.Request.Context(), reqLog, h.gatewayService, currentAPIKey.GroupID, compatibilityScopeKey, fs, "openai.compatibility_exclusion_cache_hit")
 					fs.SwitchCount = 1
 					fs.LastFailoverErr = failoverErr
 					h.gatewayService.RecordOpenAIAccountSwitch()
@@ -691,12 +700,17 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	currentChannelMappingMsg := channelMappingMsg
 	compatibilityFallbackUsed := false
 	var compatibilityFallbackSourceErr *service.UpstreamFailoverError
+	compatibilityScopeKey := h.gatewayService.BuildOpenAICompatibilityScopeKey("messages", routingModel, body)
 	fs := NewFailoverState(h.maxAccountSwitches, false)
+	loadCompatibilityExcludedPlatforms(c.Request.Context(), reqLog, h.gatewayService, currentAPIKey.GroupID, compatibilityScopeKey, fs, "openai_messages.compatibility_exclusion_cache_hit")
 
 	for {
 		// 清除上一次迭代的降级模型标记，避免残留影响本次迭代
 		c.Set("openai_messages_fallback_model", "")
-		reqLog.Debug("openai_messages.account_selecting", zap.Int("excluded_account_count", len(fs.FailedAccountIDs)))
+		reqLog.Debug("openai_messages.account_selecting",
+			zap.Int("excluded_account_count", len(fs.FailedAccountIDs)),
+			zap.Int("excluded_platform_count", len(fs.ExcludedPlatforms)),
+		)
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
 			c.Request.Context(),
 			currentAPIKey.GroupID,
@@ -704,12 +718,14 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			sessionHash,
 			routingModel,
 			fs.FailedAccountIDs,
+			fs.ExcludedPlatforms,
 			service.OpenAIUpstreamTransportAny,
 		)
 		if err != nil {
 			reqLog.Warn("openai_messages.account_select_failed",
 				zap.Error(err),
 				zap.Int("excluded_account_count", len(fs.FailedAccountIDs)),
+				zap.Int("excluded_platform_count", len(fs.ExcludedPlatforms)),
 			)
 			// 首次调度失败 + 有默认映射模型 → 用默认模型重试
 			if len(fs.FailedAccountIDs) == 0 {
@@ -728,6 +744,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						sessionHash,
 						defaultModel,
 						fs.FailedAccountIDs,
+						fs.ExcludedPlatforms,
 						service.OpenAIUpstreamTransportAny,
 					)
 					if err == nil && selection != nil {
@@ -795,6 +812,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
+				recordCompatibilityExclusion(c.Request.Context(), reqLog, h.gatewayService, currentAPIKey.GroupID, compatibilityScopeKey, account.Platform, failoverErr, "openai_messages.compatibility_exclusion_cache_store_failed")
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 				fallbackAPIKey, fallbackChannelMapping, switched, fallbackErr := tryCompatibilityFallbackGroup(
 					c.Request.Context(),
@@ -819,6 +837,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					compatibilityFallbackUsed = true
 					compatibilityFallbackSourceErr = failoverErr
 					fs = NewFailoverState(h.maxAccountSwitches, false)
+					loadCompatibilityExcludedPlatforms(c.Request.Context(), reqLog, h.gatewayService, currentAPIKey.GroupID, compatibilityScopeKey, fs, "openai_messages.compatibility_exclusion_cache_hit")
 					fs.SwitchCount = 1
 					fs.LastFailoverErr = failoverErr
 					h.gatewayService.RecordOpenAIAccountSwitch()
@@ -1276,6 +1295,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		previousResponseID,
 		sessionHash,
 		reqModel,
+		nil,
 		nil,
 		service.OpenAIUpstreamTransportResponsesWebsocketV2,
 	)

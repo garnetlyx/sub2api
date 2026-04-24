@@ -100,6 +100,12 @@ func (c StubGatewayCache) RefreshSessionTTL(_ context.Context, _ int64, _ string
 func (c StubGatewayCache) DeleteSessionAccountID(_ context.Context, _ int64, _ string) error {
 	return nil
 }
+func (c StubGatewayCache) GetCompatibilityExcludedPlatforms(_ context.Context, _ int64, _ string) (map[string]time.Time, error) {
+	return map[string]time.Time{}, nil
+}
+func (c StubGatewayCache) SetCompatibilityExcludedPlatform(_ context.Context, _ int64, _ string, _ string, _ time.Time, _ time.Duration) error {
+	return nil
+}
 
 // ============================================================
 // StubSessionLimitCache — service.SessionLimitCache 的空实现

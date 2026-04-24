@@ -2705,6 +2705,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 
 	httpInvalidEncryptedContentRetryTried := false
 	httpUnsupportedToolRetryTried := false
+	httpUnsupportedParameterRetryTried := false
 	for {
 		// Build upstream request
 		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
@@ -2780,6 +2781,20 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					continue
 				}
 				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Skip non-WSv2 invalid_encrypted_content retry because encrypted reasoning items are missing (account: %s)", account.Name)
+			}
+			if !httpUnsupportedParameterRetryTried && resp.StatusCode == http.StatusBadRequest {
+				if rejectedParam := extractUnsupportedOpenAIParameter(respBody); rejectedParam != "" {
+					if stripUnsupportedOpenAIParameterFromMap(reqBody, rejectedParam) {
+						body, err = json.Marshal(reqBody)
+						if err != nil {
+							return nil, fmt.Errorf("serialize unsupported parameter retry body: %w", err)
+						}
+						setOpsUpstreamRequestBody(c, body)
+						httpUnsupportedParameterRetryTried = true
+						logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Retrying non-WSv2 request once after unsupported parameter %q (account: %s)", rejectedParam, account.Name)
+						continue
+					}
+				}
 			}
 			if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
 				upstreamDetail := ""
@@ -5687,6 +5702,10 @@ var openAIUnsupportedBuiltinTools = map[string]bool{
 	"web_search_preview": true,
 }
 
+var openAIUnsupportedRequestParameters = map[string]bool{
+	"service_tier": true,
+}
+
 func extractUnsupportedBuiltinTool(upstreamBody []byte) string {
 	if extractUpstreamErrorCode(upstreamBody) != "unsupported_value" {
 		return ""
@@ -5716,6 +5735,32 @@ func extractUnsupportedBuiltinToolFromRequestError(requestBody []byte, resp *htt
 	_ = resp.Body.Close()
 	resp.Body = io.NopCloser(bytes.NewReader(respBody))
 	return extractUnsupportedBuiltinTool(respBody)
+}
+
+func extractUnsupportedOpenAIParameter(upstreamBody []byte) string {
+	if extractUpstreamErrorCode(upstreamBody) != "unsupported_value" {
+		return ""
+	}
+	param := strings.ToLower(strings.TrimSpace(gjson.GetBytes(upstreamBody, "error.param").String()))
+	if !openAIUnsupportedRequestParameters[param] {
+		return ""
+	}
+	message := strings.ToLower(sanitizeUpstreamErrorMessage(strings.TrimSpace(extractUpstreamErrorMessage(upstreamBody))))
+	if message == "" || !strings.Contains(message, "not supported") {
+		return ""
+	}
+	return param
+}
+
+func stripUnsupportedOpenAIParameterFromMap(reqBody map[string]any, rejectedParam string) bool {
+	if reqBody == nil || !openAIUnsupportedRequestParameters[rejectedParam] {
+		return false
+	}
+	if _, exists := reqBody[rejectedParam]; !exists {
+		return false
+	}
+	delete(reqBody, rejectedParam)
+	return true
 }
 
 // stripUnsupportedBuiltinToolFromMap removes the specific rejected built-in tool

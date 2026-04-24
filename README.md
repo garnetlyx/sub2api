@@ -550,6 +550,14 @@ Current v1 behavior:
 - Account type is `oauth`
 - `/v1/responses`, `/v1/chat/completions`, and `/v1/messages` can all route through the OpenAI-compatible gateway to Copilot accounts
 
+Current compatibility notes:
+
+- some current Copilot upstream Responses requests still reject built-in tools such as `image_generation`, `web_search_preview`, and `code_interpreter`; `sub2api` strips only the specifically rejected tool and retries once
+- some current Copilot upstream Responses requests may reject `service_tier`; `sub2api` strips only `service_tier` and retries once when the upstream explicitly returns `unsupported_value` for that parameter
+- broader provider-difference invalid requests such as unsupported parameters, unsupported capabilities, or schema/context/input mismatches now write a compatibility exclusion record keyed by endpoint + canonical public model + normalized request shape, exclude the failing provider family for the rest of the current request, and pre-exclude that family on later matching requests before retrying another compatible provider
+- that cache TTL is operator-configurable via `gateway.compatibility_exclusion_ttl_seconds` and defaults to 86400 seconds
+- these are current upstream compatibility workarounds, not permanent protocol guarantees; upstream behavior may change over time
+
 ### Known Issues
 
 In Claude Code, Plan Mode cannot exit automatically. (Normally when using the native Claude API, after planning is complete, Claude Code will pop up options for users to approve or reject the plan.)
