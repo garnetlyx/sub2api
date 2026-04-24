@@ -602,6 +602,7 @@ func (s *OpenAIGatewayService) forwardNativeAPIKeyChatCompletions(
 	if err != nil {
 		return nil, fmt.Errorf("build api-key chat request: %w", err)
 	}
+	ApplySub2APICorrelationHeaders(req)
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	if clientStream {
@@ -769,6 +770,7 @@ func (s *OpenAIGatewayService) forwardCopilotChatCompletions(
 	if err != nil {
 		return nil, fmt.Errorf("build copilot request: %w", err)
 	}
+	ApplySub2APICorrelationHeaders(req)
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Editor-Version", "vscode/1.99.3")

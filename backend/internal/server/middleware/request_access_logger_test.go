@@ -10,6 +10,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -109,6 +110,37 @@ func TestRequestLogger_KeepIncomingRequestID(t *testing.T) {
 	}
 	if got := w.Header().Get(requestIDHeader); got != "rid-fixed" {
 		t.Fatalf("header=%q, want rid-fixed", got)
+	}
+	if got := w.Header().Get(service.Sub2APIRequestIDHeader); got != "rid-fixed" {
+		t.Fatalf("correlation header=%q, want rid-fixed", got)
+	}
+}
+
+func TestClientRequestID_UsesIncomingHeaderAndExposesCorrelationHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(ClientRequestID())
+	r.Use(RequestLogger())
+	r.GET("/t", func(c *gin.Context) {
+		clientRequestID, _ := c.Request.Context().Value(ctxkey.ClientRequestID).(string)
+		if clientRequestID != "creq-fixed" {
+			t.Fatalf("client_request_id=%q, want creq-fixed", clientRequestID)
+		}
+		c.Status(http.StatusOK)
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/t", nil)
+	req.Header.Set("X-Client-Request-ID", "creq-fixed")
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d", w.Code)
+	}
+	if got := w.Header().Get(service.Sub2APIClientRequestIDHeader); got != "creq-fixed" {
+		t.Fatalf("response client correlation header=%q, want creq-fixed", got)
+	}
+	if got := w.Header().Get(service.Sub2APITraceOriginHeader); got != service.Sub2APITraceOriginGateway {
+		t.Fatalf("trace origin header=%q", got)
 	}
 }
 

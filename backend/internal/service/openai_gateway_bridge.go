@@ -154,6 +154,7 @@ func (s *OpenAIGatewayService) forwardBridgePassthrough(
 	if err != nil {
 		return nil, err
 	}
+	ApplySub2APICorrelationHeaders(req)
 	req.Header.Set("Content-Type", "application/json")
 	copySelectedRequestHeaders(req.Header, c.Request.Header)
 

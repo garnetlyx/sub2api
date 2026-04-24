@@ -617,6 +617,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 			if err != nil {
 				return nil, "", err
 			}
+			ApplySub2APICorrelationHeaders(upstreamReq)
 			upstreamReq.Header.Set("Content-Type", "application/json")
 			upstreamReq.Header.Set("x-goog-api-key", apiKey)
 			return upstreamReq, "x-request-id", nil
@@ -669,6 +670,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				if err != nil {
 					return nil, "", err
 				}
+				ApplySub2APICorrelationHeaders(upstreamReq)
 				upstreamReq.Header.Set("Content-Type", "application/json")
 				upstreamReq.Header.Set("Authorization", "Bearer "+accessToken)
 				upstreamReq.Header.Set("User-Agent", geminicli.GeminiCLIUserAgent)
@@ -691,6 +693,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				if err != nil {
 					return nil, "", err
 				}
+				ApplySub2APICorrelationHeaders(upstreamReq)
 				upstreamReq.Header.Set("Content-Type", "application/json")
 				upstreamReq.Header.Set("Authorization", "Bearer "+accessToken)
 				return upstreamReq, "x-request-id", nil
@@ -1124,6 +1127,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 			if err != nil {
 				return nil, "", err
 			}
+			ApplySub2APICorrelationHeaders(upstreamReq)
 			upstreamReq.Header.Set("Content-Type", "application/json")
 			upstreamReq.Header.Set("x-goog-api-key", apiKey)
 			return upstreamReq, "x-request-id", nil
@@ -1171,6 +1175,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				if err != nil {
 					return nil, "", err
 				}
+				ApplySub2APICorrelationHeaders(upstreamReq)
 				upstreamReq.Header.Set("Content-Type", "application/json")
 				upstreamReq.Header.Set("Authorization", "Bearer "+accessToken)
 				upstreamReq.Header.Set("User-Agent", geminicli.GeminiCLIUserAgent)
@@ -1192,6 +1197,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				if err != nil {
 					return nil, "", err
 				}
+				ApplySub2APICorrelationHeaders(upstreamReq)
 				upstreamReq.Header.Set("Content-Type", "application/json")
 				upstreamReq.Header.Set("Authorization", "Bearer "+accessToken)
 				return upstreamReq, "x-request-id", nil

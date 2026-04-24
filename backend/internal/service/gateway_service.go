@@ -4818,6 +4818,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	if err != nil {
 		return nil, err
 	}
+	ApplySub2APICorrelationHeaders(req)
 
 	if c != nil && c.Request != nil {
 		for key, values := range c.Request.Header {
@@ -5485,6 +5486,7 @@ func (s *GatewayService) buildUpstreamRequestBedrock(
 	if err != nil {
 		return nil, err
 	}
+	ApplySub2APICorrelationHeaders(req)
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -5512,6 +5514,7 @@ func (s *GatewayService) buildUpstreamRequestBedrockAPIKey(
 	if err != nil {
 		return nil, err
 	}
+	ApplySub2APICorrelationHeaders(req)
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -5631,6 +5634,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	if err != nil {
 		return nil, err
 	}
+	ApplySub2APICorrelationHeaders(req)
 
 	// 设置认证头（保持原始大小写）
 	if tokenType == "oauth" {
@@ -8449,6 +8453,7 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	if err != nil {
 		return nil, err
 	}
+	ApplySub2APICorrelationHeaders(req)
 
 	if c != nil && c.Request != nil {
 		for key, values := range c.Request.Header {
@@ -8543,6 +8548,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	if err != nil {
 		return nil, err
 	}
+	ApplySub2APICorrelationHeaders(req)
 
 	// 设置认证头（保持原始大小写）
 	if tokenType == "oauth" {

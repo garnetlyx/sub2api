@@ -2938,6 +2938,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	if err != nil {
 		return nil, err
 	}
+	ApplySub2APICorrelationHeaders(req)
 
 	// 透传客户端请求头（安全白名单）。
 	allowTimeoutHeaders := s.isOpenAIPassthroughTimeoutHeadersAllowed()
@@ -3469,6 +3470,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	if err != nil {
 		return nil, err
 	}
+	ApplySub2APICorrelationHeaders(req)
 
 	// Set authentication header
 	req.Header.Set("authorization", "Bearer "+token)

@@ -4235,6 +4235,7 @@ func (s *AntigravityGatewayService) ForwardUpstream(ctx context.Context, c *gin.
 	if err != nil {
 		return nil, fmt.Errorf("create upstream request: %w", err)
 	}
+	ApplySub2APICorrelationHeaders(req)
 
 	// 设置请求头
 	req.Header.Set("Content-Type", "application/json")

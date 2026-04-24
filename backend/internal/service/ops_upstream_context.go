@@ -1,16 +1,24 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/gin-gonic/gin"
 )
 
 // Gin context keys used by Ops error logger for capturing upstream error details.
 // These keys are set by gateway services and consumed by handler/ops_error_logger.go.
 const (
+	Sub2APIRequestIDHeader       = "X-Sub2API-Request-Id"
+	Sub2APIClientRequestIDHeader = "X-Sub2API-Client-Request-Id"
+	Sub2APITraceOriginHeader     = "X-Sub2API-Trace-Origin"
+	Sub2APITraceOriginGateway    = "gateway"
+
 	OpsUpstreamStatusCodeKey   = "ops_upstream_status_code"
 	OpsUpstreamErrorMessageKey = "ops_upstream_error_message"
 	OpsUpstreamErrorDetailKey  = "ops_upstream_error_detail"
@@ -85,9 +93,12 @@ type OpsUpstreamErrorEvent struct {
 	Passthrough bool `json:"passthrough,omitempty"`
 
 	// Context
-	Platform    string `json:"platform,omitempty"`
-	AccountID   int64  `json:"account_id,omitempty"`
-	AccountName string `json:"account_name,omitempty"`
+	Platform        string `json:"platform,omitempty"`
+	AccountID       int64  `json:"account_id,omitempty"`
+	AccountName     string `json:"account_name,omitempty"`
+	RequestID       string `json:"request_id,omitempty"`
+	ClientRequestID string `json:"client_request_id,omitempty"`
+	TraceOrigin     string `json:"trace_origin,omitempty"`
 
 	// Outcome
 	UpstreamStatusCode int    `json:"upstream_status_code,omitempty"`
@@ -119,6 +130,9 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 		ev.AtUnixMs = time.Now().UnixMilli()
 	}
 	ev.Platform = strings.TrimSpace(ev.Platform)
+	ev.RequestID = strings.TrimSpace(ev.RequestID)
+	ev.ClientRequestID = strings.TrimSpace(ev.ClientRequestID)
+	ev.TraceOrigin = strings.TrimSpace(ev.TraceOrigin)
 	ev.UpstreamRequestID = strings.TrimSpace(ev.UpstreamRequestID)
 	ev.UpstreamRequestBody = strings.TrimSpace(ev.UpstreamRequestBody)
 	ev.UpstreamResponseBody = strings.TrimSpace(ev.UpstreamResponseBody)
@@ -128,6 +142,18 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	ev.Detail = strings.TrimSpace(ev.Detail)
 	if ev.Message != "" {
 		ev.Message = sanitizeUpstreamErrorMessage(ev.Message)
+	}
+	if ev.RequestID == "" || ev.ClientRequestID == "" || ev.TraceOrigin == "" {
+		requestID, clientRequestID := requestCorrelationFromContext(c.Request.Context())
+		if ev.RequestID == "" {
+			ev.RequestID = requestID
+		}
+		if ev.ClientRequestID == "" {
+			ev.ClientRequestID = clientRequestID
+		}
+		if ev.TraceOrigin == "" && (ev.RequestID != "" || ev.ClientRequestID != "") {
+			ev.TraceOrigin = Sub2APITraceOriginGateway
+		}
 	}
 
 	// If the caller didn't explicitly pass upstream request body but the gateway
@@ -155,6 +181,47 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	c.Set(OpsUpstreamErrorsKey, existing)
 
 	checkSkipMonitoringForUpstreamEvent(c, &evCopy)
+}
+
+func requestCorrelationFromContext(ctx context.Context) (string, string) {
+	if ctx == nil {
+		return "", ""
+	}
+	requestID, _ := ctx.Value(ctxkey.RequestID).(string)
+	clientRequestID, _ := ctx.Value(ctxkey.ClientRequestID).(string)
+	return strings.TrimSpace(requestID), strings.TrimSpace(clientRequestID)
+}
+
+func ApplySub2APICorrelationHeaders(req *http.Request) {
+	if req == nil {
+		return
+	}
+	requestID, clientRequestID := requestCorrelationFromContext(req.Context())
+	if requestID != "" {
+		req.Header.Set(Sub2APIRequestIDHeader, requestID)
+	}
+	if clientRequestID != "" {
+		req.Header.Set(Sub2APIClientRequestIDHeader, clientRequestID)
+	}
+	if requestID != "" || clientRequestID != "" {
+		req.Header.Set(Sub2APITraceOriginHeader, Sub2APITraceOriginGateway)
+	}
+}
+
+func ApplySub2APICorrelationResponseHeaders(h http.Header, ctx context.Context) {
+	if h == nil {
+		return
+	}
+	requestID, clientRequestID := requestCorrelationFromContext(ctx)
+	if requestID != "" {
+		h.Set(Sub2APIRequestIDHeader, requestID)
+	}
+	if clientRequestID != "" {
+		h.Set(Sub2APIClientRequestIDHeader, clientRequestID)
+	}
+	if requestID != "" || clientRequestID != "" {
+		h.Set(Sub2APITraceOriginHeader, Sub2APITraceOriginGateway)
+	}
 }
 
 // checkSkipMonitoringForUpstreamEvent checks whether the upstream error event
