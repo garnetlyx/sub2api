@@ -174,11 +174,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			if s.rateLimitService != nil {
 				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 			}
-			return nil, &UpstreamFailoverError{
-				StatusCode:             resp.StatusCode,
-				ResponseBody:           respBody,
-				RetryableOnSameAccount: account.IsPoolMode() && (isPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
-			}
+			return nil, buildOpenAIUpstreamFailoverError(account, resp.StatusCode, upstreamMsg, respBody)
 		}
 		if shouldBridgeOpenAICompatibilityError(account, resp.StatusCode, upstreamMsg) {
 			return nil, &OpenAIBridgeFallbackError{

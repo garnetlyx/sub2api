@@ -275,6 +275,24 @@ func TestSupportsOpenAIGatewayRequestedModel_OpenAIAPIKeyWithoutMappingRejectsCl
 	require.False(t, supportsOpenAIGatewayRequestedModel(account, "claude-opus-4.7"))
 }
 
+func TestSupportsOpenAIGatewayRequestedModel_InternalLiteLLMBridgeDoesNotDriveModelSelection(t *testing.T) {
+	account := &Account{
+		Name:        "litellm-openai-internal",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"base_url": "http://127.0.0.1:4001/v1",
+		},
+	}
+
+	require.False(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.5"))
+	require.False(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.4"))
+	require.False(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4.6"))
+	require.False(t, supportsOpenAIGatewayRequestedModel(account, "totally-new-model"))
+}
+
 func TestSupportsOpenAIGatewayRequestedModel_KiroUsesClaudeFamily(t *testing.T) {
 	account := &Account{
 		Platform:    PlatformKiro,
@@ -2012,4 +2030,65 @@ func TestHandleSSEToJSON_ResponseFailedReturnsProtocolError(t *testing.T) {
 	require.Equal(t, http.StatusBadGateway, rec.Code)
 	require.Contains(t, rec.Body.String(), "upstream rejected request")
 	require.Contains(t, rec.Header().Get("Content-Type"), "application/json")
+}
+
+func TestClassifyOpenAICompatibilityMismatch(t *testing.T) {
+	t.Run("unsupported parameter", func(t *testing.T) {
+		category, ok := classifyOpenAICompatibilityMismatch(http.StatusBadRequest, "", []byte(`{
+			"error":{"code":"unknown_parameter","param":"reasoning.effort","message":"Unknown parameter: reasoning.effort"}
+		}`))
+		require.True(t, ok)
+		require.Equal(t, "unsupported_parameter", category)
+	})
+
+	t.Run("context length exceeded", func(t *testing.T) {
+		category, ok := classifyOpenAICompatibilityMismatch(http.StatusBadRequest, "This model's maximum context length is 128000 tokens", nil)
+		require.True(t, ok)
+		require.Equal(t, "context_limit_exceeded", category)
+	})
+
+	t.Run("provider missing requested model", func(t *testing.T) {
+		category, ok := classifyOpenAICompatibilityMismatch(
+			http.StatusBadRequest,
+			"{'error': '/responses: Invalid model name passed in model=gpt-5.5. Call `/v1/models` to view available models for your key.'}",
+			nil,
+		)
+		require.True(t, ok)
+		require.Equal(t, "model_unavailable_on_provider", category)
+	})
+
+	t.Run("codex chatgpt account rejects normalized model", func(t *testing.T) {
+		category, ok := classifyOpenAICompatibilityMismatch(
+			http.StatusBadRequest,
+			"The 'gpt-5.1' model is not supported when using Codex with a ChatGPT account.",
+			nil,
+		)
+		require.True(t, ok)
+		require.Equal(t, "model_unavailable_on_provider", category)
+	})
+
+	t.Run("policy error excluded", func(t *testing.T) {
+		category, ok := classifyOpenAICompatibilityMismatch(http.StatusBadRequest, "Request blocked by content policy", nil)
+		require.False(t, ok)
+		require.Empty(t, category)
+	})
+}
+
+func TestBuildOpenAIUpstreamFailoverError_CompatibilityMismatchDisablesSameAccountRetry(t *testing.T) {
+	account := &Account{
+		Type: AccountTypeOAuth,
+		Extra: map[string]any{
+			"pool_mode": true,
+		},
+	}
+
+	failoverErr := buildOpenAIUpstreamFailoverError(account, http.StatusBadRequest, "", []byte(`{
+		"error":{"code":"unknown_parameter","param":"reasoning.effort","message":"Unknown parameter: reasoning.effort"}
+	}`))
+
+	require.NotNil(t, failoverErr)
+	require.True(t, failoverErr.IsCompatibilityMismatch())
+	require.Equal(t, UpstreamFailoverReasonCompatibilityMismatch, failoverErr.Reason)
+	require.Equal(t, "unsupported_parameter", failoverErr.CompatibilityCategory)
+	require.False(t, failoverErr.RetryableOnSameAccount)
 }

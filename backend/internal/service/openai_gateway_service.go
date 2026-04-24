@@ -1870,8 +1870,26 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 	return latest
 }
 
+func isInternalLiteLLMBridgeOnlyAccount(account *Account) bool {
+	if account == nil || !account.IsOpenAIApiKey() {
+		return false
+	}
+	// Internal LiteLLM bridge accounts are protocol translators only.
+	// They must never participate in public model identification or first-hop
+	// account selection, otherwise LiteLLM gets forced to maintain the public
+	// model namespace instead of Sub2API owning provider/account routing.
+	if strings.TrimSpace(account.Name) == "litellm-openai-internal" {
+		return true
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(account.GetOpenAIBaseURL()), "/")
+	return strings.HasSuffix(baseURL, "127.0.0.1:4001/v1") || strings.HasSuffix(baseURL, "localhost:4001/v1")
+}
+
 func supportsOpenAIGatewayRequestedModel(account *Account, requestedModel string) bool {
 	if account == nil || !account.IsSchedulable() || !account.UsesOpenAIGateway() {
+		return false
+	}
+	if isInternalLiteLLMBridgeOnlyAccount(account) {
 		return false
 	}
 	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
@@ -2046,12 +2064,138 @@ func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(statusCode i
 	if s.shouldFailoverUpstreamError(statusCode) {
 		return true
 	}
-	return isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody)
+	if isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody) {
+		return true
+	}
+	_, ok := classifyOpenAICompatibilityMismatch(statusCode, upstreamMsg, upstreamBody)
+	return ok
+}
+
+func buildOpenAIUpstreamFailoverError(account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) *UpstreamFailoverError {
+	failoverErr := &UpstreamFailoverError{
+		StatusCode:   statusCode,
+		ResponseBody: upstreamBody,
+	}
+	if category, ok := classifyOpenAICompatibilityMismatch(statusCode, upstreamMsg, upstreamBody); ok {
+		failoverErr.Reason = UpstreamFailoverReasonCompatibilityMismatch
+		failoverErr.CompatibilityCategory = category
+		return failoverErr
+	}
+	failoverErr.RetryableOnSameAccount = account != nil &&
+		account.IsPoolMode() &&
+		(isPoolModeRetryableStatus(statusCode) || isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody))
+	return failoverErr
+}
+
+func classifyOpenAICompatibilityMismatch(statusCode int, upstreamMsg string, upstreamBody []byte) (string, bool) {
+	switch statusCode {
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+	default:
+		return "", false
+	}
+
+	code := strings.ToLower(strings.TrimSpace(extractUpstreamErrorCode(upstreamBody)))
+	param := strings.ToLower(strings.TrimSpace(gjson.GetBytes(upstreamBody, "error.param").String()))
+	msg := strings.ToLower(strings.TrimSpace(sanitizeUpstreamErrorMessage(upstreamMsg)))
+	if msg == "" && len(upstreamBody) > 0 {
+		msg = strings.ToLower(strings.TrimSpace(sanitizeUpstreamErrorMessage(extractUpstreamErrorMessage(upstreamBody))))
+	}
+	if msg == "" && code == "" && param == "" {
+		return "", false
+	}
+
+	excludedNeedles := []string{
+		"invalid api key",
+		"authentication",
+		"auth failed",
+		"insufficient_quota",
+		"rate limit",
+		"content policy",
+		"safety system",
+		"policy violation",
+		"moderation",
+		"model not found",
+		"does not exist",
+		"not authorized",
+		"permission denied",
+	}
+	for _, needle := range excludedNeedles {
+		if strings.Contains(msg, needle) || strings.Contains(code, needle) {
+			return "", false
+		}
+	}
+
+	switch {
+	case strings.Contains(msg, "maximum context length") ||
+		strings.Contains(msg, "context length") && strings.Contains(msg, "exceed") ||
+		strings.Contains(msg, "context window") && strings.Contains(msg, "exceed") ||
+		strings.Contains(msg, "too many input tokens") ||
+		strings.Contains(code, "context_length") ||
+		strings.Contains(param, "context"):
+		return "context_limit_exceeded", true
+	case strings.Contains(msg, "attachment too large") ||
+		strings.Contains(msg, "image too large") ||
+		strings.Contains(msg, "file too large") ||
+		strings.Contains(param, "attachment") ||
+		strings.Contains(param, "image"):
+		return "attachment_limit_exceeded", true
+	case strings.Contains(msg, "input is too long") ||
+		strings.Contains(msg, "request too large") ||
+		strings.Contains(msg, "payload too large") ||
+		strings.Contains(msg, "input too large") ||
+		strings.Contains(code, "request_too_large") ||
+		strings.Contains(param, "input"):
+		return "input_limit_exceeded", true
+	case param == "tools" || strings.Contains(param, "tool_choice") ||
+		(strings.Contains(msg, "tool") &&
+			(strings.Contains(msg, "unsupported") || strings.Contains(msg, "does not support") || strings.Contains(msg, "not support"))):
+		return "unsupported_tool", true
+	case (strings.Contains(code, "unsupported") && param != "") ||
+		strings.Contains(code, "unknown_parameter") ||
+		strings.Contains(code, "extra_forbidden") ||
+		(param != "" &&
+			(strings.Contains(msg, "unsupported parameter") ||
+				strings.Contains(msg, "unknown parameter") ||
+				strings.Contains(msg, "extra inputs are not permitted") ||
+				strings.Contains(msg, "is not permitted"))):
+		return "unsupported_parameter", true
+	case strings.Contains(msg, "does not support") ||
+		strings.Contains(msg, "not supported for this model") ||
+		strings.Contains(msg, "unsupported capability") ||
+		(strings.Contains(code, "unsupported_value") && param != ""):
+		return "unsupported_capability", true
+	case strings.Contains(msg, "invalid model name passed in model=") ||
+		strings.Contains(msg, "call `/v1/models` to view available models for your key") ||
+		strings.Contains(msg, "model is not supported when using codex with a chatgpt account"):
+		return "model_unavailable_on_provider", true
+	case strings.Contains(code, "invalid_type") ||
+		strings.Contains(code, "invalid_value") ||
+		strings.Contains(msg, "invalid type") ||
+		strings.Contains(msg, "invalid value") ||
+		strings.Contains(msg, "expected type") ||
+		(strings.Contains(msg, "schema") && strings.Contains(msg, "invalid")) ||
+		(param != "" && strings.Contains(msg, "for parameter")):
+		return "schema_mismatch", true
+	default:
+		return "", false
+	}
 }
 
 func (s *OpenAIGatewayService) handleFailoverSideEffects(ctx context.Context, resp *http.Response, account *Account) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
+}
+
+func (s *OpenAIGatewayService) TempUnscheduleRetryableError(ctx context.Context, accountID int64, failoverErr *UpstreamFailoverError) {
+	if failoverErr == nil || !failoverErr.RetryableOnSameAccount {
+		return
+	}
+	switch failoverErr.StatusCode {
+	case http.StatusBadRequest:
+		tempUnscheduleGoogleConfigError(ctx, s.accountRepo, accountID, "[openai-handler]")
+	case http.StatusBadGateway:
+		tempUnscheduleEmptyResponse(ctx, s.accountRepo, accountID, "[openai-handler]")
+	}
 }
 
 // Forward forwards request to OpenAI API
@@ -2658,11 +2802,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				})
 
 				s.handleFailoverSideEffects(ctx, resp, account)
-				return nil, &UpstreamFailoverError{
-					StatusCode:             resp.StatusCode,
-					ResponseBody:           respBody,
-					RetryableOnSameAccount: account.IsPoolMode() && (isPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
-				}
+				return nil, buildOpenAIUpstreamFailoverError(account, resp.StatusCode, upstreamMsg, respBody)
 			}
 			return s.handleErrorResponse(ctx, resp, c, account, body)
 		}

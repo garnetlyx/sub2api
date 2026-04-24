@@ -516,6 +516,14 @@ type UpstreamFailoverError struct {
 	ResponseHeaders        http.Header // 上游响应头，用于透传 cf-ray/cf-mitigated/content-type 等诊断信息
 	ForceCacheBilling      bool        // Antigravity 粘性会话切换时设为 true
 	RetryableOnSameAccount bool        // 临时性错误（如 Google 间歇性 400、空响应），应在同一账号上重试 N 次再切换
+	Reason                 string      // 切换原因分类，例如 compatibility_mismatch
+	CompatibilityCategory  string      // 兼容性失败的细分类别
+}
+
+const UpstreamFailoverReasonCompatibilityMismatch = "compatibility_mismatch"
+
+func (e *UpstreamFailoverError) IsCompatibilityMismatch() bool {
+	return e != nil && e.Reason == UpstreamFailoverReasonCompatibilityMismatch
 }
 
 func (e *UpstreamFailoverError) Error() string {

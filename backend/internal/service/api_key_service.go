@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -880,4 +881,11 @@ func (s *APIKeyService) UpdateRateLimitUsage(ctx context.Context, apiKeyID int64
 		return nil
 	}
 	return s.apiKeyRepo.IncrementRateLimitUsage(ctx, apiKeyID, cost)
+}
+
+func (s *APIKeyService) GetGroupByID(ctx context.Context, groupID int64) (*Group, error) {
+	if s == nil || s.groupRepo == nil {
+		return nil, errors.New("group repo not configured")
+	}
+	return s.groupRepo.GetByID(ctx, groupID)
 }

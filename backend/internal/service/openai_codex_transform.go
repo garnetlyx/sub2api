@@ -226,48 +226,6 @@ func normalizeCodexModel(model string) string {
 	}
 
 	normalized := strings.ToLower(modelID)
-
-	if strings.Contains(normalized, "gpt-5.4-mini") || strings.Contains(normalized, "gpt 5.4 mini") {
-		return "gpt-5.4-mini"
-	}
-	if strings.Contains(normalized, "gpt-5.4-nano") || strings.Contains(normalized, "gpt 5.4 nano") {
-		return "gpt-5.4-nano"
-	}
-	if strings.Contains(normalized, "gpt-5.4") || strings.Contains(normalized, "gpt 5.4") {
-		return "gpt-5.4"
-	}
-	if strings.Contains(normalized, "gpt-5.2-codex") || strings.Contains(normalized, "gpt 5.2 codex") {
-		return "gpt-5.2-codex"
-	}
-	if strings.Contains(normalized, "gpt-5.2") || strings.Contains(normalized, "gpt 5.2") {
-		return "gpt-5.2"
-	}
-	if strings.Contains(normalized, "gpt-5.3-codex") || strings.Contains(normalized, "gpt 5.3 codex") {
-		return "gpt-5.3-codex"
-	}
-	if strings.Contains(normalized, "gpt-5.3") || strings.Contains(normalized, "gpt 5.3") {
-		return "gpt-5.3-codex"
-	}
-	if strings.Contains(normalized, "gpt-5.1-codex-max") || strings.Contains(normalized, "gpt 5.1 codex max") {
-		return "gpt-5.1-codex-max"
-	}
-	if strings.Contains(normalized, "gpt-5.1-codex-mini") || strings.Contains(normalized, "gpt 5.1 codex mini") {
-		return "gpt-5.1-codex-mini"
-	}
-	if strings.Contains(normalized, "codex-mini-latest") ||
-		strings.Contains(normalized, "gpt-5-codex-mini") ||
-		strings.Contains(normalized, "gpt 5 codex mini") {
-		return "codex-mini-latest"
-	}
-	if strings.Contains(normalized, "gpt-5.1-codex") || strings.Contains(normalized, "gpt 5.1 codex") {
-		return "gpt-5.1-codex"
-	}
-	if strings.Contains(normalized, "gpt-5.1") || strings.Contains(normalized, "gpt 5.1") {
-		return "gpt-5.1"
-	}
-	if strings.Contains(normalized, "codex") {
-		return "gpt-5.1-codex"
-	}
 	if strings.HasPrefix(normalized, "gpt-") {
 		for _, suffix := range []string{"-none", "-minimal", "-low", "-medium", "-high", "-xhigh"} {
 			if strings.HasSuffix(normalized, suffix) && len(modelID) > len(suffix) {
@@ -314,16 +272,28 @@ func getNormalizedCodexModel(modelID string) string {
 	if modelID == "" {
 		return ""
 	}
-	if mapped, ok := codexModelMap[modelID]; ok {
-		return mapped
-	}
-	lower := strings.ToLower(modelID)
-	for key, value := range codexModelMap {
-		if strings.ToLower(key) == lower {
-			return value
+	for _, candidate := range codexModelLookupCandidates(modelID) {
+		if mapped, ok := codexModelMap[candidate]; ok {
+			return mapped
 		}
 	}
 	return ""
+}
+
+func codexModelLookupCandidates(modelID string) []string {
+	trimmed := strings.TrimSpace(modelID)
+	if trimmed == "" {
+		return nil
+	}
+
+	candidates := []string{trimmed}
+	normalized := strings.ToLower(trimmed)
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	normalized = strings.Join(strings.Fields(normalized), "-")
+	if normalized != trimmed {
+		candidates = append(candidates, normalized)
+	}
+	return candidates
 }
 
 // extractTextFromContent extracts plain text from a content value that is either

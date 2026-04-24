@@ -143,7 +143,7 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 	if ev.Message != "" {
 		ev.Message = sanitizeUpstreamErrorMessage(ev.Message)
 	}
-	if ev.RequestID == "" || ev.ClientRequestID == "" || ev.TraceOrigin == "" {
+	if c.Request != nil && (ev.RequestID == "" || ev.ClientRequestID == "" || ev.TraceOrigin == "") {
 		requestID, clientRequestID := requestCorrelationFromContext(c.Request.Context())
 		if ev.RequestID == "" {
 			ev.RequestID = requestID
