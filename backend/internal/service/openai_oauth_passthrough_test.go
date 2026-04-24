@@ -48,6 +48,30 @@ func (u *httpUpstreamRecorder) DoWithTLS(req *http.Request, proxyURL string, acc
 	return u.Do(req, proxyURL, accountID, accountConcurrency)
 }
 
+type sequentialHTTPUpstreamRecorder struct {
+	requests [][]byte
+	resps    []*http.Response
+}
+
+func (u *sequentialHTTPUpstreamRecorder) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	if req != nil && req.Body != nil {
+		b, _ := io.ReadAll(req.Body)
+		u.requests = append(u.requests, b)
+		_ = req.Body.Close()
+		req.Body = io.NopCloser(bytes.NewReader(b))
+	}
+	if len(u.resps) == 0 {
+		return nil, fmt.Errorf("no more upstream responses configured")
+	}
+	resp := u.resps[0]
+	u.resps = u.resps[1:]
+	return resp, nil
+}
+
+func (u *sequentialHTTPUpstreamRecorder) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	return u.Do(req, proxyURL, accountID, accountConcurrency)
+}
+
 type openAIPassthroughFailoverRepo struct {
 	stubOpenAIAccountRepo
 	rateLimitCalls []time.Time
@@ -446,6 +470,117 @@ func TestOpenAIGatewayService_OAuthLegacy_CompositeCodexUAUsesCodexOriginator(t 
 	require.NotNil(t, upstream.lastReq)
 	require.Equal(t, "codex_cli_rs", upstream.lastReq.Header.Get("originator"))
 	require.NotEqual(t, "opencode", upstream.lastReq.Header.Get("originator"))
+}
+
+func TestOpenAIGatewayService_RetriesUnsupportedBuiltinToolOnce(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.1.0")
+
+	body := []byte(`{"model":"gpt-5.4","tools":[{"type":"web_search_preview"},{"type":"function","name":"bash","parameters":{"type":"object"}}],"input":[{"type":"text","text":"hi"}]}`)
+	upstream := &sequentialHTTPUpstreamRecorder{
+		resps: []*http.Response{
+			{
+				StatusCode: http.StatusBadRequest,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(
+					`{"error":{"code":"unsupported_value","param":"tools","message":"Unsupported tool type: web_search_preview"}}`,
+				)),
+			},
+			{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}, "x-request-id": []string{"rid"}},
+				Body:       io.NopCloser(strings.NewReader(`{"id":"resp_123","usage":{"input_tokens":1,"output_tokens":1}}`)),
+			},
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
+		httpUpstream: upstream,
+	}
+
+	account := &Account{
+		ID:             123,
+		Name:           "acc",
+		Platform:       PlatformOpenAI,
+		Type:           AccountTypeOAuth,
+		Concurrency:    1,
+		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra:          map[string]any{"openai_passthrough": false},
+		Status:         StatusActive,
+		Schedulable:    true,
+		RateMultiplier: f64p(1),
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requests, 2)
+	require.True(t, gjson.GetBytes(upstream.requests[0], "tools.0").Exists())
+	require.Equal(t, "bash", gjson.GetBytes(upstream.requests[1], "tools.0.name").String())
+	require.False(t, gjson.GetBytes(upstream.requests[1], `tools.#(type=="web_search_preview")`).Exists())
+}
+
+func TestOpenAIGatewayService_OAuthPassthrough_RetriesUnsupportedBuiltinToolOnce(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.1.0")
+
+	body := []byte(`{"model":"gpt-5.4","tools":[{"type":"image_generation"},{"type":"function","name":"bash","parameters":{"type":"object"}}],"instructions":"local-test-instructions","input":[{"type":"text","text":"hi"}]}`)
+	upstream := &sequentialHTTPUpstreamRecorder{
+		resps: []*http.Response{
+			{
+				StatusCode: http.StatusBadRequest,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(
+					`{"error":{"code":"unsupported_value","param":"tools","message":"Unsupported tool type: image_generation"}}`,
+				)),
+			},
+			{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid"}},
+				Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+					`data: {"type":"response.output_item.added","item":{"type":"tool_call","tool_calls":[{"function":{"name":"bash"}}]}}`,
+					"",
+					"data: [DONE]",
+					"",
+				}, "\n"))),
+			},
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		cfg:          &config.Config{Gateway: config.GatewayConfig{ForceCodexCLI: false}},
+		httpUpstream: upstream,
+	}
+
+	account := &Account{
+		ID:             123,
+		Name:           "acc",
+		Platform:       PlatformOpenAI,
+		Type:           AccountTypeOAuth,
+		Concurrency:    1,
+		Credentials:    map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-acc"},
+		Extra:          map[string]any{"openai_passthrough": true},
+		Status:         StatusActive,
+		Schedulable:    true,
+		RateMultiplier: f64p(1),
+	}
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Len(t, upstream.requests, 2)
+	require.True(t, gjson.GetBytes(upstream.requests[0], "tools.0").Exists())
+	require.Equal(t, "bash", gjson.GetBytes(upstream.requests[1], "tools.0.name").String())
+	require.False(t, gjson.GetBytes(upstream.requests[1], `tools.#(type=="image_generation")`).Exists())
 }
 
 func TestOpenAIGatewayService_OAuthPassthrough_ResponseHeadersAllowXCodex(t *testing.T) {

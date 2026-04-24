@@ -212,13 +212,13 @@ func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact
 
 func normalizeCodexModel(model string) string {
 	if model == "" {
-		return "gpt-5.1"
+		return ""
 	}
 
-	modelID := model
+	modelID := strings.TrimSpace(model)
 	if strings.Contains(modelID, "/") {
 		parts := strings.Split(modelID, "/")
-		modelID = parts[len(parts)-1]
+		modelID = strings.TrimSpace(parts[len(parts)-1])
 	}
 
 	if mapped := getNormalizedCodexModel(modelID); mapped != "" {
@@ -268,11 +268,16 @@ func normalizeCodexModel(model string) string {
 	if strings.Contains(normalized, "codex") {
 		return "gpt-5.1-codex"
 	}
-	if strings.Contains(normalized, "gpt-5") || strings.Contains(normalized, "gpt 5") {
-		return "gpt-5.1"
+	if strings.HasPrefix(normalized, "gpt-") {
+		for _, suffix := range []string{"-none", "-minimal", "-low", "-medium", "-high", "-xhigh"} {
+			if strings.HasSuffix(normalized, suffix) && len(modelID) > len(suffix) {
+				return modelID[:len(modelID)-len(suffix)]
+			}
+		}
+		return modelID
 	}
 
-	return "gpt-5.1"
+	return modelID
 }
 
 func normalizeOpenAIModelForUpstream(account *Account, model string) string {

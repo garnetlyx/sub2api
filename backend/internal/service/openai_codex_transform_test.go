@@ -257,6 +257,20 @@ func TestNormalizeCodexModel_Gpt53(t *testing.T) {
 	}
 }
 
+func TestNormalizeCodexModel_PreservesExplicitAndUnknownModels(t *testing.T) {
+	cases := map[string]string{
+		"gpt-5.5":                "gpt-5.5",
+		"gpt-5.6-high":           "gpt-5.6",
+		"openai/gpt-5.5":         "gpt-5.5",
+		"claude-opus-4-7":        "claude-opus-4-7",
+		"gemini-3-flash-preview": "gemini-3-flash-preview",
+	}
+
+	for input, expected := range cases {
+		require.Equal(t, expected, normalizeCodexModel(input))
+	}
+}
+
 func TestApplyCodexOAuthTransform_PreservesBareSparkModel(t *testing.T) {
 	reqBody := map[string]any{
 		"model": "gpt-5.3-codex-spark",
