@@ -864,7 +864,7 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 		}
 	}
 
-	return scheduler.Select(ctx, OpenAIAccountScheduleRequest{
+	req := OpenAIAccountScheduleRequest{
 		GroupID:            groupID,
 		SessionHash:        sessionHash,
 		StickyAccountID:    stickyAccountID,
@@ -873,7 +873,13 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 		RequiredTransport:  requiredTransport,
 		ExcludedIDs:        excludedIDs,
 		ExcludedPlatforms:  excludedPlatforms,
-	})
+	}
+	selection, decision, err := scheduler.Select(ctx, req)
+	if err != nil && shouldRetryWithoutCachedPlatformExclusions(excludedIDs, excludedPlatforms) {
+		req.ExcludedPlatforms = nil
+		selection, decision, err = scheduler.Select(ctx, req)
+	}
+	return selection, decision, err
 }
 
 func isOpenAIPlatformExcluded(excludedPlatforms map[string]struct{}, platform string) bool {
@@ -882,6 +888,10 @@ func isOpenAIPlatformExcluded(excludedPlatforms map[string]struct{}, platform st
 	}
 	_, excluded := excludedPlatforms[strings.ToLower(strings.TrimSpace(platform))]
 	return excluded
+}
+
+func shouldRetryWithoutCachedPlatformExclusions(excludedIDs map[int64]struct{}, excludedPlatforms map[string]struct{}) bool {
+	return len(excludedIDs) == 0 && len(excludedPlatforms) > 0
 }
 
 func (s *OpenAIGatewayService) ReportOpenAIAccountScheduleResult(accountID int64, success bool, firstTokenMs *int) {
@@ -964,6 +974,9 @@ func (s *OpenAIGatewayService) RememberCompatibilityExclusion(ctx context.Contex
 	if s == nil || s.cache == nil || failoverErr == nil || !failoverErr.IsCompatibilityMismatch() {
 		return nil
 	}
+	if !shouldPersistCompatibilityExclusion(failoverErr) {
+		return nil
+	}
 	scopeKey = strings.TrimSpace(scopeKey)
 	platform = strings.ToLower(strings.TrimSpace(platform))
 	if scopeKey == "" || platform == "" {
@@ -977,6 +990,18 @@ func (s *OpenAIGatewayService) RememberCompatibilityExclusion(ctx context.Contex
 		time.Now().UTC(),
 		s.openAICompatibilityExclusionTTL(),
 	)
+}
+
+func shouldPersistCompatibilityExclusion(failoverErr *UpstreamFailoverError) bool {
+	if failoverErr == nil || !failoverErr.IsCompatibilityMismatch() {
+		return false
+	}
+	switch strings.TrimSpace(failoverErr.CompatibilityCategory) {
+	case "context_limit_exceeded", "input_limit_exceeded", "attachment_limit_exceeded":
+		return false
+	default:
+		return true
+	}
 }
 
 func hashOpenAICompatibilityRequestShape(requestBody []byte) string {

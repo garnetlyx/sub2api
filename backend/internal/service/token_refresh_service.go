@@ -65,7 +65,7 @@ func NewTokenRefreshService(
 	claudeRefresher := NewClaudeTokenRefresher(oauthService)
 	geminiRefresher := NewGeminiTokenRefresher(geminiOAuthService)
 	agRefresher := NewAntigravityTokenRefresher(antigravityOAuthService)
-	copilotRefresher := NewCopilotTokenRefresher(copilotOAuthService)
+	copilotRefresher := NewCopilotTokenRefresher(copilotOAuthService, accountRepo)
 	kiroRefresher := NewKiroTokenRefresher(kiroOAuthService)
 
 	// 注册平台特定的刷新器（TokenRefresher 接口）

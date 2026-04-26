@@ -1738,6 +1738,55 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 	return accounts, nil
 }
 
+// AccountSelectionDiagnostics holds a breakdown of why no account could be selected.
+// Populated only on the failure path; zero cost on the hot path.
+type AccountSelectionDiagnostics struct {
+	TotalCandidates        int
+	UnschedulableCount     int
+	RateLimitedCount       int
+	OverloadedCount        int
+	TempUnschedulableCount int
+	ModelFilteredCount     int
+	CopilotNoModelList     int // Copilot account excluded: available_models empty
+	CopilotModelNotInList  int // Copilot account excluded: model not in available_models
+}
+
+// DiagnoseAccountSelection returns a breakdown of why account selection failed for
+// the given group and model. It is safe to call only on the failure path.
+func (s *OpenAIGatewayService) DiagnoseAccountSelection(ctx context.Context, groupID *int64, requestedModel string) AccountSelectionDiagnostics {
+	accounts, err := s.listSchedulableAccounts(ctx, groupID)
+	if err != nil || len(accounts) == 0 {
+		return AccountSelectionDiagnostics{}
+	}
+	var d AccountSelectionDiagnostics
+	d.TotalCandidates = len(accounts)
+	for i := range accounts {
+		acc := &accounts[i]
+		if !acc.IsSchedulable() {
+			d.UnschedulableCount++
+			if acc.IsRateLimited() {
+				d.RateLimitedCount++
+			} else if acc.IsOverloaded() {
+				d.OverloadedCount++
+			} else if acc.TempUnschedulableUntil != nil {
+				d.TempUnschedulableCount++
+			}
+			continue
+		}
+		if requestedModel != "" && !supportsOpenAIGatewayRequestedModel(acc, requestedModel) {
+			d.ModelFilteredCount++
+			if acc.IsCopilot() {
+				if len(acc.GetCopilotAvailableModels()) == 0 {
+					d.CopilotNoModelList++
+				} else {
+					d.CopilotModelNotInList++
+				}
+			}
+		}
+	}
+	return d
+}
+
 // HasSchedulableModelSupport reports whether any currently schedulable
 // OpenAI-compatible account can serve the requested model. Callers may exclude
 // internal account names that should not drive public handler routing.
@@ -1899,12 +1948,10 @@ func supportsOpenAIGatewayRequestedModel(account *Account, requestedModel string
 		switch {
 		case account.IsCopilot():
 			available := account.GetCopilotAvailableModels()
-			if len(available) > 0 {
-				return modelListContainsRequestedModel(available, requestedModel)
-			}
-			if !looksLikeOpenAIModel(requestedModel) && !looksLikeAnthropicModel(requestedModel) {
+			if len(available) == 0 {
 				return false
 			}
+			return modelListContainsRequestedModel(available, requestedModel)
 		case account.IsKiro():
 			if available := account.GetCopilotAvailableModels(); len(available) > 0 {
 				return modelListContainsRequestedModel(available, requestedModel)

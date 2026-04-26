@@ -537,6 +537,31 @@ func TestOpenAIGatewayService_CompatibilityExclusionCacheRoundTrip(t *testing.T)
 	require.Len(t, cached, 1)
 }
 
+func TestOpenAIGatewayService_CompatibilityExclusionCacheSkipsContentLimitCategories(t *testing.T) {
+	for _, category := range []string{
+		"context_limit_exceeded",
+		"input_limit_exceeded",
+		"attachment_limit_exceeded",
+	} {
+		t.Run(category, func(t *testing.T) {
+			cache := &stubGatewayCache{}
+			svc := &OpenAIGatewayService{cache: cache}
+			groupID := int64(9)
+			scopeKey := svc.BuildOpenAICompatibilityScopeKey("chat_completions", "gpt-5.5", []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":[{"type":"text","text":"image"},{"type":"image_url","image_url":{"url":"data:image/png;base64,abc"}}]}]}`))
+			failoverErr := &UpstreamFailoverError{
+				Reason:                UpstreamFailoverReasonCompatibilityMismatch,
+				CompatibilityCategory: category,
+			}
+
+			require.NoError(t, svc.RememberCompatibilityExclusion(context.Background(), &groupID, scopeKey, PlatformOpenAI, failoverErr))
+
+			cached, err := svc.LoadCompatibilityExcludedPlatforms(context.Background(), &groupID, scopeKey)
+			require.NoError(t, err)
+			require.Empty(t, cached)
+		})
+	}
+}
+
 func TestOpenAISelectAccountWithLoadAwareness_FiltersUnschedulableWhenNoConcurrencyService(t *testing.T) {
 	now := time.Now()
 	resetAt := now.Add(10 * time.Minute)

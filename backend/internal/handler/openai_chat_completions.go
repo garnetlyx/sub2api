@@ -135,10 +135,21 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			service.OpenAIUpstreamTransportAny,
 		)
 		if err != nil {
+			diag := h.gatewayService.DiagnoseAccountSelection(c.Request.Context(), currentAPIKey.GroupID, reqModel)
+			_, copilotCompatExcluded := fs.ExcludedPlatforms["copilot"]
 			reqLog.Warn("openai_chat_completions.account_select_failed",
 				zap.Error(err),
 				zap.Int("excluded_account_count", len(fs.FailedAccountIDs)),
 				zap.Int("excluded_platform_count", len(fs.ExcludedPlatforms)),
+				zap.Int("total_candidates", diag.TotalCandidates),
+				zap.Int("unschedulable", diag.UnschedulableCount),
+				zap.Int("rate_limited", diag.RateLimitedCount),
+				zap.Int("overloaded", diag.OverloadedCount),
+				zap.Int("temp_unschedulable", diag.TempUnschedulableCount),
+				zap.Int("model_filtered", diag.ModelFilteredCount),
+				zap.Int("copilot_no_model_list", diag.CopilotNoModelList),
+				zap.Int("copilot_model_not_in_list", diag.CopilotModelNotInList),
+				zap.Bool("copilot_compat_excluded", copilotCompatExcluded),
 			)
 			if len(fs.FailedAccountIDs) == 0 {
 				defaultModel := ""
