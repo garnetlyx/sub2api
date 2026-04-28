@@ -980,6 +980,39 @@ func TestAnthropicToResponses_ToolChoiceSpecific(t *testing.T) {
 	require.NoError(t, json.Unmarshal(resp.ToolChoice, &tc))
 	assert.Equal(t, "function", tc["type"])
 	assert.Equal(t, "get_weather", tc["name"])
+	assert.NotContains(t, tc, "function")
+}
+
+func TestResponsesToAnthropicRequest_ToolChoiceFunctionName(t *testing.T) {
+	req := &ResponsesRequest{
+		Model:      "gpt-5.2",
+		Input:      json.RawMessage(`[{"role":"user","content":"Hello"}]`),
+		ToolChoice: json.RawMessage(`{"type":"function","name":"get_weather"}`),
+	}
+
+	resp, err := ResponsesToAnthropicRequest(req)
+	require.NoError(t, err)
+
+	var tc map[string]string
+	require.NoError(t, json.Unmarshal(resp.ToolChoice, &tc))
+	assert.Equal(t, "tool", tc["type"])
+	assert.Equal(t, "get_weather", tc["name"])
+}
+
+func TestResponsesToAnthropicRequest_ToolChoiceLegacyFunctionName(t *testing.T) {
+	req := &ResponsesRequest{
+		Model:      "gpt-5.2",
+		Input:      json.RawMessage(`[{"role":"user","content":"Hello"}]`),
+		ToolChoice: json.RawMessage(`{"type":"function","function":{"name":"get_weather"}}`),
+	}
+
+	resp, err := ResponsesToAnthropicRequest(req)
+	require.NoError(t, err)
+
+	var tc map[string]string
+	require.NoError(t, json.Unmarshal(resp.ToolChoice, &tc))
+	assert.Equal(t, "tool", tc["type"])
+	assert.Equal(t, "get_weather", tc["name"])
 }
 
 func TestAnthropicStreamAccumulator_TextAndToolUse(t *testing.T) {
