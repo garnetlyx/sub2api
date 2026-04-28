@@ -832,6 +832,25 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			service.SetOpsLatencyMs(c, service.OpsTimeToFirstTokenMsKey, int64(*result.FirstTokenMs))
 		}
 		if err != nil {
+			var bridgeErr *service.OpenAIBridgeFallbackError
+			if errors.As(err, &bridgeErr) {
+				reqLog.Warn("openai_messages.bridge_fallback",
+					zap.Int64("account_id", account.ID),
+					zap.String("account_name", account.Name),
+					zap.String("bridge_platform", bridgeErr.BridgePlatform),
+					zap.String("bridge_endpoint", bridgeErr.Endpoint),
+					zap.String("reason", bridgeErr.Message),
+				)
+				bridgeAccount, bridgeLookupErr := h.gatewayService.FindSchedulableBridgeAccount(c.Request.Context(), bridgeErr.BridgePlatform)
+				if bridgeLookupErr == nil && bridgeAccount != nil {
+					result, err = h.gatewayService.ForwardBridgePassthrough(c.Request.Context(), c, bridgeAccount, bridgeErr.Endpoint, forwardBody)
+					if err == nil {
+						account = bridgeAccount
+					}
+				}
+			}
+		}
+		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				recordCompatibilityExclusion(c.Request.Context(), reqLog, h.gatewayService, currentAPIKey.GroupID, compatibilityScopeKey, account.Platform, failoverErr, "openai_messages.compatibility_exclusion_cache_store_failed")
