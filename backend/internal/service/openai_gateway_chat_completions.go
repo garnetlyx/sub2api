@@ -956,6 +956,20 @@ func (s *OpenAIGatewayService) forwardKiroChatCompletions(
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		if resp.StatusCode == http.StatusBadRequest && kiroRequestHasModelID(kiroReq) && strings.Contains(string(respBody), "INVALID_MODEL_ID") {
+			clearKiroRequestModelID(kiroReq)
+			resp, respErr = kiro.GenerateAssistantResponse(ctx, httpClient, region, accessToken, kiroReq)
+			if respErr != nil {
+				return nil, fmt.Errorf("kiro upstream retry without modelId: %w", respErr)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode < 400 {
+				goto kiroResponseOK
+			}
+			respBody, _ = io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+			_ = resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		}
 		upstreamMsg := strings.TrimSpace(string(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 		if resp.StatusCode == http.StatusUnauthorized {
@@ -971,6 +985,7 @@ func (s *OpenAIGatewayService) forwardKiroChatCompletions(
 		return nil, fmt.Errorf("kiro upstream error: status %d", resp.StatusCode)
 	}
 
+kiroResponseOK:
 	if clientStream {
 		c.Writer.Header().Set("Content-Type", "text/event-stream")
 		c.Writer.Header().Set("Cache-Control", "no-cache")
@@ -978,7 +993,8 @@ func (s *OpenAIGatewayService) forwardKiroChatCompletions(
 		c.Writer.Header().Set("X-Accel-Buffering", "no")
 		c.Writer.WriteHeader(http.StatusOK)
 
-		contentCh, errCh := kiro.ExtractStreamingChunks(resp.Body)
+		eventCh, errCh := kiro.ExtractStreamingEvents(resp.Body)
+		toolCollector := kiro.NewToolCallCollectorForStream()
 		finishReason := "stop"
 
 		roleChunk, _ := kiro.BuildOpenAIStreamChunk("", originalModel, true, nil)
@@ -987,19 +1003,34 @@ func (s *OpenAIGatewayService) forwardKiroChatCompletions(
 
 		for {
 			select {
-			case content, ok := <-contentCh:
+			case event, ok := <-eventCh:
 				if !ok {
 					goto kiroStreamDone
 				}
-				chunk, _ := kiro.BuildOpenAIStreamChunk(content, originalModel, false, nil)
-				fmt.Fprintf(c.Writer, "data: %s\n\n", chunk)
-				c.Writer.Flush()
-			case <-errCh:
-				goto kiroStreamDone
+				if event.Content != "" {
+					chunk, _ := kiro.BuildOpenAIStreamChunk(event.Content, originalModel, false, nil)
+					fmt.Fprintf(c.Writer, "data: %s\n\n", chunk)
+					c.Writer.Flush()
+				}
+				if event.ToolUse != nil {
+					toolCollector.Add(*event.ToolUse)
+				}
+			case streamErr, ok := <-errCh:
+				if !ok {
+					continue
+				}
+				if streamErr != nil {
+					goto kiroStreamDone
+				}
 			}
 		}
 
 	kiroStreamDone:
+		if toolCalls := toolCollector.Finish(); len(toolCalls) > 0 {
+			finishReason = "tool_calls"
+			chunk, _ := kiro.BuildOpenAIStreamToolCallsChunk(toolCalls, originalModel)
+			fmt.Fprintf(c.Writer, "data: %s\n\n", chunk)
+		}
 		finishChunk, _ := kiro.BuildOpenAIStreamChunk("", originalModel, false, &finishReason)
 		fmt.Fprintf(c.Writer, "data: %s\n\n", finishChunk)
 		fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
@@ -1018,7 +1049,8 @@ func (s *OpenAIGatewayService) forwardKiroChatCompletions(
 	}
 
 	content := kiro.ExtractAssistantContent(events)
-	respBytes, buildErr := kiro.BuildOpenAIResponse(content, originalModel, 0)
+	toolCalls := kiro.ExtractToolCalls(events)
+	respBytes, buildErr := kiro.BuildOpenAIResponseWithToolCalls(content, originalModel, 0, toolCalls)
 	if buildErr != nil {
 		return nil, fmt.Errorf("build openai response: %w", buildErr)
 	}
@@ -1031,4 +1063,25 @@ func (s *OpenAIGatewayService) forwardKiroChatCompletions(
 		BillingModel: billingModel, UpstreamModel: upstreamModel,
 		Stream: false, Duration: time.Since(startTime),
 	}, nil
+}
+
+func kiroRequestHasModelID(req *kiro.GenerateAssistantResponseRequest) bool {
+	if req == nil || req.ConversationState == nil || req.ConversationState.CurrentMessage == nil || req.ConversationState.CurrentMessage.UserInputMessage == nil {
+		return false
+	}
+	return strings.TrimSpace(req.ConversationState.CurrentMessage.UserInputMessage.ModelID) != ""
+}
+
+func clearKiroRequestModelID(req *kiro.GenerateAssistantResponseRequest) {
+	if req == nil || req.ConversationState == nil {
+		return
+	}
+	if req.ConversationState.CurrentMessage != nil && req.ConversationState.CurrentMessage.UserInputMessage != nil {
+		req.ConversationState.CurrentMessage.UserInputMessage.ModelID = ""
+	}
+	for i := range req.ConversationState.History {
+		if req.ConversationState.History[i].UserInputMessage != nil {
+			req.ConversationState.History[i].UserInputMessage.ModelID = ""
+		}
+	}
 }

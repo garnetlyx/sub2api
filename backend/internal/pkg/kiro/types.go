@@ -105,8 +105,39 @@ type HistoryItem struct {
 }
 
 type AssistantResponseMessage struct {
-	MessageID string `json:"messageId"`
-	Content   string `json:"content"`
+	MessageID string        `json:"messageId"`
+	Content   string        `json:"content"`
+	ToolUses  []KiroToolUse `json:"toolUses,omitempty"`
+}
+
+type KiroToolSpec struct {
+	ToolSpecification KiroToolSpecification `json:"toolSpecification"`
+}
+
+type KiroToolSpecification struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema KiroInputSchema `json:"inputSchema"`
+}
+
+type KiroInputSchema struct {
+	JSON any `json:"json"`
+}
+
+type KiroToolResult struct {
+	Content   []KiroToolResultContent `json:"content"`
+	Status    string                  `json:"status"`
+	ToolUseID string                  `json:"toolUseId"`
+}
+
+type KiroToolResultContent struct {
+	Text string `json:"text"`
+}
+
+type KiroToolUse struct {
+	Name      string `json:"name"`
+	Input     any    `json:"input"`
+	ToolUseID string `json:"toolUseId"`
 }
 
 type ModelInfo struct {
@@ -154,12 +185,12 @@ func ExtractSubjectFromAccessToken(token string) string {
 }
 
 var DefaultModelMapping = map[string]string{
-	"claude-sonnet-4-5-20250929": "claude-sonnet-4-5-20250929",
-	"claude-sonnet-4-5":          "claude-sonnet-4-5-20250929",
-	"claude-opus-4-20250514":     "claude-opus-4-20250514",
-	"claude-opus-4":              "claude-opus-4-20250514",
-	"claude-haiku-4-5-20251001":  "claude-haiku-4-5-20251001",
-	"claude-haiku-4-5":           "claude-haiku-4-5-20251001",
-	"claude-sonnet-4-6":          "claude-sonnet-4-6",
-	"claude-opus-4-6":            "claude-opus-4-6",
+	"claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
+	"claude-sonnet-4-5":          "claude-sonnet-4.5",
+	"claude-opus-4-20250514":     "claude-opus-4",
+	"claude-opus-4":              "claude-opus-4",
+	"claude-haiku-4-5-20251001":  "claude-haiku-4.5",
+	"claude-haiku-4-5":           "claude-haiku-4.5",
+	"claude-sonnet-4-6":          "claude-sonnet-4.6",
+	"claude-opus-4-6":            "claude-opus-4.6",
 }

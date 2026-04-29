@@ -27,6 +27,7 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 	openAIOAuthSvc := service.NewOpenAIOAuthService(nil, nil)
 	geminiOAuthSvc := service.NewGeminiOAuthService(nil, nil, nil, nil, cfg)
 	antigravityOAuthSvc := service.NewAntigravityOAuthService(nil)
+	kiroOAuthSvc := service.NewKiroOAuthService(nil, nil)
 
 	tokenRefreshSvc := service.NewTokenRefreshService(
 		nil,
@@ -34,6 +35,8 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		openAIOAuthSvc,
 		geminiOAuthSvc,
 		antigravityOAuthSvc,
+		nil,
+		kiroOAuthSvc,
 		nil,
 		nil,
 		cfg,

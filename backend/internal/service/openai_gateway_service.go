@@ -1692,7 +1692,7 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 	var copilotAccounts []Account
 	var kiroAccounts []Account
 	var err error
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple && groupID == nil {
 		openaiAccounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, PlatformOpenAI)
 		if err != nil {
 			return nil, fmt.Errorf("query openai accounts failed: %w", err)

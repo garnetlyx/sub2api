@@ -34,6 +34,45 @@ type snapshotUpdateAccountRepo struct {
 	updateExtraCalls chan map[string]any
 }
 
+type groupAwareOpenAIAccountRepo struct {
+	AccountRepository
+	accounts      []Account
+	groupCalls    int
+	platformCalls int
+}
+
+func (r *groupAwareOpenAIAccountRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {
+	r.groupCalls++
+	var result []Account
+	for _, acc := range r.accounts {
+		if acc.Platform != platform {
+			continue
+		}
+		for _, group := range acc.AccountGroups {
+			if group.GroupID == groupID {
+				result = append(result, acc)
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
+func (r *groupAwareOpenAIAccountRepo) ListSchedulableByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	r.platformCalls++
+	var result []Account
+	for _, acc := range r.accounts {
+		if acc.Platform == platform {
+			result = append(result, acc)
+		}
+	}
+	return result, nil
+}
+
+func (r *groupAwareOpenAIAccountRepo) ListSchedulableUngroupedByPlatform(ctx context.Context, platform string) ([]Account, error) {
+	return r.ListSchedulableByPlatform(ctx, platform)
+}
+
 func (r *snapshotUpdateAccountRepo) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
 	if r.updateExtraCalls != nil {
 		copied := make(map[string]any, len(updates))
@@ -76,6 +115,25 @@ func (r stubOpenAIAccountRepo) ListSchedulableByPlatform(ctx context.Context, pl
 
 func (r stubOpenAIAccountRepo) ListSchedulableUngroupedByPlatform(ctx context.Context, platform string) ([]Account, error) {
 	return r.ListSchedulableByPlatform(ctx, platform)
+}
+
+func TestOpenAIGatewayService_ListSchedulableAccountsSimpleModeHonorsExplicitGroup(t *testing.T) {
+	groupID := int64(13)
+	repo := &groupAwareOpenAIAccountRepo{accounts: []Account{
+		{ID: 12, Platform: PlatformCopilot, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: 12}}},
+		{ID: 19, Platform: PlatformKiro, Status: StatusActive, Schedulable: true, AccountGroups: []AccountGroup{{GroupID: groupID}}},
+	}}
+	svc := &OpenAIGatewayService{
+		accountRepo: repo,
+		cfg:         &config.Config{RunMode: config.RunModeSimple},
+	}
+
+	accounts, err := svc.listSchedulableAccounts(context.Background(), &groupID)
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	require.Equal(t, int64(19), accounts[0].ID)
+	require.Positive(t, repo.groupCalls)
+	require.Zero(t, repo.platformCalls)
 }
 
 type stubConcurrencyCache struct {

@@ -12,9 +12,9 @@ import (
 )
 
 const (
-	eventStreamHeaderTypeID   = 0x0
-	eventStreamDataTypeID     = 0x05
-	eventStreamMessageTypeID  = 0x04
+	eventStreamHeaderTypeID  = 0x0
+	eventStreamDataTypeID    = 0x05
+	eventStreamMessageTypeID = 0x04
 
 	awsEventStreamVersion     = 0x80
 	awsEventStreamVersionMask = 0xF0
@@ -26,20 +26,31 @@ type EventStreamEvent struct {
 }
 
 type AssistantResponseEvent struct {
-	AssistEventID string `json:"assistEventId"`
-	Content       string `json:"content"`
-	ModelID       string `json:"modelId"`
+	AssistEventID          string `json:"assistEventId"`
+	Content                string `json:"content"`
+	ModelID                string `json:"modelId"`
 	AssistantResponseEvent struct {
 		Content string `json:"content"`
 	} `json:"assistantResponseEvent"`
 }
 
 type ToolUseEvent struct {
+	ToolUseID string `json:"toolUseId"`
+	Name      string `json:"name"`
+	Input     string `json:"input"`
+	Stop      bool   `json:"stop"`
+
 	ToolUseEvent struct {
-		ToolUseID   string `json:"toolUseId"`
-		Name        string `json:"name"`
-		Input       string `json:"input"`
+		ToolUseID string `json:"toolUseId"`
+		Name      string `json:"name"`
+		Input     string `json:"input"`
+		Stop      bool   `json:"stop"`
 	} `json:"toolUseEvent"`
+}
+
+type ParsedEvent struct {
+	Content string
+	ToolUse *ToolUseEvent
 }
 
 func ParseEventStream(reader io.Reader) ([]EventStreamEvent, error) {
@@ -170,6 +181,16 @@ func ExtractAssistantContent(events []EventStreamEvent) string {
 	return sb.String()
 }
 
+func ExtractToolCalls(events []EventStreamEvent) []OpenAIToolCall {
+	collector := newToolCallCollector()
+	for _, event := range events {
+		if toolEvent := extractToolUsePayload(event.Payload); toolEvent != nil {
+			collector.Add(*toolEvent)
+		}
+	}
+	return collector.Finish()
+}
+
 func extractAssistantContentPayload(payload []byte) string {
 	if len(payload) == 0 {
 		return ""
@@ -184,12 +205,135 @@ func extractAssistantContentPayload(payload []byte) string {
 	return resp.Content
 }
 
-func ExtractStreamingChunks(reader io.Reader) (<-chan string, <-chan error) {
-	contentCh := make(chan string, 64)
+func extractToolUsePayload(payload []byte) *ToolUseEvent {
+	if len(payload) == 0 {
+		return nil
+	}
+	var resp ToolUseEvent
+	if err := json.Unmarshal(payload, &resp); err != nil {
+		return nil
+	}
+	if resp.ToolUseEvent.ToolUseID != "" || resp.ToolUseEvent.Name != "" || resp.ToolUseEvent.Input != "" || resp.ToolUseEvent.Stop {
+		resp.ToolUseID = resp.ToolUseEvent.ToolUseID
+		resp.Name = resp.ToolUseEvent.Name
+		resp.Input = resp.ToolUseEvent.Input
+		resp.Stop = resp.ToolUseEvent.Stop
+	}
+	if resp.ToolUseID == "" && resp.Name == "" && resp.Input == "" && !resp.Stop {
+		return nil
+	}
+	return &resp
+}
+
+type toolCallCollector struct {
+	order   []string
+	byID    map[string]*OpenAIToolCall
+	buffers map[string]*strings.Builder
+}
+
+func newToolCallCollector() *toolCallCollector {
+	return &toolCallCollector{
+		byID:    make(map[string]*OpenAIToolCall),
+		buffers: make(map[string]*strings.Builder),
+	}
+}
+
+type ToolCallCollector struct {
+	inner *toolCallCollector
+}
+
+func NewToolCallCollectorForStream() *ToolCallCollector {
+	return &ToolCallCollector{inner: newToolCallCollector()}
+}
+
+func (c *ToolCallCollector) Add(event ToolUseEvent) {
+	if c == nil {
+		return
+	}
+	if c.inner == nil {
+		c.inner = newToolCallCollector()
+	}
+	c.inner.Add(event)
+}
+
+func (c *ToolCallCollector) Finish() []OpenAIToolCall {
+	if c == nil || c.inner == nil {
+		return nil
+	}
+	return c.inner.Finish()
+}
+
+func (c *toolCallCollector) Add(event ToolUseEvent) {
+	id := strings.TrimSpace(event.ToolUseID)
+	if id == "" {
+		id = fmt.Sprintf("call_kiro_%d", len(c.order))
+	}
+	call, exists := c.byID[id]
+	if !exists {
+		call = &OpenAIToolCall{
+			ID:   id,
+			Type: "function",
+			Function: OpenAIToolFunction{
+				Name:      strings.TrimSpace(event.Name),
+				Arguments: "",
+			},
+		}
+		c.byID[id] = call
+		c.buffers[id] = &strings.Builder{}
+		c.order = append(c.order, id)
+	}
+	if call.Function.Name == "" && strings.TrimSpace(event.Name) != "" {
+		call.Function.Name = strings.TrimSpace(event.Name)
+	}
+	if event.Input != "" {
+		c.buffers[id].WriteString(event.Input)
+	}
+	if event.Stop {
+		args := strings.TrimSpace(c.buffers[id].String())
+		if args == "" {
+			args = "{}"
+		}
+		call.Function.Arguments = normalizeToolArguments(args)
+	}
+}
+
+func (c *toolCallCollector) Finish() []OpenAIToolCall {
+	out := make([]OpenAIToolCall, 0, len(c.order))
+	for _, id := range c.order {
+		call := c.byID[id]
+		if call == nil || call.Function.Name == "" {
+			continue
+		}
+		if call.Function.Arguments == "" {
+			args := strings.TrimSpace(c.buffers[id].String())
+			if args == "" {
+				args = "{}"
+			}
+			call.Function.Arguments = normalizeToolArguments(args)
+		}
+		out = append(out, *call)
+	}
+	return out
+}
+
+func normalizeToolArguments(args string) string {
+	var parsed any
+	if err := json.Unmarshal([]byte(args), &parsed); err != nil {
+		return "{}"
+	}
+	normalized, err := json.Marshal(parsed)
+	if err != nil {
+		return "{}"
+	}
+	return string(normalized)
+}
+
+func ExtractStreamingEvents(reader io.Reader) (<-chan ParsedEvent, <-chan error) {
+	eventCh := make(chan ParsedEvent, 64)
 	errCh := make(chan error, 1)
 
 	go func() {
-		defer close(contentCh)
+		defer close(eventCh)
 		defer close(errCh)
 
 		buf := make([]byte, 4096)
@@ -229,7 +373,10 @@ func ExtractStreamingChunks(reader io.Reader) (<-chan string, <-chan error) {
 					}
 
 					if content := extractAssistantContentPayload(payload); content != "" {
-						contentCh <- content
+						eventCh <- ParsedEvent{Content: content}
+					}
+					if toolEvent := extractToolUsePayload(payload); toolEvent != nil {
+						eventCh <- ParsedEvent{ToolUse: toolEvent}
 					}
 				}
 			}
@@ -243,5 +390,19 @@ func ExtractStreamingChunks(reader io.Reader) (<-chan string, <-chan error) {
 		}
 	}()
 
+	return eventCh, errCh
+}
+
+func ExtractStreamingChunks(reader io.Reader) (<-chan string, <-chan error) {
+	contentCh := make(chan string, 64)
+	eventCh, errCh := ExtractStreamingEvents(reader)
+	go func() {
+		defer close(contentCh)
+		for event := range eventCh {
+			if event.Content != "" {
+				contentCh <- event.Content
+			}
+		}
+	}()
 	return contentCh, errCh
 }

@@ -441,6 +441,9 @@ func (s *KiroOAuthService) BuildAccountCredentials(result *KiroImportResult) map
 	if !time.Now().Add(time.Duration(result.ExpiresIn) * time.Second).IsZero() {
 		creds["expires_at"] = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
 	}
+	if mapping := buildKiroModelMapping(result.AvailableModels); len(mapping) > 0 {
+		creds["model_mapping"] = mapping
+	}
 	return creds
 }
 
@@ -467,11 +470,36 @@ func (s *KiroOAuthService) BuildAccountExtra(result *KiroImportResult) map[strin
 	if len(result.AvailableModels) > 0 {
 		modelIDs := make([]string, 0, len(result.AvailableModels))
 		for _, m := range result.AvailableModels {
-			modelIDs = append(modelIDs, m.ModelID)
+			modelID := kiro.NormalizeKiroModelID(m.ModelID)
+			if strings.TrimSpace(modelID) != "" {
+				modelIDs = append(modelIDs, modelID)
+			}
 		}
 		extra["available_models"] = modelIDs
 	}
 	return extra
+}
+
+func buildKiroModelMapping(models []kiro.ModelInfo) map[string]any {
+	if len(models) == 0 {
+		return nil
+	}
+	mapping := make(map[string]any, len(models))
+	for _, model := range models {
+		raw := strings.TrimSpace(model.ModelID)
+		if raw == "" {
+			continue
+		}
+		public := kiro.NormalizeKiroModelID(raw)
+		if public == "" {
+			continue
+		}
+		mapping[public] = raw
+	}
+	if len(mapping) == 0 {
+		return nil
+	}
+	return mapping
 }
 
 func (s *KiroOAuthService) RefreshDeviceAccount(ctx context.Context, account *Account, proxyID *int64) (*KiroImportResult, error) {
