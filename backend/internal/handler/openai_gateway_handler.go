@@ -816,7 +816,31 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		if currentChannelMappingMsg.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, currentChannelMappingMsg.MappedModel)
 		}
-		result, err := h.gatewayService.ForwardAsAnthropic(c.Request.Context(), c, account, forwardBody, promptCacheKey, defaultMappedModel)
+		var result *service.OpenAIForwardResult
+		if account.IsKiro() {
+			var kiroResult *service.ForwardResult
+			kiroResult, err = h.gatewayService.ForwardKiroAnthropicMessages(c.Request.Context(), c, account, forwardBody, reqModel, reqStream)
+			if kiroResult != nil {
+				result = &service.OpenAIForwardResult{
+					RequestID: kiroResult.RequestID,
+					Usage: service.OpenAIUsage{
+						InputTokens:              kiroResult.Usage.InputTokens,
+						OutputTokens:             kiroResult.Usage.OutputTokens,
+						CacheCreationInputTokens: kiroResult.Usage.CacheCreationInputTokens,
+						CacheReadInputTokens:     kiroResult.Usage.CacheReadInputTokens,
+						ImageOutputTokens:        kiroResult.Usage.ImageOutputTokens,
+					},
+					Model:         kiroResult.Model,
+					BillingModel:  kiroResult.UpstreamModel,
+					UpstreamModel: kiroResult.UpstreamModel,
+					Stream:        kiroResult.Stream,
+					Duration:      kiroResult.Duration,
+					FirstTokenMs:  kiroResult.FirstTokenMs,
+				}
+			}
+		} else {
+			result, err = h.gatewayService.ForwardAsAnthropic(c.Request.Context(), c, account, forwardBody, promptCacheKey, defaultMappedModel)
+		}
 
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if accountReleaseFunc != nil {

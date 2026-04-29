@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -209,6 +210,109 @@ func ConvertOpenAIToKiro(body []byte, profileArn string) (*GenerateAssistantResp
 	return req, nil
 }
 
+func ConvertAnthropicToKiro(body []byte, profileArn string) (*GenerateAssistantResponseRequest, error) {
+	var req apicompat.AnthropicRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, err
+	}
+
+	kiroModel := ResolveModelID(req.Model)
+	tools := convertAnthropicTools(req.Tools)
+
+	var history []HistoryItem
+	if systemText := anthropicSystemText(req.System); systemText != "" {
+		history = append(history, HistoryItem{
+			Role: "user",
+			UserInputMessage: &UserInputMessage{
+				Content: contentOrFallback(systemText),
+				ModelID: kiroModel,
+				Origin:  "AI_EDITOR",
+			},
+		})
+		history = append(history, HistoryItem{
+			Role: "assistant",
+			AssistantResponseMessage: &AssistantResponseMessage{
+				Content:   "Understood.",
+				MessageID: "sys-0",
+			},
+		})
+	}
+
+	lastUserIdx := -1
+	for i, msg := range req.Messages {
+		if msg.Role == "user" {
+			lastUserIdx = i
+		}
+	}
+
+	lastUserContent := ""
+	var currentToolResults []KiroToolResult
+	for i, msg := range req.Messages {
+		contentText := anthropicContentText(msg.Content)
+		switch msg.Role {
+		case "assistant":
+			if i < lastUserIdx {
+				history = append(history, HistoryItem{
+					Role: "assistant",
+					AssistantResponseMessage: &AssistantResponseMessage{
+						Content:   contentOrFallback(contentText),
+						MessageID: fmt.Sprintf("asst-%d", i),
+						ToolUses:  anthropicToolUses(msg.Content),
+					},
+				})
+			}
+		case "user":
+			toolResults := anthropicToolResults(msg.Content)
+			if i == lastUserIdx {
+				lastUserContent = contentText
+				currentToolResults = toolResults
+				continue
+			}
+			if i < lastUserIdx {
+				userMessage := &UserInputMessage{
+					Content: contentOrFallback(contentText),
+					ModelID: kiroModel,
+					Origin:  "AI_EDITOR",
+				}
+				if len(toolResults) > 0 {
+					userMessage.UserInputMessageContext = map[string]any{"toolResults": toolResults}
+				}
+				history = append(history, HistoryItem{
+					Role:             "user",
+					UserInputMessage: userMessage,
+				})
+			}
+		}
+	}
+
+	currentContext := map[string]any{}
+	if len(tools) > 0 {
+		currentContext["tools"] = tools
+	}
+	if len(currentToolResults) > 0 {
+		currentContext["toolResults"] = currentToolResults
+	}
+	currentMessage := &UserInputMessage{
+		Content: contentOrFallback(lastUserContent),
+		ModelID: kiroModel,
+		Origin:  "AI_EDITOR",
+	}
+	if len(currentContext) > 0 {
+		currentMessage.UserInputMessageContext = currentContext
+	}
+
+	return &GenerateAssistantResponseRequest{
+		ProfileArn: profileArn,
+		ConversationState: &ConversationState{
+			ChatTriggerType: "MANUAL",
+			CurrentMessage: &CurrentMessage{
+				UserInputMessage: currentMessage,
+			},
+			History: history,
+		},
+	}, nil
+}
+
 func ResolveModelID(model string) string {
 	model = strings.TrimSpace(model)
 	if mapped, ok := DefaultModelMapping[model]; ok {
@@ -294,6 +398,38 @@ func convertOpenAITools(tools gjson.Result) []KiroToolSpec {
 	return out
 }
 
+func convertAnthropicTools(tools []apicompat.AnthropicTool) []KiroToolSpec {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]KiroToolSpec, 0, len(tools))
+	for _, tool := range tools {
+		name := strings.TrimSpace(tool.Name)
+		if name == "" || strings.TrimSpace(tool.Type) != "" {
+			continue
+		}
+		description := strings.TrimSpace(tool.Description)
+		if description == "" {
+			description = "Tool: " + name
+		}
+		var schema any = map[string]any{"type": "object", "properties": map[string]any{}}
+		if len(tool.InputSchema) > 0 {
+			var parsed any
+			if err := json.Unmarshal(tool.InputSchema, &parsed); err == nil && parsed != nil {
+				schema = parsed
+			}
+		}
+		out = append(out, KiroToolSpec{
+			ToolSpecification: KiroToolSpecification{
+				Name:        name,
+				Description: description,
+				InputSchema: KiroInputSchema{JSON: schema},
+			},
+		})
+	}
+	return out
+}
+
 func convertOpenAIToolCalls(toolCalls []OpenAIToolCall) []KiroToolUse {
 	if len(toolCalls) == 0 {
 		return nil
@@ -324,6 +460,120 @@ func openAIToolResultToKiro(msg OpenAIChatMessage) KiroToolResult {
 	}
 }
 
+func anthropicToolUses(content json.RawMessage) []KiroToolUse {
+	blocks := anthropicContentBlocks(content)
+	if len(blocks) == 0 {
+		return nil
+	}
+	out := make([]KiroToolUse, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type != "tool_use" || strings.TrimSpace(block.Name) == "" {
+			continue
+		}
+		var input any = map[string]any{}
+		if len(block.Input) > 0 {
+			var parsed any
+			if err := json.Unmarshal(block.Input, &parsed); err == nil && parsed != nil {
+				input = parsed
+			}
+		}
+		out = append(out, KiroToolUse{Name: block.Name, Input: input, ToolUseID: block.ID})
+	}
+	return out
+}
+
+func anthropicToolResults(content json.RawMessage) []KiroToolResult {
+	blocks := anthropicContentBlocks(content)
+	if len(blocks) == 0 {
+		return nil
+	}
+	out := make([]KiroToolResult, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type != "tool_result" || strings.TrimSpace(block.ToolUseID) == "" {
+			continue
+		}
+		status := "success"
+		if block.IsError {
+			status = "error"
+		}
+		out = append(out, KiroToolResult{
+			Content:   []KiroToolResultContent{{Text: contentOrFallback(anthropicToolResultText(block.Content))}},
+			Status:    status,
+			ToolUseID: block.ToolUseID,
+		})
+	}
+	return out
+}
+
+func anthropicSystemText(system json.RawMessage) string {
+	system = bytesTrimSpace(system)
+	if len(system) == 0 || string(system) == "null" {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(system, &text); err == nil {
+		return strings.TrimSpace(text)
+	}
+	return anthropicContentText(system)
+}
+
+func anthropicContentText(content json.RawMessage) string {
+	content = bytesTrimSpace(content)
+	if len(content) == 0 || string(content) == "null" {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(content, &text); err == nil {
+		return strings.TrimSpace(text)
+	}
+	blocks := anthropicContentBlocks(content)
+	parts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		switch block.Type {
+		case "text":
+			if strings.TrimSpace(block.Text) != "" {
+				parts = append(parts, block.Text)
+			}
+		case "tool_result":
+			if text := anthropicToolResultText(block.Content); strings.TrimSpace(text) != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func anthropicToolResultText(content json.RawMessage) string {
+	content = bytesTrimSpace(content)
+	if len(content) == 0 || string(content) == "null" {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(content, &text); err == nil {
+		return strings.TrimSpace(text)
+	}
+	blocks := anthropicContentBlocks(content)
+	parts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+			parts = append(parts, block.Text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func anthropicContentBlocks(content json.RawMessage) []apicompat.AnthropicContentBlock {
+	var blocks []apicompat.AnthropicContentBlock
+	if err := json.Unmarshal(content, &blocks); err == nil {
+		return blocks
+	}
+	return nil
+}
+
+func bytesTrimSpace(b []byte) []byte {
+	return []byte(strings.TrimSpace(string(b)))
+}
+
 func contentOrFallback(content string) string {
 	content = strings.TrimSpace(content)
 	if content == "" {
@@ -351,6 +601,69 @@ func extractContent(content gjson.Result) string {
 
 func BuildOpenAIResponse(content string, model string, promptTokens int) ([]byte, error) {
 	return BuildOpenAIResponseWithToolCalls(content, model, promptTokens, nil)
+}
+
+func BuildAnthropicResponse(content string, model string, toolCalls []OpenAIToolCall) ([]byte, error) {
+	now := time.Now().Unix()
+	blocks := anthropicBlocksFromKiro(content, toolCalls)
+	stopReason := "end_turn"
+	if len(toolCalls) > 0 {
+		stopReason = "tool_use"
+	}
+	resp := apicompat.AnthropicResponse{
+		ID:         fmt.Sprintf("msg_kiro_%d", now),
+		Type:       "message",
+		Role:       "assistant",
+		Content:    blocks,
+		Model:      model,
+		StopReason: stopReason,
+		Usage: apicompat.AnthropicUsage{
+			InputTokens:  0,
+			OutputTokens: len(content) / 4,
+		},
+	}
+	return json.Marshal(resp)
+}
+
+func BuildAnthropicStreamEvent(evt apicompat.AnthropicStreamEvent) ([]byte, error) {
+	sse, err := apicompat.ResponsesAnthropicEventToSSE(evt)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(sse), nil
+}
+
+func AnthropicBlocksFromToolCalls(content string, toolCalls []OpenAIToolCall) []apicompat.AnthropicContentBlock {
+	return anthropicBlocksFromKiro(content, toolCalls)
+}
+
+func anthropicBlocksFromKiro(content string, toolCalls []OpenAIToolCall) []apicompat.AnthropicContentBlock {
+	blocks := make([]apicompat.AnthropicContentBlock, 0, 1+len(toolCalls))
+	if strings.TrimSpace(content) != "" {
+		blocks = append(blocks, apicompat.AnthropicContentBlock{
+			Type: "text",
+			Text: content,
+		})
+	}
+	for _, call := range toolCalls {
+		if strings.TrimSpace(call.Function.Name) == "" {
+			continue
+		}
+		input := json.RawMessage(`{}`)
+		if args := strings.TrimSpace(call.Function.Arguments); args != "" && json.Valid([]byte(args)) {
+			input = json.RawMessage(args)
+		}
+		blocks = append(blocks, apicompat.AnthropicContentBlock{
+			Type:  "tool_use",
+			ID:    call.ID,
+			Name:  call.Function.Name,
+			Input: input,
+		})
+	}
+	if len(blocks) == 0 {
+		blocks = append(blocks, apicompat.AnthropicContentBlock{Type: "text", Text: ""})
+	}
+	return blocks
 }
 
 func BuildOpenAIResponseWithToolCalls(content string, model string, promptTokens int, toolCalls []OpenAIToolCall) ([]byte, error) {

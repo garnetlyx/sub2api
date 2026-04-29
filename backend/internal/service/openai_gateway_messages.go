@@ -14,6 +14,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
@@ -219,6 +220,261 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 
 	return result, handleErr
+}
+
+func (s *OpenAIGatewayService) ForwardKiroAnthropicMessages(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	originalModel string,
+	stream bool,
+) (*ForwardResult, error) {
+	startTime := time.Now()
+	billingModel := resolveOpenAIForwardModel(account, originalModel, "")
+	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+
+	region := account.GetExtraString("region")
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	accessToken, _, err := s.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, fmt.Errorf("get kiro access token: %w", err)
+	}
+
+	kiroReq, err := kiro.ConvertAnthropicToKiro(body, account.GetExtraString("profile_arn"))
+	if err != nil {
+		return nil, fmt.Errorf("convert anthropic request to kiro format: %w", err)
+	}
+
+	proxyURL := ""
+	if account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	httpClient, clientErr := kiro.NewHTTPClient(proxyURL)
+	if clientErr != nil {
+		return nil, fmt.Errorf("create kiro http client: %w", clientErr)
+	}
+
+	resp, respErr := kiro.GenerateAssistantResponse(ctx, httpClient, region, accessToken, kiroReq)
+	if respErr != nil {
+		return nil, fmt.Errorf("kiro upstream request: %w", respErr)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		if resp.StatusCode == http.StatusBadRequest && kiroRequestHasModelID(kiroReq) && strings.Contains(string(respBody), "INVALID_MODEL_ID") {
+			clearKiroRequestModelID(kiroReq)
+			resp, respErr = kiro.GenerateAssistantResponse(ctx, httpClient, region, accessToken, kiroReq)
+			if respErr != nil {
+				return nil, fmt.Errorf("kiro upstream retry without modelId: %w", respErr)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode < 400 {
+				goto kiroMessagesOK
+			}
+			respBody, _ = io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+			_ = resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		}
+		upstreamMsg := strings.TrimSpace(string(respBody))
+		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if resp.StatusCode == http.StatusUnauthorized {
+			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			if s.rateLimitService != nil {
+				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+			}
+			return nil, &UpstreamFailoverError{StatusCode: resp.StatusCode, ResponseBody: respBody}
+		}
+		writeAnthropicError(c, resp.StatusCode, "upstream_error", upstreamMsg)
+		return nil, fmt.Errorf("kiro upstream error: status %d", resp.StatusCode)
+	}
+
+kiroMessagesOK:
+	if stream {
+		return s.handleKiroAnthropicStreamingResponse(resp.Body, c, originalModel, billingModel, upstreamModel, startTime)
+	}
+	return s.handleKiroAnthropicBufferedResponse(resp.Body, c, originalModel, billingModel, upstreamModel, startTime)
+}
+
+func (s *OpenAIGatewayService) handleKiroAnthropicBufferedResponse(
+	body io.Reader,
+	c *gin.Context,
+	originalModel string,
+	billingModel string,
+	upstreamModel string,
+	startTime time.Time,
+) (*ForwardResult, error) {
+	events, parseErr := kiro.ParseEventStream(body)
+	if parseErr != nil {
+		return nil, fmt.Errorf("parse kiro event stream: %w", parseErr)
+	}
+
+	content := kiro.ExtractAssistantContent(events)
+	toolCalls := kiro.ExtractToolCalls(events)
+	respBytes, buildErr := kiro.BuildAnthropicResponse(content, originalModel, toolCalls)
+	if buildErr != nil {
+		return nil, fmt.Errorf("build anthropic response: %w", buildErr)
+	}
+
+	c.Data(http.StatusOK, "application/json", respBytes)
+	return &ForwardResult{
+		RequestID:     "",
+		Usage:         ClaudeUsage{InputTokens: 0, OutputTokens: len(content) / 4},
+		Model:         originalModel,
+		UpstreamModel: upstreamModel,
+		Stream:        false,
+		Duration:      time.Since(startTime),
+	}, nil
+}
+
+func (s *OpenAIGatewayService) handleKiroAnthropicStreamingResponse(
+	body io.Reader,
+	c *gin.Context,
+	originalModel string,
+	billingModel string,
+	upstreamModel string,
+	startTime time.Time,
+) (*ForwardResult, error) {
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	c.Writer.WriteHeader(http.StatusOK)
+
+	usage := ClaudeUsage{}
+	firstTokenMs := int(time.Since(startTime).Milliseconds())
+	messageID := fmt.Sprintf("msg_kiro_%d", time.Now().Unix())
+	startEvt := apicompat.AnthropicStreamEvent{
+		Type: "message_start",
+		Message: &apicompat.AnthropicResponse{
+			ID:      messageID,
+			Type:    "message",
+			Role:    "assistant",
+			Content: []apicompat.AnthropicContentBlock{},
+			Model:   originalModel,
+			Usage:   apicompat.AnthropicUsage{},
+		},
+	}
+	if err := writeAnthropicStreamEvent(c, startEvt); err != nil {
+		return &ForwardResult{Model: originalModel, UpstreamModel: upstreamModel, Stream: true, Duration: time.Since(startTime), ClientDisconnect: true, FirstTokenMs: &firstTokenMs}, nil
+	}
+
+	eventCh, errCh := kiro.ExtractStreamingEvents(body)
+	toolCollector := kiro.NewToolCallCollectorForStream()
+	textStarted := false
+	textIndex := 0
+	outputChars := 0
+
+	for {
+		select {
+		case event, ok := <-eventCh:
+			if !ok {
+				goto streamDone
+			}
+			if event.Content != "" {
+				if !textStarted {
+					block := apicompat.AnthropicContentBlock{Type: "text", Text: ""}
+					if err := writeAnthropicStreamEvent(c, apicompat.AnthropicStreamEvent{Type: "content_block_start", Index: &textIndex, ContentBlock: &block}); err != nil {
+						return &ForwardResult{Model: originalModel, UpstreamModel: upstreamModel, Stream: true, Duration: time.Since(startTime), ClientDisconnect: true, FirstTokenMs: &firstTokenMs}, nil
+					}
+					textStarted = true
+				}
+				delta := &apicompat.AnthropicDelta{Type: "text_delta", Text: event.Content}
+				if err := writeAnthropicStreamEvent(c, apicompat.AnthropicStreamEvent{Type: "content_block_delta", Index: &textIndex, Delta: delta}); err != nil {
+					return &ForwardResult{Model: originalModel, UpstreamModel: upstreamModel, Stream: true, Duration: time.Since(startTime), ClientDisconnect: true, FirstTokenMs: &firstTokenMs}, nil
+				}
+				outputChars += len(event.Content)
+			}
+			if event.ToolUse != nil {
+				toolCollector.Add(*event.ToolUse)
+			}
+		case streamErr, ok := <-errCh:
+			if !ok {
+				continue
+			}
+			if streamErr != nil {
+				goto streamDone
+			}
+		}
+	}
+
+streamDone:
+	if textStarted {
+		if err := writeAnthropicStreamEvent(c, apicompat.AnthropicStreamEvent{Type: "content_block_stop", Index: &textIndex}); err != nil {
+			return &ForwardResult{Model: originalModel, UpstreamModel: upstreamModel, Stream: true, Duration: time.Since(startTime), ClientDisconnect: true, FirstTokenMs: &firstTokenMs}, nil
+		}
+	}
+
+	toolCalls := toolCollector.Finish()
+	nextIndex := 0
+	if textStarted {
+		nextIndex = 1
+	}
+	for i, block := range kiro.AnthropicBlocksFromToolCalls("", toolCalls) {
+		if block.Type != "tool_use" {
+			continue
+		}
+		idx := nextIndex + i
+		input := block.Input
+		block.Input = json.RawMessage(`{}`)
+		if err := writeAnthropicStreamEvent(c, apicompat.AnthropicStreamEvent{Type: "content_block_start", Index: &idx, ContentBlock: &block}); err != nil {
+			return &ForwardResult{Model: originalModel, UpstreamModel: upstreamModel, Stream: true, Duration: time.Since(startTime), ClientDisconnect: true, FirstTokenMs: &firstTokenMs}, nil
+		}
+		delta := &apicompat.AnthropicDelta{Type: "input_json_delta", PartialJSON: string(input)}
+		if err := writeAnthropicStreamEvent(c, apicompat.AnthropicStreamEvent{Type: "content_block_delta", Index: &idx, Delta: delta}); err != nil {
+			return &ForwardResult{Model: originalModel, UpstreamModel: upstreamModel, Stream: true, Duration: time.Since(startTime), ClientDisconnect: true, FirstTokenMs: &firstTokenMs}, nil
+		}
+		if err := writeAnthropicStreamEvent(c, apicompat.AnthropicStreamEvent{Type: "content_block_stop", Index: &idx}); err != nil {
+			return &ForwardResult{Model: originalModel, UpstreamModel: upstreamModel, Stream: true, Duration: time.Since(startTime), ClientDisconnect: true, FirstTokenMs: &firstTokenMs}, nil
+		}
+	}
+
+	stopReason := "end_turn"
+	if len(toolCalls) > 0 {
+		stopReason = "tool_use"
+	}
+	usage.OutputTokens = outputChars / 4
+	msgDelta := apicompat.AnthropicStreamEvent{
+		Type:  "message_delta",
+		Delta: &apicompat.AnthropicDelta{StopReason: stopReason, StopSequence: nil},
+		Usage: &apicompat.AnthropicUsage{OutputTokens: usage.OutputTokens},
+	}
+	if err := writeAnthropicStreamEvent(c, msgDelta); err != nil {
+		return &ForwardResult{Model: originalModel, UpstreamModel: upstreamModel, Stream: true, Duration: time.Since(startTime), ClientDisconnect: true, FirstTokenMs: &firstTokenMs}, nil
+	}
+	if err := writeAnthropicStreamEvent(c, apicompat.AnthropicStreamEvent{Type: "message_stop"}); err != nil {
+		return &ForwardResult{Model: originalModel, UpstreamModel: upstreamModel, Stream: true, Duration: time.Since(startTime), ClientDisconnect: true, FirstTokenMs: &firstTokenMs}, nil
+	}
+
+	return &ForwardResult{
+		RequestID:     "",
+		Usage:         usage,
+		Model:         originalModel,
+		UpstreamModel: upstreamModel,
+		Stream:        true,
+		Duration:      time.Since(startTime),
+		FirstTokenMs:  &firstTokenMs,
+	}, nil
+}
+
+func writeAnthropicStreamEvent(c *gin.Context, evt apicompat.AnthropicStreamEvent) error {
+	sse, err := apicompat.ResponsesAnthropicEventToSSE(evt)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprint(c.Writer, sse); err != nil {
+		return err
+	}
+	c.Writer.Flush()
+	return nil
 }
 
 // handleAnthropicErrorResponse reads an upstream error and returns it in
