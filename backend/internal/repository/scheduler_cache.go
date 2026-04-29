@@ -20,6 +20,38 @@ const (
 	schedulerVersionPrefix      = "sched:ver:"
 	schedulerSnapshotPrefix     = "sched:"
 	schedulerLockPrefix         = "sched:lock:"
+
+	// snapshotGraceTTLSeconds gives readers time to finish against the old
+	// versioned snapshot instead of racing an immediate DEL during activation.
+	snapshotGraceTTLSeconds = 60
+)
+
+var (
+	// activateSnapshotScript atomically activates a versioned bucket snapshot.
+	// It prevents version rollback from concurrent writers and expires the old
+	// snapshot after a short grace period instead of deleting it immediately.
+	activateSnapshotScript = redis.NewScript(`
+local currentActive = redis.call('GET', KEYS[1])
+local newVersion = tonumber(ARGV[1])
+
+if currentActive ~= false then
+	local curVersion = tonumber(currentActive)
+	if curVersion and newVersion < curVersion then
+		redis.call('DEL', KEYS[4])
+		return 0
+	end
+end
+
+redis.call('SET', KEYS[1], ARGV[1])
+redis.call('SET', KEYS[2], '1')
+redis.call('SADD', KEYS[3], ARGV[2])
+
+if currentActive ~= false and currentActive ~= ARGV[1] then
+	redis.call('EXPIRE', ARGV[3] .. currentActive, tonumber(ARGV[4]))
+end
+
+return 1
+`)
 )
 
 type schedulerCache struct {
@@ -88,9 +120,9 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 }
 
 func (c *schedulerCache) SetSnapshot(ctx context.Context, bucket service.SchedulerBucket, accounts []service.Account) error {
-	activeKey := schedulerBucketKey(schedulerActivePrefix, bucket)
-	oldActive, _ := c.rdb.Get(ctx, activeKey).Result()
-
+	// Phase 1: 分配新版本号并写入快照数据。
+	// INCR 保证每个调用方获得唯一递增版本号。
+	// 写入的 snapshotKey 是新的版本化 key，reader 尚不知晓，因此无竞态。
 	versionKey := schedulerBucketKey(schedulerVersionPrefix, bucket)
 	version, err := c.rdb.Incr(ctx, versionKey).Result()
 	if err != nil {
@@ -118,18 +150,25 @@ func (c *schedulerCache) SetSnapshot(ctx context.Context, bucket service.Schedul
 			})
 		}
 		pipe.ZAdd(ctx, snapshotKey, members...)
-	} else {
-		pipe.Del(ctx, snapshotKey)
 	}
-	pipe.Set(ctx, activeKey, versionStr, 0)
-	pipe.Set(ctx, schedulerBucketKey(schedulerReadyPrefix, bucket), "1", 0)
-	pipe.SAdd(ctx, schedulerBucketSetKey, bucket.String())
 	if _, err := pipe.Exec(ctx); err != nil {
 		return err
 	}
 
-	if oldActive != "" && oldActive != versionStr {
-		_ = c.rdb.Del(ctx, schedulerSnapshotKey(bucket, oldActive)).Err()
+	// Phase 2: 原子 CAS 激活版本。
+	// Lua 脚本保证：仅当新版本 >= 当前激活版本时才切换 active 指针，
+	// 防止并发写入导致版本回滚。
+	// 旧快照使用 EXPIRE 宽限期而非立即 DEL，避免 reader 竞态。
+	activeKey := schedulerBucketKey(schedulerActivePrefix, bucket)
+	readyKey := schedulerBucketKey(schedulerReadyPrefix, bucket)
+	snapshotKeyPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerSnapshotPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
+
+	keys := []string{activeKey, readyKey, schedulerBucketSetKey, snapshotKey}
+	args := []any{versionStr, bucket.String(), snapshotKeyPrefix, snapshotGraceTTLSeconds}
+
+	_, err = activateSnapshotScript.Run(ctx, c.rdb, keys, args...).Result()
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -207,6 +246,11 @@ func (c *schedulerCache) UpdateLastUsed(ctx context.Context, updates map[int64]t
 func (c *schedulerCache) TryLockBucket(ctx context.Context, bucket service.SchedulerBucket, ttl time.Duration) (bool, error) {
 	key := schedulerBucketKey(schedulerLockPrefix, bucket)
 	return c.rdb.SetNX(ctx, key, time.Now().UnixNano(), ttl).Result()
+}
+
+func (c *schedulerCache) UnlockBucket(ctx context.Context, bucket service.SchedulerBucket) error {
+	key := schedulerBucketKey(schedulerLockPrefix, bucket)
+	return c.rdb.Del(ctx, key).Err()
 }
 
 func (c *schedulerCache) ListBuckets(ctx context.Context) ([]service.SchedulerBucket, error) {
