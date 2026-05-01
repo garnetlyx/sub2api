@@ -48,6 +48,10 @@ func (r *openAIWSRateLimitSignalRepo) UpdateExtra(_ context.Context, _ int64, up
 	return nil
 }
 
+func (r *openAIWSRateLimitSignalRepo) ClearRateLimit(_ context.Context, _ int64) error {
+	return nil
+}
+
 func (r *openAICodexSnapshotAsyncRepo) SetRateLimited(_ context.Context, _ int64, resetAt time.Time) error {
 	if r.rateLimitCh != nil {
 		r.rateLimitCh <- resetAt
@@ -66,10 +70,18 @@ func (r *openAICodexSnapshotAsyncRepo) UpdateExtra(_ context.Context, _ int64, u
 	return nil
 }
 
+func (r *openAICodexSnapshotAsyncRepo) ClearRateLimit(_ context.Context, _ int64) error {
+	return nil
+}
+
 func (r *openAICodexExtraListRepo) SetRateLimited(_ context.Context, _ int64, resetAt time.Time) error {
 	if r.rateLimitCh != nil {
 		r.rateLimitCh <- resetAt
 	}
+	return nil
+}
+
+func (r *openAICodexExtraListRepo) ClearRateLimit(_ context.Context, _ int64) error {
 	return nil
 }
 

@@ -309,13 +309,15 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	// OpenAI 仅匹配已知 GPT-5/Codex 族，避免未知 OpenAI 型号误计价。
 	if strings.Contains(modelLower, "gpt-5") || strings.Contains(modelLower, "codex") {
 		normalized := normalizeCodexModel(modelLower)
-		switch normalized {
-		case "gpt-5.4-mini":
+		switch {
+		case strings.HasPrefix(normalized, "gpt-5.4-mini"):
 			return s.fallbackPrices["gpt-5.4-mini"]
-		case "gpt-5.4-nano":
+		case strings.HasPrefix(normalized, "gpt-5.4-nano"):
 			return s.fallbackPrices["gpt-5.4-nano"]
-		case "gpt-5.4":
+		case normalized == "gpt-5.4" || strings.HasPrefix(normalized, "gpt-5.4-"):
 			return s.fallbackPrices["gpt-5.4"]
+		}
+		switch normalized {
 		case "gpt-5.2":
 			return s.fallbackPrices["gpt-5.2"]
 		case "gpt-5.2-codex":
@@ -660,7 +662,7 @@ func (s *BillingService) shouldApplySessionLongContextPricing(tokens UsageTokens
 
 func isOpenAIGPT54Model(model string) bool {
 	normalized := normalizeCodexModel(strings.TrimSpace(strings.ToLower(model)))
-	return normalized == "gpt-5.4"
+	return normalized == "gpt-5.4" || strings.HasPrefix(normalized, "gpt-5.4-")
 }
 
 // CalculateCostWithConfig 使用配置中的默认倍率计算费用
