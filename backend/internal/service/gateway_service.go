@@ -1633,8 +1633,10 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				if clearSticky {
 					_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 				}
-				if !clearSticky && s.isAccountInGroup(account, groupID) &&
-					s.isAccountAllowedForPlatform(account, platform, useMixed) &&
+				// accountByID is built from the already group-filtered candidate list.
+				// Cached snapshot accounts may not always carry AccountGroups, so
+				// repeating isAccountInGroup here can incorrectly miss a valid sticky hit.
+				if !clearSticky && s.isAccountAllowedForPlatform(account, platform, useMixed) &&
 					(requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) &&
 					s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) &&
 					s.isAccountSchedulableForQuota(account) &&
