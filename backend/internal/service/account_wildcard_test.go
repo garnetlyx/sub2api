@@ -219,6 +219,16 @@ func TestAccountIsModelSupported(t *testing.T) {
 			expected:       false,
 		},
 		{
+			name: "hidden proxy alias matches bare mapping",
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"glm-5.1": "glm-5.1",
+				},
+			},
+			requestedModel: "glm-5.1-zhipu",
+			expected:       true,
+		},
+		{
 			name: "wildcard match not supported",
 			credentials: map[string]any{
 				"model_mapping": map[string]any{
@@ -454,6 +464,17 @@ func TestAccountResolveMappedModel(t *testing.T) {
 			expectedMatch:  true,
 		},
 		{
+			name: "hidden proxy alias resolves to bare mapping",
+			credentials: map[string]any{
+				"model_mapping": map[string]any{
+					"ark-code-latest": "ark-code-latest",
+				},
+			},
+			requestedModel: "ark-code-latest-volcengine",
+			expectedModel:  "ark-code-latest",
+			expectedMatch:  true,
+		},
+		{
 			name:     "dated claude ids are not style-normalized",
 			platform: PlatformKiro,
 			credentials: map[string]any{
@@ -489,6 +510,25 @@ func TestAccountResolveMappedModel(t *testing.T) {
 				t.Fatalf("ResolveMappedModel(%q) = (%q, %v), want (%q, %v)", tt.requestedModel, mappedModel, matched, tt.expectedModel, tt.expectedMatch)
 			}
 		})
+	}
+}
+
+func TestCanonicalizePublicModel_HiddenProxyAliases(t *testing.T) {
+	tests := map[string]string{
+		"ark-code-latest-volcengine":     "ark-code-latest",
+		"deepseek-v3.2-volcengine":       "deepseek-v3.2",
+		"doubao-seed-2.0-pro-volcengine": "doubao-seed-2.0-pro",
+		"glm-5-turbo-zhipu":              "glm-5-turbo",
+		"glm-5.1-zhipu":                  "glm-5.1",
+		"kimi-k2.5-volcengine":           "kimi-k2.5",
+		"minimax-m2.7-minimax":           "minimax-m2.7",
+		"openai/glm-5.1-zhipu":           "openai/glm-5.1",
+	}
+
+	for input, expected := range tests {
+		if got := CanonicalizePublicModel(input); got != expected {
+			t.Fatalf("CanonicalizePublicModel(%q) = %q, want %q", input, got, expected)
+		}
 	}
 }
 

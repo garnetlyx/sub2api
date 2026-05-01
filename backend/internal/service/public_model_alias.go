@@ -8,6 +8,16 @@ import (
 
 var claudeStyleAliasPattern = regexp.MustCompile(`^(claude-(?:opus|sonnet|haiku))-(\d+)([.-])(\d+)(-.+)?$`)
 
+var hiddenPublicModelAliases = map[string]string{
+	"ark-code-latest-volcengine":     "ark-code-latest",
+	"deepseek-v3.2-volcengine":       "deepseek-v3.2",
+	"doubao-seed-2.0-pro-volcengine": "doubao-seed-2.0-pro",
+	"glm-5-turbo-zhipu":              "glm-5-turbo",
+	"glm-5.1-zhipu":                  "glm-5.1",
+	"kimi-k2.5-volcengine":           "kimi-k2.5",
+	"minimax-m2.7-minimax":           "minimax-m2.7",
+}
+
 // CanonicalizePublicModel normalizes style-only public model aliases to the
 // dotted public form while preserving provider-specific upstream IDs.
 func CanonicalizePublicModel(model string) string {
@@ -21,6 +31,10 @@ func CanonicalizePublicModel(model string) string {
 	if idx := strings.Index(trimmed, "/"); idx > 0 && idx < len(trimmed)-1 {
 		prefix = trimmed[:idx+1]
 		name = trimmed[idx+1:]
+	}
+
+	if canonical, ok := hiddenPublicModelAliases[strings.ToLower(name)]; ok {
+		return prefix + canonical
 	}
 
 	matches := claudeStyleAliasPattern.FindStringSubmatch(name)
