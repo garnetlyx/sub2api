@@ -979,9 +979,75 @@ func TestAnthropicToResponses_ToolChoiceSpecific(t *testing.T) {
 	var tc map[string]any
 	require.NoError(t, json.Unmarshal(resp.ToolChoice, &tc))
 	assert.Equal(t, "function", tc["type"])
-	fn, ok := tc["function"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, "get_weather", fn["name"])
+	assert.Equal(t, "get_weather", tc["name"])
+}
+
+func TestAnthropicStreamAccumulator_TextAndToolUse(t *testing.T) {
+	state := NewResponsesEventToAnthropicState()
+	state.Model = "gpt-5.4"
+	acc := NewAnthropicStreamAccumulator("gpt-5.4")
+
+	process := func(evt ResponsesStreamEvent) {
+		for _, anthEvt := range ResponsesEventToAnthropicEvents(&evt, state) {
+			acc.Process(anthEvt)
+		}
+	}
+
+	process(ResponsesStreamEvent{
+		Type:     "response.created",
+		Response: &ResponsesResponse{ID: "resp_123", Status: "in_progress"},
+	})
+	process(ResponsesStreamEvent{
+		Type:        "response.output_item.added",
+		OutputIndex: 0,
+		Item:        &ResponsesOutput{Type: "reasoning"},
+	})
+	process(ResponsesStreamEvent{
+		Type:        "response.output_item.done",
+		OutputIndex: 0,
+		Item:        &ResponsesOutput{Type: "reasoning"},
+	})
+	process(ResponsesStreamEvent{
+		Type:        "response.output_text.delta",
+		OutputIndex: 1,
+		Delta:       "OK",
+	})
+	process(ResponsesStreamEvent{
+		Type:        "response.output_item.added",
+		OutputIndex: 2,
+		Item:        &ResponsesOutput{Type: "function_call", CallID: "call_1", Name: "camera_snapshot"},
+	})
+	process(ResponsesStreamEvent{
+		Type:        "response.function_call_arguments.delta",
+		OutputIndex: 2,
+		Delta:       "{}",
+	})
+	process(ResponsesStreamEvent{
+		Type:        "response.output_item.done",
+		OutputIndex: 2,
+		Item:        &ResponsesOutput{Type: "function_call", CallID: "call_1", Name: "camera_snapshot", Arguments: "{}"},
+	})
+	process(ResponsesStreamEvent{
+		Type: "response.completed",
+		Response: &ResponsesResponse{
+			ID:     "resp_123",
+			Status: "completed",
+			Usage:  &ResponsesUsage{InputTokens: 61, OutputTokens: 34},
+		},
+	})
+
+	resp := acc.Response()
+	assert.Equal(t, "resp_123", resp.ID)
+	assert.Equal(t, "tool_use", resp.StopReason)
+	assert.Equal(t, 61, resp.Usage.InputTokens)
+	assert.Equal(t, 34, resp.Usage.OutputTokens)
+	require.Len(t, resp.Content, 2)
+	assert.Equal(t, "text", resp.Content[0].Type)
+	assert.Equal(t, "OK", resp.Content[0].Text)
+	assert.Equal(t, "tool_use", resp.Content[1].Type)
+	assert.Equal(t, "call_1", resp.Content[1].ID)
+	assert.Equal(t, "camera_snapshot", resp.Content[1].Name)
+	assert.JSONEq(t, `{}`, string(resp.Content[1].Input))
 }
 
 // ---------------------------------------------------------------------------

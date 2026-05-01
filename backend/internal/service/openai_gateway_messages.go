@@ -512,6 +512,9 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 
 	var finalResponse *apicompat.ResponsesResponse
 	var usage OpenAIUsage
+	state := apicompat.NewResponsesEventToAnthropicState()
+	state.Model = originalModel
+	accumulator := apicompat.NewAnthropicStreamAccumulator(originalModel)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -544,6 +547,10 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 				}
 			}
 		}
+
+		for _, evt := range apicompat.ResponsesEventToAnthropicEvents(&event, state) {
+			accumulator.Process(evt)
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -560,7 +567,12 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 		return nil, fmt.Errorf("upstream stream ended without terminal event")
 	}
 
-	anthropicResp := apicompat.ResponsesToAnthropic(finalResponse, originalModel)
+	anthropicResp := accumulator.Response()
+	if !hasUsefulAnthropicContent(anthropicResp.Content) {
+		anthropicResp = apicompat.ResponsesToAnthropic(finalResponse, originalModel)
+	} else if anthropicResp.ID == "" {
+		anthropicResp.ID = finalResponse.ID
+	}
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -576,6 +588,26 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 		Stream:        false,
 		Duration:      time.Since(startTime),
 	}, nil
+}
+
+func hasUsefulAnthropicContent(blocks []apicompat.AnthropicContentBlock) bool {
+	for _, block := range blocks {
+		switch block.Type {
+		case "text":
+			if block.Text != "" {
+				return true
+			}
+		case "thinking":
+			if block.Thinking != "" {
+				return true
+			}
+		case "tool_use", "server_tool_use", "web_search_tool_result":
+			return true
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 // handleAnthropicStreamingResponse reads Responses SSE events from upstream,

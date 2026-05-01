@@ -3,6 +3,7 @@ package apicompat
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -513,4 +514,152 @@ func closeCurrentBlock(state *ResponsesEventToAnthropicState) []AnthropicStreamE
 		Type:  "content_block_stop",
 		Index: &idx,
 	}}
+}
+
+type accumulatedAnthropicBlock struct {
+	block       AnthropicContentBlock
+	inputDelta  string
+	hasStarted  bool
+	hasFinished bool
+}
+
+// AnthropicStreamAccumulator builds a non-streaming Anthropic Messages response
+// from Anthropic SSE events produced by ResponsesEventToAnthropicEvents.
+type AnthropicStreamAccumulator struct {
+	message    *AnthropicResponse
+	blocks     map[int]*accumulatedAnthropicBlock
+	stopReason string
+	usage      AnthropicUsage
+}
+
+func NewAnthropicStreamAccumulator(model string) *AnthropicStreamAccumulator {
+	return &AnthropicStreamAccumulator{
+		message: &AnthropicResponse{
+			Type:  "message",
+			Role:  "assistant",
+			Model: model,
+		},
+		blocks: make(map[int]*accumulatedAnthropicBlock),
+	}
+}
+
+func (a *AnthropicStreamAccumulator) Process(evt AnthropicStreamEvent) {
+	switch evt.Type {
+	case "message_start":
+		if evt.Message != nil {
+			msg := *evt.Message
+			a.message.ID = msg.ID
+			if msg.Type != "" {
+				a.message.Type = msg.Type
+			}
+			if msg.Role != "" {
+				a.message.Role = msg.Role
+			}
+			if msg.Model != "" {
+				a.message.Model = msg.Model
+			}
+			a.usage = msg.Usage
+			if msg.StopReason != "" {
+				a.stopReason = msg.StopReason
+			}
+		}
+	case "content_block_start":
+		if evt.Index == nil || evt.ContentBlock == nil {
+			return
+		}
+		block := *evt.ContentBlock
+		a.blocks[*evt.Index] = &accumulatedAnthropicBlock{block: block, hasStarted: true}
+	case "content_block_delta":
+		if evt.Index == nil || evt.Delta == nil {
+			return
+		}
+		entry := a.ensureBlock(*evt.Index)
+		switch evt.Delta.Type {
+		case "text_delta":
+			entry.block.Type = "text"
+			entry.block.Text += evt.Delta.Text
+		case "thinking_delta":
+			entry.block.Type = "thinking"
+			entry.block.Thinking += evt.Delta.Thinking
+		case "input_json_delta":
+			entry.inputDelta += evt.Delta.PartialJSON
+		}
+	case "content_block_stop":
+		if evt.Index == nil {
+			return
+		}
+		entry := a.ensureBlock(*evt.Index)
+		entry.hasFinished = true
+		if entry.block.Type == "tool_use" {
+			if entry.inputDelta != "" {
+				entry.block.Input = json.RawMessage(entry.inputDelta)
+			} else if len(entry.block.Input) == 0 {
+				entry.block.Input = json.RawMessage(`{}`)
+			}
+		}
+	case "message_delta":
+		if evt.Delta != nil && evt.Delta.StopReason != "" {
+			a.stopReason = evt.Delta.StopReason
+			a.message.StopSequence = evt.Delta.StopSequence
+		}
+		if evt.Usage != nil {
+			a.usage = *evt.Usage
+		}
+	}
+}
+
+func (a *AnthropicStreamAccumulator) Response() *AnthropicResponse {
+	resp := *a.message
+	resp.Content = a.content()
+	resp.Usage = a.usage
+	if a.stopReason != "" {
+		resp.StopReason = a.stopReason
+	} else if len(resp.Content) > 0 && resp.Content[len(resp.Content)-1].Type == "tool_use" {
+		resp.StopReason = "tool_use"
+	} else {
+		resp.StopReason = "end_turn"
+	}
+	if len(resp.Content) == 0 {
+		resp.Content = []AnthropicContentBlock{{Type: "text", Text: ""}}
+	}
+	return &resp
+}
+
+func (a *AnthropicStreamAccumulator) ensureBlock(index int) *accumulatedAnthropicBlock {
+	if entry, ok := a.blocks[index]; ok {
+		return entry
+	}
+	entry := &accumulatedAnthropicBlock{block: AnthropicContentBlock{Type: "text"}}
+	a.blocks[index] = entry
+	return entry
+}
+
+func (a *AnthropicStreamAccumulator) content() []AnthropicContentBlock {
+	indexes := make([]int, 0, len(a.blocks))
+	for idx := range a.blocks {
+		indexes = append(indexes, idx)
+	}
+	sort.Ints(indexes)
+	out := make([]AnthropicContentBlock, 0, len(indexes))
+	for _, idx := range indexes {
+		block := a.blocks[idx].block
+		if shouldDropEmptyAccumulatedBlock(block) {
+			continue
+		}
+		out = append(out, block)
+	}
+	return out
+}
+
+func shouldDropEmptyAccumulatedBlock(block AnthropicContentBlock) bool {
+	switch block.Type {
+	case "thinking":
+		return block.Thinking == ""
+	case "text":
+		return block.Text == ""
+	case "tool_use":
+		return block.ID == "" && block.Name == ""
+	default:
+		return false
+	}
 }
