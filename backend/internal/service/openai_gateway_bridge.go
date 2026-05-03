@@ -141,10 +141,10 @@ func (s *OpenAIGatewayService) forwardBridgePassthrough(
 		return nil, fmt.Errorf("bridge account base URL missing")
 	}
 
-	reqURL := baseURL + endpoint
+	reqURL := bridgePassthroughURL(baseURL, endpoint)
 	if strings.HasPrefix(endpoint, "/v1/responses") && strings.Contains(c.Request.URL.Path, "/responses") {
 		if suffix := responsesPathSuffix(c.Request.URL.Path); suffix != "" {
-			reqURL = baseURL + openAIBridgeEndpointResponses + suffix
+			reqURL = bridgePassthroughURL(baseURL, openAIBridgeEndpointResponses+suffix)
 		}
 	}
 
@@ -245,4 +245,16 @@ func responsesPathSuffix(rawPath string) string {
 		return ""
 	}
 	return suffix
+}
+
+func bridgePassthroughURL(baseURL, endpoint string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	endpoint = "/" + strings.TrimLeft(strings.TrimSpace(endpoint), "/")
+	if baseURL == "" {
+		return endpoint
+	}
+	if strings.HasSuffix(baseURL, "/v1") && strings.HasPrefix(endpoint, "/v1/") {
+		return baseURL + strings.TrimPrefix(endpoint, "/v1")
+	}
+	return baseURL + endpoint
 }
