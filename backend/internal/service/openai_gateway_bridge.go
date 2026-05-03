@@ -90,6 +90,19 @@ func (s *OpenAIGatewayService) FindSchedulableBridgeAccount(ctx context.Context,
 	}
 }
 
+func (s *OpenAIGatewayService) FindSchedulableEmbeddingAccount(ctx context.Context, requestedModel string) (*Account, error) {
+	for _, name := range []string{"omlx-openai-internal", "litellm-openai-internal"} {
+		account, err := s.findSchedulableBridgeAccount(ctx, PlatformOpenAI, name)
+		if err != nil || account == nil {
+			continue
+		}
+		if account.IsModelSupported(requestedModel) {
+			return account, nil
+		}
+	}
+	return nil, ErrNoAvailableAccounts
+}
+
 func replaceModelForBridge(account *Account, body []byte) []byte {
 	if account == nil || len(body) == 0 {
 		return body

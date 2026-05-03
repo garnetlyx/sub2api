@@ -96,7 +96,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 	}
 
 	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
-	account, err := h.gatewayService.FindSchedulableBridgeAccount(c.Request.Context(), service.PlatformOpenAI)
+	account, err := h.gatewayService.FindSchedulableEmbeddingAccount(c.Request.Context(), reqModel)
 	if err != nil || account == nil {
 		reqLog.Warn("openai_embeddings.account_select_failed", zap.Error(err))
 		h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable")
