@@ -962,10 +962,18 @@ func (a *Account) GetOpenAIUserAgent() string {
 }
 
 func (a *Account) GetAvailableModels() []string {
+	return a.getExtraStringList("available_models")
+}
+
+func (a *Account) GetObservedModels() []string {
+	return a.getExtraStringList("observed_models")
+}
+
+func (a *Account) getExtraStringList(key string) []string {
 	if a == nil || a.Extra == nil {
 		return nil
 	}
-	raw, ok := a.Extra["available_models"]
+	raw, ok := a.Extra[key]
 	if !ok || raw == nil {
 		return nil
 	}

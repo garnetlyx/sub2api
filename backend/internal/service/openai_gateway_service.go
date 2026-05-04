@@ -57,6 +57,7 @@ const (
 	codexCLIVersion                    = "0.104.0"
 	// Codex 限额快照仅用于后台展示/诊断，不需要每个成功请求都立即落库。
 	openAICodexSnapshotPersistMinInterval = 30 * time.Second
+	openAIObservedModelsLimit             = 256
 )
 
 // OpenAI allowed headers whitelist (for non-passthrough).
@@ -344,6 +345,7 @@ type OpenAIGatewayService struct {
 	openaiWSRetryMetrics  openAIWSRetryMetrics
 	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
 	codexSnapshotThrottle *accountWriteThrottle
+	modelsListInvalidator func(groupID *int64, platform string)
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -368,7 +370,12 @@ func NewOpenAIGatewayService(
 	kiroTokenProvider *KiroTokenProvider,
 	resolver *ModelPricingResolver,
 	channelService *ChannelService,
+	gatewayService *GatewayService,
 ) *OpenAIGatewayService {
+	var modelsListInvalidator func(*int64, string)
+	if gatewayService != nil {
+		modelsListInvalidator = gatewayService.InvalidateAvailableModelsCache
+	}
 	svc := &OpenAIGatewayService{
 		accountRepo:         accountRepo,
 		usageLogRepo:        usageLogRepo,
@@ -401,6 +408,7 @@ func NewOpenAIGatewayService(
 		channelService:        channelService,
 		responseHeaderFilter:  compileResponseHeaderFilter(cfg),
 		codexSnapshotThrottle: newAccountWriteThrottle(openAICodexSnapshotPersistMinInterval),
+		modelsListInvalidator: modelsListInvalidator,
 	}
 	svc.logOpenAIWSModeBootstrap()
 	return svc
@@ -2741,6 +2749,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				wsAttempts,
 			)
 			wsResult.UpstreamModel = upstreamModel
+			s.rememberOpenAIObservedModel(ctx, c, account, originalModel)
 			return wsResult, nil
 		}
 		s.writeOpenAIWSFallbackErrorResponse(c, account, wsErr)
@@ -2890,6 +2899,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
 			}
 		}
+		s.rememberOpenAIObservedModel(ctx, c, account, originalModel)
 
 		if usage == nil {
 			usage = &OpenAIUsage{}
@@ -3078,6 +3088,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	if snapshot := ParseCodexRateLimitHeaders(resp.Header); snapshot != nil {
 		s.updateCodexUsageSnapshot(ctx, account.ID, snapshot)
 	}
+	s.rememberOpenAIObservedModel(ctx, c, account, reqModel)
 
 	if usage == nil {
 		usage = &OpenAIUsage{}
@@ -5375,6 +5386,137 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 			_ = s.accountRepo.ClearRateLimit(updateCtx, accountID)
 		}
 	}()
+}
+
+func (s *OpenAIGatewayService) rememberOpenAIObservedModel(ctx context.Context, c *gin.Context, account *Account, model string) {
+	if s == nil || s.accountRepo == nil || account == nil || account.ID <= 0 || !account.IsOpenAI() {
+		return
+	}
+
+	if len(account.GetAvailableModels()) > 0 {
+		return
+	}
+
+	canonical := normalizeOpenAIObservedModel(model)
+	if canonical == "" || !looksLikeOpenAIModel(canonical) {
+		return
+	}
+	if modelListContainsRequestedModel(account.GetObservedModels(), canonical) {
+		return
+	}
+
+	groupIDs := append([]int64{}, account.GroupIDs...)
+	if len(groupIDs) == 0 {
+		groupIDs = append(groupIDs, 0)
+	}
+	if apiKey, ok := getAPIKeyFromGinContext(c); ok && apiKey != nil && apiKey.GroupID != nil {
+		groupIDs = append(groupIDs, *apiKey.GroupID)
+	}
+
+	go func(accountID int64, modelID string, models []string, groups []int64) {
+		updateCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if latest, err := s.accountRepo.GetByID(updateCtx, accountID); err == nil && latest != nil {
+			if len(latest.GetAvailableModels()) > 0 || modelListContainsRequestedModel(latest.GetObservedModels(), modelID) {
+				return
+			}
+			models = append([]string{}, latest.GetObservedModels()...)
+			models = append(models, modelID)
+			models = normalizeObservedModelList(models, openAIObservedModelsLimit)
+			groups = append(groups, latest.GroupIDs...)
+		}
+
+		if err := s.accountRepo.UpdateExtra(updateCtx, accountID, map[string]any{"observed_models": models}); err != nil {
+			slog.Warn("openai_observed_models_update_failed", "account_id", accountID, "model", modelID, "error", err)
+			return
+		}
+
+		s.invalidateObservedModelsList(uniquePositiveOrZeroInt64s(groups))
+	}(account.ID, canonical, normalizeObservedModelList(append(append([]string{}, account.GetObservedModels()...), canonical), openAIObservedModelsLimit), uniquePositiveOrZeroInt64s(groupIDs))
+}
+
+func normalizeObservedModelList(models []string, limit int) []string {
+	if len(models) == 0 || limit <= 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(models))
+	out := make([]string, 0, len(models))
+	for _, model := range models {
+		canonical := normalizeOpenAIObservedModel(model)
+		if canonical == "" {
+			continue
+		}
+		key := strings.ToLower(canonical)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, canonical)
+	}
+	if len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out
+}
+
+func normalizeOpenAIObservedModel(model string) string {
+	canonical := CanonicalizePublicModel(NormalizeOpenAICompatRequestedModel(model))
+	if strings.Contains(canonical, "/") {
+		parts := strings.Split(canonical, "/")
+		canonical = strings.TrimSpace(parts[len(parts)-1])
+	}
+	return strings.TrimSpace(canonical)
+}
+
+func uniquePositiveOrZeroInt64s(values []int64) []int64 {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[int64]struct{}, len(values))
+	out := make([]int64, 0, len(values))
+	for _, value := range values {
+		if value < 0 {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func getAPIKeyFromGinContext(c *gin.Context) (*APIKey, bool) {
+	if c == nil {
+		return nil, false
+	}
+	v, exists := c.Get("api_key")
+	if !exists {
+		return nil, false
+	}
+	apiKey, ok := v.(*APIKey)
+	return apiKey, ok && apiKey != nil
+}
+
+func (s *OpenAIGatewayService) invalidateObservedModelsList(groupIDs []int64) {
+	if s == nil || s.modelsListInvalidator == nil {
+		return
+	}
+	if len(groupIDs) == 0 {
+		s.modelsListInvalidator(nil, "")
+		return
+	}
+	for _, groupID := range groupIDs {
+		if groupID <= 0 {
+			s.modelsListInvalidator(nil, "")
+			continue
+		}
+		gid := groupID
+		s.modelsListInvalidator(&gid, "")
+	}
 }
 
 func (s *OpenAIGatewayService) UpdateCodexUsageSnapshotFromHeaders(ctx context.Context, accountID int64, headers http.Header) {

@@ -623,6 +623,41 @@ func TestGetAvailableModels_CanonicalizesStyleAliasesAcrossProviders(t *testing.
 	require.Equal(t, []string{"claude-sonnet-4.6", "gpt-5.4"}, models)
 }
 
+func TestGetAvailableModels_IncludesOpenAIPassthroughObservedModels(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	groupID := int64(88)
+	repo := &modelsListAccountRepoStub{
+		byGroup: map[int64][]Account{
+			groupID: {
+				{
+					ID:          1,
+					Platform:    PlatformOpenAI,
+					Type:        AccountTypeOAuth,
+					Status:      StatusActive,
+					Schedulable: true,
+					Extra: map[string]any{
+						"openai_passthrough": true,
+						"observed_models":    []any{"openai/gpt-5.5", "gpt-5.6-xhigh"},
+					},
+				},
+			},
+		},
+	}
+
+	svc := &GatewayService{
+		accountRepo:        repo,
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+	}
+
+	models := svc.GetAvailableModels(context.Background(), &groupID, PlatformOpenAI)
+	require.Contains(t, models, "gpt-5.5")
+	require.Contains(t, models, "gpt-5.6")
+	require.NotContains(t, models, "gpt-5.6-xhigh")
+	require.Contains(t, models, "gpt-5.4")
+}
+
 func TestGatewayHotpathHelpers_CacheTTLAndStickyContext(t *testing.T) {
 	t.Run("resolve_user_group_rate_cache_ttl", func(t *testing.T) {
 		require.Equal(t, defaultUserGroupRateCacheTTL, resolveUserGroupRateCacheTTL(nil))

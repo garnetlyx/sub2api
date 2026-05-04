@@ -8978,6 +8978,9 @@ func (s *GatewayService) addAvailableModelsForAccount(modelSet map[string]struct
 			}
 			return true
 		}
+		for _, model := range acc.GetObservedModels() {
+			addModel(normalizeOpenAIObservedModel(model))
+		}
 		mapping := acc.GetModelMapping()
 		if acc.IsOpenAIPassthroughEnabled() || len(mapping) == 0 {
 			for _, model := range openai.DefaultModels {

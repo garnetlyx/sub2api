@@ -748,6 +748,7 @@ func (s *AccountRepoSuite) TestUpdateExtra_SchedulerNeutralSkipsOutboxAndSyncsFr
 	updates := map[string]any{
 		"codex_usage_updated_at":     "2026-03-11T10:00:00Z",
 		"codex_5h_used_percent":      88.5,
+		"observed_models":            []string{"gpt-5.5"},
 		"session_window_utilization": 0.42,
 	}
 	s.Require().NoError(s.repo.UpdateExtra(s.ctx, account.ID, updates))
@@ -756,6 +757,7 @@ func (s *AccountRepoSuite) TestUpdateExtra_SchedulerNeutralSkipsOutboxAndSyncsFr
 	s.Require().NoError(err)
 	s.Require().Equal("2026-03-11T10:00:00Z", got.Extra["codex_usage_updated_at"])
 	s.Require().Equal(88.5, got.Extra["codex_5h_used_percent"])
+	s.Require().Equal([]any{"gpt-5.5"}, got.Extra["observed_models"])
 	s.Require().Equal(0.42, got.Extra["session_window_utilization"])
 
 	var outboxCount int
@@ -765,6 +767,7 @@ func (s *AccountRepoSuite) TestUpdateExtra_SchedulerNeutralSkipsOutboxAndSyncsFr
 	s.Require().NotNil(cacheRecorder.accounts[account.ID])
 	s.Require().Equal(service.StatusActive, cacheRecorder.accounts[account.ID].Status)
 	s.Require().Equal("2026-03-11T10:00:00Z", cacheRecorder.accounts[account.ID].Extra["codex_usage_updated_at"])
+	s.Require().Equal([]any{"gpt-5.5"}, cacheRecorder.accounts[account.ID].Extra["observed_models"])
 }
 
 func (s *AccountRepoSuite) TestUpdateExtra_ExhaustedCodexSnapshotSyncsSchedulerCache() {

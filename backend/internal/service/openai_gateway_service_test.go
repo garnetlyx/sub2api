@@ -34,6 +34,11 @@ type snapshotUpdateAccountRepo struct {
 	updateExtraCalls chan map[string]any
 }
 
+type observedModelsAccountRepo struct {
+	stubOpenAIAccountRepo
+	updates chan map[string]any
+}
+
 type groupAwareOpenAIAccountRepo struct {
 	AccountRepository
 	accounts      []Account
@@ -80,6 +85,17 @@ func (r *snapshotUpdateAccountRepo) UpdateExtra(ctx context.Context, id int64, u
 			copied[k] = v
 		}
 		r.updateExtraCalls <- copied
+	}
+	return nil
+}
+
+func (r *observedModelsAccountRepo) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
+	if r.updates != nil {
+		copied := make(map[string]any, len(updates))
+		for k, v := range updates {
+			copied[k] = v
+		}
+		r.updates <- copied
 	}
 	return nil
 }
@@ -359,6 +375,22 @@ func TestSupportsOpenAIGatewayRequestedModel_OpenAIOAuthRejectsClaudeFamily(t *t
 	}
 
 	require.True(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.4"))
+	require.False(t, supportsOpenAIGatewayRequestedModel(account, "claude-opus-4.7"))
+}
+
+func TestSupportsOpenAIGatewayRequestedModel_ObservedModelsDoNotConstrainOpenAIPassthrough(t *testing.T) {
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra: map[string]any{
+			"openai_passthrough": true,
+			"observed_models":    []any{"gpt-5.4"},
+		},
+	}
+
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.5"))
 	require.False(t, supportsOpenAIGatewayRequestedModel(account, "claude-opus-4.7"))
 }
 
@@ -1737,6 +1769,82 @@ func TestOpenAIUpdateCodexUsageSnapshotFromHeaders(t *testing.T) {
 		require.Equal(t, 86400, updates["codex_7d_reset_after_seconds"])
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected UpdateExtra to be called")
+	}
+}
+
+func TestOpenAIGatewayService_RememberOpenAIObservedModel(t *testing.T) {
+	repo := &observedModelsAccountRepo{
+		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{{
+			ID:       77,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra: map[string]any{
+				"observed_models": []any{"gpt-5.4"},
+			},
+		}}},
+		updates: make(chan map[string]any, 1),
+	}
+	invalidated := make(chan int64, 2)
+	svc := &OpenAIGatewayService{
+		accountRepo: repo,
+		modelsListInvalidator: func(groupID *int64, platform string) {
+			invalidated <- derefGroupID(groupID)
+		},
+	}
+	account := &Account{
+		ID:       77,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Extra: map[string]any{
+			"observed_models": []any{"gpt-5.4"},
+		},
+		GroupIDs: []int64{9},
+	}
+	svc.rememberOpenAIObservedModel(context.Background(), nil, account, "openai/gpt-5.5")
+
+	select {
+	case updates := <-repo.updates:
+		models, ok := updates["observed_models"].([]string)
+		require.True(t, ok)
+		require.Equal(t, []string{"gpt-5.4", "gpt-5.5"}, models)
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected observed_models update")
+	}
+	select {
+	case groupID := <-invalidated:
+		require.Equal(t, int64(9), groupID)
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected models list invalidation")
+	}
+}
+
+func TestOpenAIGatewayService_RememberOpenAIObservedModelSkipsAvailableModels(t *testing.T) {
+	repo := &observedModelsAccountRepo{
+		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{{
+			ID:       78,
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Extra: map[string]any{
+				"available_models": []any{"gpt-5.4"},
+			},
+		}}},
+		updates: make(chan map[string]any, 1),
+	}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+	account := &Account{
+		ID:       78,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Extra: map[string]any{
+			"available_models": []any{"gpt-5.4"},
+		},
+	}
+	svc.rememberOpenAIObservedModel(context.Background(), nil, account, "gpt-5.5")
+
+	select {
+	case updates := <-repo.updates:
+		t.Fatalf("unexpected observed_models update: %#v", updates)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
