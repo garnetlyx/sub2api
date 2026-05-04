@@ -571,12 +571,19 @@ func resolveRequestedModelInMapping(mapping map[string]string, requestedModel st
 	return matchWildcardMappingResult(mapping, requestedModel)
 }
 
-// IsModelSupported 检查模型是否在 model_mapping 中（支持通配符）
-// 如果未配置 mapping，返回 true（允许所有模型）
+// IsModelSupported checks whether this account can serve requestedModel.
+// available_models is account capability metadata and takes precedence when
+// present; model_mapping remains an optional upstream-name rewrite allowlist.
+// If neither is configured, the account is treated as unconstrained.
 func (a *Account) IsModelSupported(requestedModel string) bool {
+	availableModels := a.GetAvailableModels()
+	if len(availableModels) > 0 {
+		return modelListContainsRequestedModel(availableModels, requestedModel)
+	}
+
 	mapping := a.GetModelMapping()
 	if len(mapping) == 0 {
-		return true // 无映射 = 允许所有
+		return true
 	}
 	for _, candidate := range requestedModelLookupCandidates(a.Platform, requestedModel) {
 		if mappingSupportsRequestedModel(mapping, candidate) {
@@ -586,11 +593,29 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 	return false
 }
 
-// GetMappedModel 获取映射后的模型名（支持通配符，最长优先匹配）
-// 如果未配置 mapping，返回原始模型名
+// GetMappedModel resolves the upstream model name for a requested public model.
+// It first applies explicit model_mapping rules, then generic upstream_models
+// metadata paired with available_models.
 func (a *Account) GetMappedModel(requestedModel string) string {
-	mappedModel, _ := a.ResolveMappedModel(requestedModel)
+	mappedModel, _ := a.ResolveUpstreamModel(requestedModel)
 	return mappedModel
+}
+
+// ResolveUpstreamModel resolves a public model to the actual upstream model
+// name. matched=true means the account explicitly recognized the requested
+// model through model_mapping or available_models/upstream_models metadata.
+func (a *Account) ResolveUpstreamModel(requestedModel string) (mappedModel string, matched bool) {
+	availableModels := a.GetAvailableModels()
+	if len(availableModels) > 0 && !modelListContainsRequestedModel(availableModels, requestedModel) {
+		return requestedModel, false
+	}
+	if mappedModel, matched := a.ResolveMappedModel(requestedModel); matched {
+		return mappedModel, true
+	}
+	if mappedModel, matched := a.resolveAvailableUpstreamModel(requestedModel); matched {
+		return mappedModel, true
+	}
+	return requestedModel, false
 }
 
 // ResolveMappedModel 获取映射后的模型名，并返回是否命中了账号级映射。
@@ -936,7 +961,7 @@ func (a *Account) GetOpenAIUserAgent() string {
 	return a.GetCredential("user_agent")
 }
 
-func (a *Account) GetCopilotAvailableModels() []string {
+func (a *Account) GetAvailableModels() []string {
 	if a == nil || a.Extra == nil {
 		return nil
 	}
@@ -968,6 +993,61 @@ func (a *Account) GetCopilotAvailableModels() []string {
 	default:
 		return nil
 	}
+}
+
+func (a *Account) GetCopilotAvailableModels() []string {
+	return a.GetAvailableModels()
+}
+
+func (a *Account) GetUpstreamModels() map[string]string {
+	if a == nil || a.Extra == nil {
+		return nil
+	}
+	raw, ok := a.Extra["upstream_models"]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch values := raw.(type) {
+	case map[string]string:
+		out := make(map[string]string, len(values))
+		for k, v := range values {
+			k = strings.TrimSpace(k)
+			v = strings.TrimSpace(v)
+			if k != "" && v != "" {
+				out[k] = v
+			}
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]string, len(values))
+		for k, item := range values {
+			v, ok := item.(string)
+			if !ok {
+				continue
+			}
+			k = strings.TrimSpace(k)
+			v = strings.TrimSpace(v)
+			if k != "" && v != "" {
+				out[k] = v
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func (a *Account) resolveAvailableUpstreamModel(requestedModel string) (string, bool) {
+	if !modelListContainsRequestedModel(a.GetAvailableModels(), requestedModel) {
+		return requestedModel, false
+	}
+	upstreamModels := a.GetUpstreamModels()
+	for _, candidate := range requestedModelLookupCandidates(a.Platform, requestedModel) {
+		if mappedModel, exists := upstreamModels[candidate]; exists && strings.TrimSpace(mappedModel) != "" {
+			return strings.TrimSpace(mappedModel), true
+		}
+	}
+	return requestedModel, true
 }
 
 func (a *Account) GetChatGPTAccountID() string {

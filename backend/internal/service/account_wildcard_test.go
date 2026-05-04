@@ -136,6 +136,7 @@ func TestAccountIsModelSupported(t *testing.T) {
 		platform       string
 		credentials    map[string]any
 		requestedModel string
+		extra          map[string]any
 		expected       bool
 	}{
 		// 无映射 = 允许所有
@@ -229,6 +230,20 @@ func TestAccountIsModelSupported(t *testing.T) {
 			expected:       true,
 		},
 		{
+			name:           "available models support arbitrary native model",
+			credentials:    map[string]any{},
+			extra:          map[string]any{"available_models": []any{"deepseek-v4-pro"}},
+			requestedModel: "deepseek-v4-pro",
+			expected:       true,
+		},
+		{
+			name:           "available models restrict unmatched native model",
+			credentials:    map[string]any{},
+			extra:          map[string]any{"available_models": []any{"deepseek-v4-pro"}},
+			requestedModel: "deepseek-v4-flash",
+			expected:       false,
+		},
+		{
 			name: "wildcard match not supported",
 			credentials: map[string]any{
 				"model_mapping": map[string]any{
@@ -245,6 +260,7 @@ func TestAccountIsModelSupported(t *testing.T) {
 			account := &Account{
 				Platform:    tt.platform,
 				Credentials: tt.credentials,
+				Extra:       tt.extra,
 			}
 			result := account.IsModelSupported(tt.requestedModel)
 			if result != tt.expected {
@@ -259,6 +275,7 @@ func TestAccountGetMappedModel(t *testing.T) {
 		name           string
 		platform       string
 		credentials    map[string]any
+		extra          map[string]any
 		requestedModel string
 		expected       string
 	}{
@@ -275,6 +292,13 @@ func TestAccountGetMappedModel(t *testing.T) {
 			credentials:    nil,
 			requestedModel: "gemini-3.1-pro-preview-customtools",
 			expected:       "gemini-3.1-pro-preview-customtools",
+		},
+		{
+			name:           "available upstream model maps native provider id",
+			credentials:    map[string]any{},
+			extra:          map[string]any{"available_models": []any{"deepseek-v4-pro"}, "upstream_models": map[string]any{"deepseek-v4-pro": "deepseek-v4-pro-actual"}},
+			requestedModel: "deepseek-v4-pro",
+			expected:       "deepseek-v4-pro-actual",
 		},
 
 		// 精确匹配
@@ -343,6 +367,7 @@ func TestAccountGetMappedModel(t *testing.T) {
 			account := &Account{
 				Platform:    tt.platform,
 				Credentials: tt.credentials,
+				Extra:       tt.extra,
 			}
 			result := account.GetMappedModel(tt.requestedModel)
 			if result != tt.expected {

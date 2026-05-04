@@ -1794,6 +1794,19 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 
 	// Handle OpenAI accounts
 	if account.IsOpenAI() {
+		if modelIDs := account.GetAvailableModels(); len(modelIDs) > 0 {
+			models := make([]openai.Model, 0, len(modelIDs))
+			for _, modelID := range modelIDs {
+				models = append(models, openai.Model{
+					ID:          modelID,
+					Object:      "model",
+					Type:        "model",
+					DisplayName: modelID,
+				})
+			}
+			response.Success(c, canonicalizeOpenAIModels(models))
+			return
+		}
 		// OpenAI 自动透传会绕过常规模型改写，测试/模型列表也应回落到默认模型集。
 		if account.IsOpenAIPassthroughEnabled() {
 			response.Success(c, canonicalizeOpenAIModels(openai.DefaultModels))
@@ -1873,6 +1886,19 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 
 	// Handle Gemini accounts
 	if account.IsGemini() {
+		if modelIDs := account.GetAvailableModels(); len(modelIDs) > 0 {
+			models := make([]geminicli.Model, 0, len(modelIDs))
+			for _, modelID := range modelIDs {
+				models = append(models, geminicli.Model{
+					ID:          modelID,
+					Type:        "model",
+					DisplayName: modelID,
+					CreatedAt:   "",
+				})
+			}
+			response.Success(c, canonicalizeGeminiModels(models))
+			return
+		}
 		// For OAuth accounts: return default Gemini models
 		if account.IsOAuth() {
 			response.Success(c, canonicalizeGeminiModels(geminicli.DefaultModels))
@@ -1917,6 +1943,19 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	}
 
 	// Handle Claude/Anthropic accounts
+	if modelIDs := account.GetAvailableModels(); len(modelIDs) > 0 {
+		models := make([]claude.Model, 0, len(modelIDs))
+		for _, modelID := range canonicalizeModelIDs(modelIDs) {
+			models = append(models, claude.Model{
+				ID:          modelID,
+				Type:        "model",
+				DisplayName: modelID,
+			})
+		}
+		response.Success(c, canonicalizeClaudeModels(models))
+		return
+	}
+
 	// For OAuth and Setup-Token accounts: return default models
 	if account.IsOAuth() {
 		response.Success(c, canonicalizeClaudeModels(claude.DefaultModels))

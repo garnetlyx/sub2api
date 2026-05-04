@@ -11,7 +11,7 @@ func resolveOpenAIForwardModel(account *Account, requestedModel, defaultMappedMo
 		return requestedModel
 	}
 
-	mappedModel, matched := account.ResolveMappedModel(requestedModel)
+	mappedModel, matched := account.ResolveUpstreamModel(requestedModel)
 	if !matched && defaultMappedModel != "" {
 		return defaultMappedModel
 	}

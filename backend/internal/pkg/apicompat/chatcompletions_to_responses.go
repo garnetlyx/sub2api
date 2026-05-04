@@ -150,20 +150,28 @@ func chatUserToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 func chatAssistantToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 	var items []ResponsesInputItem
 
-	// Emit assistant message with output_text if content is non-empty.
+	// Emit assistant message with output_text if content or reasoning is non-empty.
+	// Reasoning is kept in explicit tags so the Anthropic conversion path can
+	// restore it as a native thinking block while OpenAI-compatible paths still
+	// see ordinary text history.
+	assistantText := ""
 	if len(m.Content) > 0 {
 		s, err := parseAssistantContent(m.Content)
 		if err != nil {
 			return nil, err
 		}
-		if s != "" {
-			parts := []ResponsesContentPart{{Type: "output_text", Text: s}}
-			partsJSON, err := json.Marshal(parts)
-			if err != nil {
-				return nil, err
-			}
-			items = append(items, ResponsesInputItem{Role: "assistant", Content: partsJSON})
+		assistantText = s
+	}
+	if strings.TrimSpace(m.ReasoningContent) != "" {
+		assistantText = "<thinking>" + m.ReasoningContent + "</thinking>" + assistantText
+	}
+	if assistantText != "" {
+		parts := []ResponsesContentPart{{Type: "output_text", Text: assistantText}}
+		partsJSON, err := json.Marshal(parts)
+		if err != nil {
+			return nil, err
 		}
+		items = append(items, ResponsesInputItem{Role: "assistant", Content: partsJSON})
 	}
 
 	// Emit one function_call item per tool_call.

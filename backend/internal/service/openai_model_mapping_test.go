@@ -58,6 +58,19 @@ func TestResolveOpenAIForwardModel(t *testing.T) {
 			defaultMappedModel: "gpt-4o-mini",
 			expectedModel:      "gpt-5.4",
 		},
+		{
+			name: "uses available upstream model instead of group default",
+			account: &Account{
+				Credentials: map[string]any{},
+				Extra: map[string]any{
+					"available_models": []any{"deepseek-v4-pro"},
+					"upstream_models":  map[string]any{"deepseek-v4-pro": "deepseek-v4-pro"},
+				},
+			},
+			requestedModel:     "deepseek-v4-pro",
+			defaultMappedModel: "gpt-4o-mini",
+			expectedModel:      "deepseek-v4-pro",
+		},
 	}
 
 	for _, tt := range tests {

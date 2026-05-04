@@ -8925,9 +8925,6 @@ func (s *GatewayService) HasSchedulableModelSupportOnPlatform(ctx context.Contex
 	if strings.TrimSpace(requestedModel) == "" || strings.TrimSpace(platform) == "" {
 		return false
 	}
-	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
-		return false
-	}
 
 	accounts, _, err := s.listSchedulableAccounts(ctx, groupID, platform, false)
 	if err != nil {
@@ -8975,6 +8972,12 @@ func (s *GatewayService) addAvailableModelsForAccount(modelSet map[string]struct
 
 	switch {
 	case acc.IsOpenAI():
+		if available := acc.GetAvailableModels(); len(available) > 0 {
+			for _, model := range available {
+				addModel(model)
+			}
+			return true
+		}
 		mapping := acc.GetModelMapping()
 		if acc.IsOpenAIPassthroughEnabled() || len(mapping) == 0 {
 			for _, model := range openai.DefaultModels {
@@ -9028,6 +9031,12 @@ func (s *GatewayService) addAvailableModelsForAccount(modelSet map[string]struct
 		}
 		return true
 	default:
+		if available := acc.GetAvailableModels(); len(available) > 0 {
+			for _, model := range available {
+				addModel(model)
+			}
+			return true
+		}
 		mapping := acc.GetModelMapping()
 		if acc.IsOAuth() || len(mapping) == 0 {
 			for _, model := range claude.DefaultModels {

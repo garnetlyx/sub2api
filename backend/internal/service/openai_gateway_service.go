@@ -1794,9 +1794,6 @@ func (s *OpenAIGatewayService) HasSchedulableModelSupport(ctx context.Context, g
 	if strings.TrimSpace(requestedModel) == "" {
 		return false
 	}
-	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
-		return false
-	}
 
 	accounts, err := s.listSchedulableAccounts(ctx, groupID)
 	if err != nil {
@@ -1832,9 +1829,6 @@ func (s *OpenAIGatewayService) HasSchedulableModelSupport(ctx context.Context, g
 
 func (s *OpenAIGatewayService) HasSchedulableResponsesModelSupport(ctx context.Context, groupID *int64, requestedModel string, excludeAccountNames ...string) bool {
 	if strings.TrimSpace(requestedModel) == "" {
-		return false
-	}
-	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
 		return false
 	}
 
@@ -1953,7 +1947,7 @@ func supportsOpenAIGatewayRequestedModel(account *Account, requestedModel string
 			}
 			return modelListContainsRequestedModel(available, requestedModel)
 		case account.IsKiro():
-			if available := account.GetCopilotAvailableModels(); len(available) > 0 {
+			if available := account.GetAvailableModels(); len(available) > 0 {
 				return modelListContainsRequestedModel(available, requestedModel)
 			}
 			if !looksLikeAnthropicModel(requestedModel) {
@@ -1964,6 +1958,9 @@ func supportsOpenAIGatewayRequestedModel(account *Account, requestedModel string
 				return false
 			}
 		case account.IsOpenAIApiKey():
+			if len(account.GetAvailableModels()) > 0 {
+				return modelListContainsRequestedModel(account.GetAvailableModels(), requestedModel)
+			}
 			if len(account.GetModelMapping()) == 0 && !looksLikeOpenAIModel(requestedModel) {
 				return false
 			}

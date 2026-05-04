@@ -1015,6 +1015,29 @@ func TestResponsesToAnthropicRequest_ToolChoiceLegacyFunctionName(t *testing.T) 
 	assert.Equal(t, "get_weather", tc["name"])
 }
 
+func TestResponsesToAnthropicRequest_AssistantThinkingTagsBecomeThinkingBlocks(t *testing.T) {
+	req := &ResponsesRequest{
+		Model: "claude-sonnet",
+		Input: json.RawMessage(`[
+			{"role":"user","content":"Hi"},
+			{"role":"assistant","content":[{"type":"output_text","text":"<thinking>internal plan</thinking>final answer"}]}
+		]`),
+		Reasoning: &ResponsesReasoning{Effort: "high"},
+	}
+
+	resp, err := ResponsesToAnthropicRequest(req)
+	require.NoError(t, err)
+	require.Len(t, resp.Messages, 2)
+
+	var blocks []AnthropicContentBlock
+	require.NoError(t, json.Unmarshal(resp.Messages[1].Content, &blocks))
+	require.Len(t, blocks, 2)
+	assert.Equal(t, "thinking", blocks[0].Type)
+	assert.Equal(t, "internal plan", blocks[0].Thinking)
+	assert.Equal(t, "text", blocks[1].Type)
+	assert.Equal(t, "final answer", blocks[1].Text)
+}
+
 func TestAnthropicStreamAccumulator_TextAndToolUse(t *testing.T) {
 	state := NewResponsesEventToAnthropicState()
 	state.Model = "gpt-5.4"

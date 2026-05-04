@@ -140,6 +140,43 @@ func TestOpenAIGatewayService_ListSchedulableAccountsSimpleModeHonorsExplicitGro
 	require.Zero(t, repo.platformCalls)
 }
 
+func TestOpenAIGatewayService_HasSchedulableModelSupportIgnoresChannelPricingRestriction(t *testing.T) {
+	t.Parallel()
+
+	groupID := int64(10)
+	channelSvc := NewChannelService(nil, nil)
+	channelSvc.cache.Store(populateChannelCache([]Channel{{
+		ID:                 1,
+		Status:             StatusActive,
+		GroupIDs:           []int64{groupID},
+		RestrictModels:     true,
+		BillingModelSource: BillingModelSourceRequested,
+		ModelPricing: []ChannelModelPricing{
+			{Platform: PlatformOpenAI, Models: []string{"gpt-4o"}},
+		},
+	}}, map[int64]string{groupID: PlatformOpenAI}))
+
+	svc := &OpenAIGatewayService{
+		accountRepo: stubOpenAIAccountRepo{accounts: []Account{
+			{
+				ID:          1,
+				Name:        "proxy-openai-deepseek",
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Status:      StatusActive,
+				Schedulable: true,
+				Extra: map[string]any{
+					"available_models": []any{"deepseek-v4-pro"},
+				},
+			},
+		}},
+		channelService: channelSvc,
+	}
+
+	require.True(t, svc.HasSchedulableModelSupport(context.Background(), &groupID, "deepseek-v4-pro"))
+	require.True(t, svc.checkChannelPricingRestriction(context.Background(), &groupID, "deepseek-v4-pro"))
+}
+
 type stubConcurrencyCache struct {
 	ConcurrencyCache
 	loadBatchErr    error
@@ -335,6 +372,22 @@ func TestSupportsOpenAIGatewayRequestedModel_OpenAIAPIKeyWithoutMappingRejectsCl
 
 	require.True(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.4"))
 	require.False(t, supportsOpenAIGatewayRequestedModel(account, "claude-opus-4.7"))
+}
+
+func TestSupportsOpenAIGatewayRequestedModel_OpenAIAPIKeyUsesAvailableModels(t *testing.T) {
+	account := &Account{
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra: map[string]any{
+			"available_models": []any{"deepseek-v4-pro"},
+		},
+	}
+
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "deepseek-v4-pro"))
+	require.False(t, supportsOpenAIGatewayRequestedModel(account, "deepseek-v4-flash"))
+	require.False(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.4"))
 }
 
 func TestSupportsOpenAIGatewayRequestedModel_InternalLiteLLMBridgeDoesNotDriveModelSelection(t *testing.T) {

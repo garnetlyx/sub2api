@@ -279,7 +279,7 @@ func convertResponsesAssistantToAnthropicContent(raw json.RawMessage) (json.RawM
 	// Try plain string.
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		return json.Marshal([]AnthropicContentBlock{{Type: "text", Text: s}})
+		return json.Marshal(assistantTextToAnthropicBlocks(s))
 	}
 
 	// Array of content parts → Anthropic content blocks.
@@ -293,10 +293,7 @@ func convertResponsesAssistantToAnthropicContent(raw json.RawMessage) (json.RawM
 		switch p.Type {
 		case "output_text", "text":
 			if p.Text != "" {
-				blocks = append(blocks, AnthropicContentBlock{
-					Type: "text",
-					Text: p.Text,
-				})
+				blocks = append(blocks, assistantTextToAnthropicBlocks(p.Text)...)
 			}
 		}
 	}
@@ -305,6 +302,41 @@ func convertResponsesAssistantToAnthropicContent(raw json.RawMessage) (json.RawM
 		blocks = append(blocks, AnthropicContentBlock{Type: "text", Text: ""})
 	}
 	return json.Marshal(blocks)
+}
+
+func assistantTextToAnthropicBlocks(text string) []AnthropicContentBlock {
+	if text == "" {
+		return []AnthropicContentBlock{{Type: "text", Text: ""}}
+	}
+	var blocks []AnthropicContentBlock
+	remaining := text
+	for {
+		start := strings.Index(remaining, "<thinking>")
+		if start < 0 {
+			if remaining != "" {
+				blocks = append(blocks, AnthropicContentBlock{Type: "text", Text: remaining})
+			}
+			break
+		}
+		if start > 0 {
+			blocks = append(blocks, AnthropicContentBlock{Type: "text", Text: remaining[:start]})
+		}
+		afterStart := remaining[start+len("<thinking>"):]
+		end := strings.Index(afterStart, "</thinking>")
+		if end < 0 {
+			blocks = append(blocks, AnthropicContentBlock{Type: "text", Text: remaining[start:]})
+			break
+		}
+		thinking := afterStart[:end]
+		if thinking != "" {
+			blocks = append(blocks, AnthropicContentBlock{Type: "thinking", Thinking: thinking})
+		}
+		remaining = afterStart[end+len("</thinking>"):]
+	}
+	if len(blocks) == 0 {
+		blocks = append(blocks, AnthropicContentBlock{Type: "text", Text: ""})
+	}
+	return blocks
 }
 
 // fromResponsesCallIDToAnthropic converts an OpenAI function call ID back to
