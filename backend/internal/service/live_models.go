@@ -395,10 +395,8 @@ func (s *GatewayService) cachedLiveModelSourceForAccountWithLoader(ctx context.C
 			return LiveModelSource{}, err
 		}
 		source = cloneLiveModelSource(source)
-		if strings.TrimSpace(source.Endpoint) != "" {
-			cache.Set(key, source, ttl)
-			modelsListCacheStoreTotal.Add(1)
-		}
+		cache.Set(key, source, ttl)
+		modelsListCacheStoreTotal.Add(1)
 		return source, nil
 	})
 	if err != nil {
