@@ -6,7 +6,11 @@ import (
 	"strings"
 )
 
-var claudeStyleAliasPattern = regexp.MustCompile(`^(claude-(?:opus|sonnet|haiku))-(\d+)([.-])(\d+)(-.+)?$`)
+var (
+	claudeStyleAliasPattern = regexp.MustCompile(`^(claude-(?:opus|sonnet|haiku))-(\d+)([.-])(\d+)(-.+)?$`)
+	// Matches "prefix-major.sep-minor" where sep is . or -, e.g. "gpt-5.5", "gpt-5-5-pro".
+	dotHyphenSep = regexp.MustCompile(`^([\w]+-\d+)([.-])(\d+)`)
+)
 
 var hiddenPublicModelAliases = map[string]string{
 	"ark-code-latest-volcengine":     "ark-code-latest",
@@ -96,8 +100,8 @@ func publicModelStyleAlternate(model string) string {
 }
 
 func requestedModelLookupCandidates(platform, requestedModel string) []string {
-	seen := make(map[string]struct{}, 4)
-	candidates := make([]string, 0, 4)
+	seen := make(map[string]struct{}, 8)
+	candidates := make([]string, 0, 8)
 	add := func(model string) {
 		model = strings.TrimSpace(model)
 		if model == "" {
@@ -118,9 +122,25 @@ func requestedModelLookupCandidates(platform, requestedModel string) []string {
 		canonical := CanonicalizePublicModel(model)
 		add(canonical)
 		add(publicModelStyleAlternate(canonical))
+		add(dotHyphenAlternate(canonical))
 	}
 
 	return candidates
+}
+
+// dotHyphenAlternate flips the dot/hyphen between major and minor version
+// numbers: "gpt-5.5" → "gpt-5-5", "gpt-5-5-pro" → "gpt-5.5-pro".
+func dotHyphenAlternate(model string) string {
+	matches := dotHyphenSep.FindStringSubmatchIndex(model)
+	if matches == nil {
+		return ""
+	}
+	sep := model[matches[4]:matches[5]]
+	alt := "-"
+	if sep == "-" {
+		alt = "."
+	}
+	return model[:matches[4]] + alt + model[matches[5]:]
 }
 
 func modelListContainsRequestedModel(modelIDs []string, requestedModel string) bool {

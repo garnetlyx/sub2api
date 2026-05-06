@@ -1748,9 +1748,7 @@ type AccountSelectionDiagnostics struct {
 	RateLimitedCount       int
 	OverloadedCount        int
 	TempUnschedulableCount int
-	ModelFilteredCount     int
-	CopilotNoModelList    int // Copilot account excluded: available_models empty
-	CopilotModelNotInList int // Copilot account excluded: model not in available_models
+	ModelFilteredCount     int // known-issue or live capability filtered
 }
 
 // listAllOpenAICompatAccounts returns all active OpenAI-compatible accounts regardless
@@ -1822,13 +1820,6 @@ func (s *OpenAIGatewayService) DiagnoseAccountSelection(ctx context.Context, gro
 		}
 		if requestedModel != "" && !supportsOpenAIGatewayRequestedModel(acc, requestedModel) {
 			d.ModelFilteredCount++
-			if acc.IsCopilot() {
-				if len(acc.GetCopilotAvailableModels()) == 0 {
-					d.CopilotNoModelList++
-				} else {
-					d.CopilotModelNotInList++
-				}
-			}
 		}
 	}
 	return d
@@ -1960,19 +1951,41 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 	return latest
 }
 
+const (
+	InternalBridgeOpenAIAccountName       = "bridge-openai-internal"
+	InternalBridgeAnthropicAccountName    = "bridge-anthropic-internal"
+	legacyBridgeOpenAIAccountName         = "litellm-openai-internal"
+	legacyBridgeAnthropicAccountName      = "litellm-anthropic-internal"
+)
+
+func isInternalLiteLLMBridgeOnlyAccountName(name string) bool {
+	switch strings.TrimSpace(name) {
+	case InternalBridgeOpenAIAccountName, InternalBridgeAnthropicAccountName, legacyBridgeOpenAIAccountName, legacyBridgeAnthropicAccountName:
+		return true
+	default:
+		return false
+	}
+}
+
 func isInternalLiteLLMBridgeOnlyAccount(account *Account) bool {
-	if account == nil || !account.IsOpenAIApiKey() {
+	if account == nil || account.Type != AccountTypeAPIKey {
 		return false
 	}
 	// Internal LiteLLM bridge accounts are protocol translators only.
 	// They must never participate in public model identification or first-hop
 	// account selection, otherwise LiteLLM gets forced to maintain the public
 	// model namespace instead of Sub2API owning provider/account routing.
-	if strings.TrimSpace(account.Name) == "litellm-openai-internal" {
+	if isInternalLiteLLMBridgeOnlyAccountName(account.Name) {
 		return true
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(account.GetOpenAIBaseURL()), "/")
-	return strings.HasSuffix(baseURL, "127.0.0.1:4001/v1") || strings.HasSuffix(baseURL, "localhost:4001/v1")
+	baseURL := strings.TrimRight(strings.TrimSpace(account.GetBaseURL()), "/")
+	if account.UsesOpenAIGateway() {
+		baseURL = strings.TrimRight(strings.TrimSpace(account.GetOpenAIBaseURL()), "/")
+	}
+	return strings.HasSuffix(baseURL, "127.0.0.1:4001/v1") ||
+		strings.HasSuffix(baseURL, "localhost:4001/v1") ||
+		strings.HasSuffix(baseURL, "127.0.0.1:4001") ||
+		strings.HasSuffix(baseURL, "localhost:4001")
 }
 
 func supportsOpenAIGatewayRequestedModel(account *Account, requestedModel string) bool {
@@ -1994,7 +2007,20 @@ func (s *OpenAIGatewayService) supportsOpenAIGatewayRequestedModel(ctx context.C
 	}
 	policy := LoadKnownIssueModelExclusionPolicy(ctx, s.settingRepoOrNil())
 	_, excluded := policy.Excludes(requestedModel, account, "openai-compatible", capability)
-	return !excluded
+	if excluded {
+		return false
+	}
+	source, err := s.cachedLiveModelSourceForAccount(ctx, *account)
+	if err != nil {
+		return true
+	}
+	if strings.TrimSpace(source.Endpoint) == "" {
+		return true
+	}
+	if len(source.Models) == 0 {
+		return account.IsOpenAIOAuth()
+	}
+	return modelListContainsRequestedModel(source.Models, requestedModel)
 }
 
 func (s *OpenAIGatewayService) settingRepoOrNil() SettingRepository {
@@ -2226,6 +2252,7 @@ func classifyOpenAICompatibilityMismatch(statusCode int, upstreamMsg string, ups
 		return "unsupported_parameter", true
 	case strings.Contains(msg, "does not support") ||
 		strings.Contains(msg, "not supported for this model") ||
+		strings.Contains(msg, "model is not supported") ||
 		strings.Contains(msg, "unsupported capability") ||
 		(strings.Contains(code, "unsupported_value") && param != ""):
 		return "unsupported_capability", true

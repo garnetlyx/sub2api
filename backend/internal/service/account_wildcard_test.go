@@ -3,6 +3,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -137,57 +138,32 @@ func TestAccountIsModelSupported(t *testing.T) {
 		credentials    map[string]any
 		requestedModel string
 		extra          map[string]any
-		expected       bool
 	}{
-		// 无映射 = 允许所有
 		{
 			name:           "no mapping allows all",
 			credentials:    nil,
 			requestedModel: "any-model",
-			expected:       true,
 		},
 		{
-			name:           "empty mapping allows all",
-			credentials:    map[string]any{},
-			requestedModel: "any-model",
-			expected:       true,
-		},
-
-		// 精确匹配
-		{
-			name: "exact match supported",
-			credentials: map[string]any{
-				"model_mapping": map[string]any{
-					"claude-sonnet-4-5": "target-model",
-				},
-			},
-			requestedModel: "claude-sonnet-4-5",
-			expected:       true,
-		},
-		{
-			name: "exact match not supported",
+			name: "explicit mapping does not restrict passthrough",
 			credentials: map[string]any{
 				"model_mapping": map[string]any{
 					"claude-sonnet-4-5": "target-model",
 				},
 			},
 			requestedModel: "claude-opus-4-5",
-			expected:       false,
 		},
-
-		// 通配符匹配
 		{
-			name: "wildcard match supported",
+			name: "wildcard mapping does not restrict passthrough",
 			credentials: map[string]any{
 				"model_mapping": map[string]any{
 					"claude-*": "claude-sonnet-4-5",
 				},
 			},
-			requestedModel: "claude-opus-4-5-thinking",
-			expected:       true,
+			requestedModel: "gemini-3-flash",
 		},
 		{
-			name:     "gemini customtools alias matches normalized mapping",
+			name:     "platform-specific aliases remain passthrough",
 			platform: PlatformGemini,
 			credentials: map[string]any{
 				"model_mapping": map[string]any{
@@ -195,21 +171,9 @@ func TestAccountIsModelSupported(t *testing.T) {
 				},
 			},
 			requestedModel: "gemini-3.1-pro-preview-customtools",
-			expected:       true,
 		},
 		{
-			name:     "claude dotted alias matches hyphen mapping",
-			platform: PlatformKiro,
-			credentials: map[string]any{
-				"model_mapping": map[string]any{
-					"claude-sonnet-4-6": "claude-sonnet-4-6",
-				},
-			},
-			requestedModel: "claude-sonnet-4.6",
-			expected:       true,
-		},
-		{
-			name:     "claude style alias does not cross versions",
+			name:     "claude style aliases remain passthrough",
 			platform: PlatformKiro,
 			credentials: map[string]any{
 				"model_mapping": map[string]any{
@@ -217,41 +181,18 @@ func TestAccountIsModelSupported(t *testing.T) {
 				},
 			},
 			requestedModel: "claude-sonnet-4.5",
-			expected:       false,
 		},
 		{
-			name: "hidden proxy alias matches bare mapping",
-			credentials: map[string]any{
-				"model_mapping": map[string]any{
-					"glm-5.1": "glm-5.1",
-				},
-			},
-			requestedModel: "glm-5.1-zhipu",
-			expected:       true,
-		},
-		{
-			name:           "available models support arbitrary native model",
+			name:           "legacy available models list no longer restricts selection",
 			credentials:    map[string]any{},
-			extra:          map[string]any{"available_models": []any{"deepseek-v4-pro"}},
+			extra:          map[string]any{"available_models": []any{"deepseek-v4-pro"}, "unsupported_models": []any{"gpt-5.4"}},
 			requestedModel: "deepseek-v4-pro",
-			expected:       true,
 		},
 		{
-			name:           "available models restrict unmatched native model",
+			name:           "legacy model lists are ignored for unmatched model too",
 			credentials:    map[string]any{},
 			extra:          map[string]any{"available_models": []any{"deepseek-v4-pro"}},
 			requestedModel: "deepseek-v4-flash",
-			expected:       false,
-		},
-		{
-			name: "wildcard match not supported",
-			credentials: map[string]any{
-				"model_mapping": map[string]any{
-					"claude-*": "claude-sonnet-4-5",
-				},
-			},
-			requestedModel: "gemini-3-flash",
-			expected:       false,
 		},
 	}
 
@@ -263,8 +204,8 @@ func TestAccountIsModelSupported(t *testing.T) {
 				Extra:       tt.extra,
 			}
 			result := account.IsModelSupported(tt.requestedModel)
-			if result != tt.expected {
-				t.Errorf("IsModelSupported(%q) = %v, want %v", tt.requestedModel, result, tt.expected)
+			if !result {
+				t.Errorf("IsModelSupported(%q) = false, want true", tt.requestedModel)
 			}
 		})
 	}
@@ -296,7 +237,7 @@ func TestAccountGetMappedModel(t *testing.T) {
 		{
 			name:           "available upstream model maps native provider id",
 			credentials:    map[string]any{},
-			extra:          map[string]any{"available_models": []any{"deepseek-v4-pro"}, "upstream_models": map[string]any{"deepseek-v4-pro": "deepseek-v4-pro-actual"}},
+			extra:          map[string]any{"upstream_models": map[string]any{"deepseek-v4-pro": "deepseek-v4-pro-actual"}},
 			requestedModel: "deepseek-v4-pro",
 			expected:       "deepseek-v4-pro-actual",
 		},
@@ -535,6 +476,79 @@ func TestAccountResolveMappedModel(t *testing.T) {
 				t.Fatalf("ResolveMappedModel(%q) = (%q, %v), want (%q, %v)", tt.requestedModel, mappedModel, matched, tt.expectedModel, tt.expectedMatch)
 			}
 		})
+	}
+}
+
+func TestDotHyphenAlternate(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"gpt-5.5", "gpt-5-5"},
+		{"gpt-5-5", "gpt-5.5"},
+		{"gpt-5-5-pro", "gpt-5.5-pro"},
+		{"gpt-5.5-pro", "gpt-5-5-pro"},
+		{"gpt-5-5-thinking", "gpt-5.5-thinking"},
+		{"gpt-4-5", "gpt-4.5"},
+		{"gpt-4.5", "gpt-4-5"},
+		{"gpt-5-2-instant", "gpt-5.2-instant"},
+		{"gpt-5-4-pro", "gpt-5.4-pro"},
+		{"gpt-5-3-mini", "gpt-5.3-mini"},
+		// No version separator → empty
+		{"gpt-5-mini", ""},
+		{"agent-mode", ""},
+		{"o3", ""},
+	}
+	for _, tt := range tests {
+		got := dotHyphenAlternate(tt.input)
+		if got != tt.want {
+			t.Errorf("dotHyphenAlternate(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestModelListContainsRequestedModel_DotHyphenEquivalence(t *testing.T) {
+	tests := []struct {
+		modelIDs       []string
+		requestedModel string
+		want           bool
+	}{
+		// Dot requested, hyphen in list
+		{[]string{"gpt-5-5"}, "gpt-5.5", true},
+		{[]string{"gpt-5-5-pro"}, "gpt-5.5-pro", true},
+		{[]string{"gpt-4-5"}, "gpt-4.5", true},
+		// Hyphen requested, dot in list
+		{[]string{"gpt-5.5"}, "gpt-5-5", true},
+		// No match
+		{[]string{"gpt-5-4-pro"}, "gpt-5.5", false},
+		{[]string{"gpt-5-mini"}, "gpt-5.5", false},
+		// Mixed list with suffixes
+		{[]string{"gpt-5-5", "gpt-5-5-pro", "gpt-5-5-thinking"}, "gpt-5.5-pro", true},
+	}
+	for _, tt := range tests {
+		got := modelListContainsRequestedModel(tt.modelIDs, tt.requestedModel)
+		if got != tt.want {
+			t.Errorf("modelListContainsRequestedModel(%v, %q) = %v, want %v",
+				tt.modelIDs, tt.requestedModel, got, tt.want)
+		}
+	}
+}
+
+func TestRequestedModelLookupCandidates_DotHyphen(t *testing.T) {
+	candidates := requestedModelLookupCandidates("", "gpt-5.5")
+	has := func(target string) bool {
+		for _, c := range candidates {
+			if strings.EqualFold(c, target) {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("gpt-5.5") {
+		t.Error("expected gpt-5.5 in candidates")
+	}
+	if !has("gpt-5-5") {
+		t.Error("expected gpt-5-5 (dot-hyphen alternate) in candidates")
 	}
 }
 
