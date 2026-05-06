@@ -133,6 +133,72 @@ func TestReadRequestBodyWithPrealloc_MaxBytesError(t *testing.T) {
 	require.ErrorAs(t, err, &maxErr)
 }
 
+func TestAllowOpenAICompatibleMessagesDispatch(t *testing.T) {
+	groupID := int64(1)
+	tests := []struct {
+		name string
+		key  *service.APIKey
+		want bool
+	}{
+		{
+			name: "nil api key",
+			want: true,
+		},
+		{
+			name: "ungrouped api key",
+			key:  &service.APIKey{},
+			want: true,
+		},
+		{
+			name: "openai group explicit allow",
+			key: &service.APIKey{
+				GroupID: &groupID,
+				Group: &service.Group{
+					Platform:              service.PlatformOpenAI,
+					AllowMessagesDispatch: true,
+				},
+			},
+			want: true,
+		},
+		{
+			name: "openai group explicit deny",
+			key: &service.APIKey{
+				GroupID: &groupID,
+				Group: &service.Group{
+					Platform: service.PlatformOpenAI,
+				},
+			},
+			want: false,
+		},
+		{
+			name: "kiro group uses native adapter",
+			key: &service.APIKey{
+				GroupID: &groupID,
+				Group: &service.Group{
+					Platform: service.PlatformKiro,
+				},
+			},
+			want: true,
+		},
+		{
+			name: "copilot group still needs explicit allow",
+			key: &service.APIKey{
+				GroupID: &groupID,
+				Group: &service.Group{
+					Platform: service.PlatformCopilot,
+				},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, allowOpenAICompatibleMessagesDispatch(tt.key))
+		})
+	}
+}
+
 func TestOpenAIEnsureForwardErrorResponse_WritesFallbackWhenNotWritten(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
