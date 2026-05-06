@@ -11,11 +11,21 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
+	"github.com/google/uuid"
 )
+
+const (
+	kiroCLIOrigin     = "KIRO_CLI"
+	kiroCLIAppVersion = "1.28.1"
+	kiroRestAmzTarget = "AmazonCodeWhispererService"
+)
+
+var qAPIEndpoint = QAPIEndpoint
 
 func NewHTTPClient(proxyURL string) (*http.Client, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -350,15 +360,38 @@ func RefreshSocialToken(ctx context.Context, httpClient *http.Client, region str
 	return &tokenResp, nil
 }
 
-func ListModels(ctx context.Context, httpClient *http.Client, region string, accessToken string) ([]ModelInfo, error) {
-	endpoint := QAPIEndpoint(region) + "/listAvailableModels"
+func ListModels(ctx context.Context, httpClient *http.Client, region string, accessToken string, profileArn string) ([]ModelInfo, error) {
+	accessToken = strings.TrimSpace(accessToken)
+	if accessToken == "" {
+		return nil, fmt.Errorf("list models requires access token")
+	}
+	profileArn = strings.TrimSpace(profileArn)
+	if profileArn == "" {
+		return nil, fmt.Errorf("list models requires profile_arn")
+	}
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	params := url.Values{}
+	params.Set("origin", kiroCLIOrigin)
+	params.Set("profileArn", profileArn)
+	endpoint := strings.TrimRight(qAPIEndpoint(region), "/") + "/?" + params.Encode()
+
+	reqBody := map[string]string{
+		"origin":     kiroCLIOrigin,
+		"profileArn": profileArn,
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal models request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(bodyBytes)))
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Accept", "application/json")
+	setKiroAWSHeaders(req, accessToken, kiroRestAmzTarget+".ListAvailableModels", false)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -375,11 +408,40 @@ func ListModels(ctx context.Context, httpClient *http.Client, region string, acc
 		return nil, fmt.Errorf("list models failed: status %d body %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
-	var models []ModelInfo
-	if err := json.Unmarshal(respBody, &models); err != nil {
+	var payload struct {
+		Models []ModelInfo `json:"models"`
+	}
+	if err := json.Unmarshal(respBody, &payload); err != nil {
 		return nil, fmt.Errorf("decode models response: %w", err)
 	}
-	return models, nil
+	return payload.Models, nil
+}
+
+func setKiroAWSHeaders(req *http.Request, token string, amzTarget string, streaming bool) {
+	apiName := "codewhispererruntime"
+	if streaming {
+		apiName = "codewhispererstreaming"
+	}
+	userAgent := fmt.Sprintf(
+		"aws-sdk-rust/1.3.14 ua/2.1 api/%s/0.1.14474 os/%s lang/rust/1.92.0 md/appVersion-%s app/AmazonQ-For-CLI",
+		apiName,
+		runtime.GOOS,
+		kiroCLIAppVersion,
+	)
+	xAmzUserAgent := fmt.Sprintf(
+		"aws-sdk-rust/1.3.14 ua/2.1 api/%s/0.1.14474 os/%s lang/rust/1.92.0 m/F,C app/AmazonQ-For-CLI",
+		apiName,
+		runtime.GOOS,
+	)
+	req.Header.Set("Content-Type", "application/x-amz-json-1.0")
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
+	req.Header.Set("X-Amz-Target", amzTarget)
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("X-Amz-User-Agent", xAmzUserAgent)
+	req.Header.Set("X-Amzn-Codewhisperer-Optout", "false")
+	req.Header.Set("Amz-Sdk-Invocation-Id", uuid.NewString())
+	req.Header.Set("Amz-Sdk-Request", "attempt=1; max=3")
+	req.Header.Set("Accept", "*/*")
 }
 
 func GenerateAssistantResponse(ctx context.Context, httpClient *http.Client, region string, accessToken string, reqBody *GenerateAssistantResponseRequest) (*http.Response, error) {

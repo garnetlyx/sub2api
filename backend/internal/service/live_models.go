@@ -366,7 +366,7 @@ func (s *OpenAIGatewayService) liveKiroModels(ctx context.Context, account *Acco
 	if err != nil {
 		return nil, err
 	}
-	items, err := kiro.ListModels(ctx, httpClient, region, accessToken)
+	items, err := kiro.ListModels(ctx, httpClient, region, accessToken, account.GetExtraString("profile_arn"))
 	if err != nil {
 		return nil, err
 	}

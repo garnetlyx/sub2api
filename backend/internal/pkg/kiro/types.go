@@ -142,6 +142,7 @@ type KiroToolUse struct {
 
 type ModelInfo struct {
 	ModelID          string `json:"modelId"`
+	DisplayName      string `json:"displayName,omitempty"`
 	ModelDisplayName string `json:"modelDisplayName,omitempty"`
 	ProviderName     string `json:"providerName,omitempty"`
 }

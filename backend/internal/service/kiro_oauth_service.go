@@ -250,7 +250,7 @@ func (s *KiroOAuthService) ExchangeCode(ctx context.Context, sessionID string, c
 		effectiveRegion = session.Region
 	}
 
-	models, _ := kiro.ListModels(ctx, httpClient, effectiveRegion, tokenResp.AccessToken)
+	models, _ := kiro.ListModels(ctx, httpClient, effectiveRegion, tokenResp.AccessToken, tokenResp.ProfileArn)
 
 	s.sessions.Delete(sessionID)
 
@@ -310,7 +310,7 @@ func (s *KiroOAuthService) PollDeviceFlow(ctx context.Context, sessionID string,
 		return nil, infraerrors.Newf(http.StatusBadGateway, "KIRO_DEVICE_AUTH_FAILED", "device code authorization failed: %s", tokenResp.ErrorDescription)
 	}
 	subject := kiro.ExtractSubjectFromAccessToken(tokenResp.AccessToken)
-	models, _ := kiro.ListModels(ctx, httpClient, session.Region, tokenResp.AccessToken)
+	models, _ := kiro.ListModels(ctx, httpClient, session.Region, tokenResp.AccessToken, "")
 	s.sessions.Delete(sessionID)
 	return &KiroImportResult{
 		AccessToken:           tokenResp.AccessToken,
@@ -354,7 +354,7 @@ func (s *KiroOAuthService) ImportRefreshToken(ctx context.Context, refreshToken 
 		effectiveRegion = region
 	}
 
-	models, _ := kiro.ListModels(ctx, httpClient, effectiveRegion, tokenResp.AccessToken)
+	models, _ := kiro.ListModels(ctx, httpClient, effectiveRegion, tokenResp.AccessToken, tokenResp.ProfileArn)
 
 	return &KiroImportResult{
 		AccessToken:     tokenResp.AccessToken,
@@ -528,7 +528,7 @@ func (s *KiroOAuthService) RefreshDeviceAccount(ctx context.Context, account *Ac
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusUnauthorized, "KIRO_OIDC_REFRESH_FAILED", "oidc refresh failed: %v", err)
 	}
-	models, _ := kiro.ListModels(ctx, httpClient, region, tokenResp.AccessToken)
+	models, _ := kiro.ListModels(ctx, httpClient, region, tokenResp.AccessToken, account.GetExtraString("profile_arn"))
 	return &KiroImportResult{
 		AccessToken:           tokenResp.AccessToken,
 		RefreshToken:          coalesceTrimmed(tokenResp.RefreshToken, refreshToken),
