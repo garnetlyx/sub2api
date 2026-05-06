@@ -681,6 +681,40 @@ func TestSupportsOpenAIGatewayRequestedModel_InternalLiteLLMBridgeDoesNotDriveMo
 	require.False(t, supportsOpenAIGatewayRequestedModel(account, "totally-new-model"))
 }
 
+func TestForwardBridgePassthroughSkipsAuthForInternalLiteLLMBridge(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader([]byte(`{"model":"gpt-5.5","input":"hi"}`)))
+	c.Request.Header.Set("Authorization", "Bearer inbound-client-key")
+	c.Request.Header.Set("X-Api-Key", "inbound-client-key")
+
+	account := &Account{
+		Name:        InternalBridgeOpenAIAccountName,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"base_url": "http://127.0.0.1:4001/v1",
+			"api_key":  "must-not-forward",
+		},
+	}
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_1"}`)),
+	}}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+
+	_, err := svc.ForwardBridgePassthrough(context.Background(), c, account, "/v1/responses", []byte(`{"model":"gpt-5.5","input":"hi"}`))
+	require.NoError(t, err)
+	require.NotNil(t, upstream.lastReq)
+	require.Empty(t, upstream.lastReq.Header.Get("Authorization"))
+	require.Empty(t, upstream.lastReq.Header.Get("X-Api-Key"))
+	require.Equal(t, "http://127.0.0.1:4001/v1/responses", upstream.lastReq.URL.String())
+}
+
 func TestSupportsOpenAIGatewayRequestedModel_KiroIsPassthrough(t *testing.T) {
 	account := &Account{
 		Platform:    PlatformKiro,

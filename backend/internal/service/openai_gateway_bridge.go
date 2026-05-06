@@ -179,13 +179,17 @@ func (s *OpenAIGatewayService) forwardBridgePassthrough(
 	req.Header.Set("Content-Type", "application/json")
 	copySelectedRequestHeaders(req.Header, c.Request.Header)
 
+	if !isInternalLiteLLMBridgeOnlyAccount(account) {
+		if account.IsAnthropic() {
+			req.Header.Set("x-api-key", account.GetCredential("api_key"))
+		} else {
+			req.Header.Set("Authorization", "Bearer "+account.GetCredential("api_key"))
+		}
+	}
 	if account.IsAnthropic() {
-		req.Header.Set("x-api-key", account.GetCredential("api_key"))
 		if strings.TrimSpace(req.Header.Get("anthropic-version")) == "" {
 			req.Header.Set("anthropic-version", "2023-06-01")
 		}
-	} else {
-		req.Header.Set("Authorization", "Bearer "+account.GetCredential("api_key"))
 	}
 
 	proxyURL := ""
