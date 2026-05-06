@@ -321,26 +321,6 @@ const bedrockPresetMappings = [
   { label: 'Haiku 4.5', from: 'claude-haiku-4-5', to: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', color: 'bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-400' },
 ]
 
-// Antigravity 默认映射（从后端 API 获取，与 constants.go 保持一致）
-// 使用 fetchAntigravityDefaultMappings() 异步获取
-import { getAntigravityDefaultModelMapping } from '@/api/admin/accounts'
-
-let _antigravityDefaultMappingsCache: { from: string; to: string }[] | null = null
-
-export async function fetchAntigravityDefaultMappings(): Promise<{ from: string; to: string }[]> {
-  if (_antigravityDefaultMappingsCache !== null) {
-    return _antigravityDefaultMappingsCache
-  }
-  try {
-    const mapping = await getAntigravityDefaultModelMapping()
-    _antigravityDefaultMappingsCache = Object.entries(mapping).map(([from, to]) => ({ from, to }))
-  } catch (e) {
-    console.warn('[fetchAntigravityDefaultMappings] API failed, using empty fallback', e)
-    _antigravityDefaultMappingsCache = []
-  }
-  return _antigravityDefaultMappingsCache
-}
-
 // =====================
 // 常用错误码
 // =====================

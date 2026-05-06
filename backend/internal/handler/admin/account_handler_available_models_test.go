@@ -110,7 +110,7 @@ func TestAccountHandlerGetAvailableModels_OpenAIAPIKeyUsesLiveResolver(t *testin
 	}
 	upstream := &availableModelsHTTPUpstreamStub{body: `{"data":[{"id":"gpt-5-5"},{"id":"minimax-m2-7"}]}`}
 	cfg := &config.Config{}
-	gatewaySvc := service.NewGatewayService(nil, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	gatewaySvc := service.NewGatewayService(nil, nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	openaiSvc := service.NewOpenAIGatewayService(nil, nil, nil, nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, upstream, nil, nil, nil, nil, nil, nil, gatewaySvc)
 	router := setupAvailableModelsRouter(svc, gatewaySvc, openaiSvc)
 

@@ -2515,7 +2515,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			normalized = next
 		}
-		upstreamModel := normalizeOpenAIModelForUpstream(account, account.GetMappedModel(originalModel))
+		upstreamModel, _ := s.ResolveUpstreamModelForAccount(ctx, account, originalModel, "")
+		upstreamModel = normalizeOpenAIModelForUpstream(account, upstreamModel)
 		if upstreamModel != originalModel {
 			next, setErr := applyPayloadMutation(normalized, "model", upstreamModel)
 			if setErr != nil {
@@ -2773,7 +2774,8 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		mappedModel := ""
 		var mappedModelBytes []byte
 		if originalModel != "" {
-			mappedModel = normalizeOpenAIModelForUpstream(account, account.GetMappedModel(originalModel))
+			mappedModel, _ = s.ResolveUpstreamModelForAccount(ctx, account, originalModel, "")
+			mappedModel = normalizeOpenAIModelForUpstream(account, mappedModel)
 			needModelReplace = mappedModel != "" && mappedModel != originalModel
 			if needModelReplace {
 				mappedModelBytes = []byte(mappedModel)
@@ -3835,9 +3837,6 @@ func (s *OpenAIGatewayService) SelectAccountByPreviousResponseID(
 	}
 	if shouldClearStickySession(account, requestedModel) || !account.IsOpenAI() || !account.IsSchedulable() {
 		_ = store.DeleteResponseAccount(ctx, derefGroupID(groupID), responseID)
-		return nil, nil
-	}
-	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
 		return nil, nil
 	}
 	account = s.recheckSelectedOpenAIAccountFromDB(ctx, account, requestedModel)

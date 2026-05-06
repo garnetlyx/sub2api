@@ -1,8 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
-
-vi.mock('@/api/admin/accounts', () => ({
-  getAntigravityDefaultModelMapping: vi.fn()
-}))
+import { describe, expect, it } from 'vitest'
 
 import { buildModelMappingObject, getModelsByPlatform } from '../useModelWhitelist'
 

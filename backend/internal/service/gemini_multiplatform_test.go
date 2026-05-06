@@ -915,10 +915,10 @@ func TestGeminiMessagesCompatService_isModelSupportedByAccount(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "Antigravity平台-不支持gpt模型",
+			name:     "Antigravity平台-gpt模型透传",
 			account:  &Account{Platform: PlatformAntigravity},
 			model:    "gpt-4",
-			expected: false,
+			expected: true,
 		},
 		{
 			name:     "Antigravity平台-空模型允许",
@@ -941,7 +941,7 @@ func TestGeminiMessagesCompatService_isModelSupportedByAccount(t *testing.T) {
 			expected: true,
 		},
 		{
-			name: "Antigravity平台-自定义映射-不在映射中的模型不支持",
+			name: "Antigravity平台-自定义映射-未命中仍透传",
 			account: &Account{
 				Platform: PlatformAntigravity,
 				Credentials: map[string]any{
@@ -951,7 +951,7 @@ func TestGeminiMessagesCompatService_isModelSupportedByAccount(t *testing.T) {
 				},
 			},
 			model:    "claude-sonnet-4-5",
-			expected: false,
+			expected: true,
 		},
 		{
 			name:     "Gemini平台-无映射配置-支持所有模型",
@@ -960,13 +960,13 @@ func TestGeminiMessagesCompatService_isModelSupportedByAccount(t *testing.T) {
 			expected: true,
 		},
 		{
-			name: "Gemini平台-有映射配置-只支持配置的模型",
+			name: "Gemini平台-有映射配置-未命中仍透传",
 			account: &Account{
 				Platform:    PlatformGemini,
 				Credentials: map[string]any{"model_mapping": map[string]any{"gemini-2.5-pro": "x"}},
 			},
 			model:    "gemini-2.5-flash",
-			expected: false,
+			expected: true,
 		},
 	}
 

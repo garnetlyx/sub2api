@@ -330,6 +330,8 @@ type OpenAIGatewayService struct {
 	resolver              *ModelPricingResolver
 	channelService        *ChannelService
 	gatewayService        *GatewayService
+	liveModelCacheOnce    sync.Once
+	liveModelCacheGateway *GatewayService
 
 	openaiWSPoolOnce              sync.Once
 	openaiWSStateStoreOnce        sync.Once
@@ -450,7 +452,7 @@ func (s *OpenAIGatewayService) isUpstreamModelRestrictedByChannel(ctx context.Co
 	if s.channelService == nil {
 		return false
 	}
-	upstreamModel := resolveOpenAIForwardModel(account, requestedModel, "")
+	upstreamModel, _ := s.ResolveUpstreamModelForAccount(ctx, account, requestedModel, "")
 	if upstreamModel == "" {
 		return false
 	}
@@ -2464,9 +2466,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	// 对所有请求执行模型映射（包含 Codex CLI）。
-	billingModel := account.GetMappedModel(reqModel)
+	billingModel, mappingSource := s.ResolveUpstreamModelForAccount(ctx, account, reqModel, "")
 	if billingModel != reqModel {
-		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Model mapping applied: %s -> %s (account: %s, isCodexCLI: %v)", reqModel, billingModel, account.Name, isCodexCLI)
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Model mapping applied: %s -> %s (account: %s, source=%s, isCodexCLI: %v)", reqModel, billingModel, account.Name, mappingSource, isCodexCLI)
 		reqBody["model"] = billingModel
 		bodyModified = true
 		markPatchSet("model", billingModel)

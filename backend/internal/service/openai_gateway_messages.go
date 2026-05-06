@@ -62,7 +62,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 
 	// 3. Model mapping
-	billingModel := resolveOpenAIForwardModel(account, normalizedModel, defaultMappedModel)
+	billingModel, _ := s.ResolveUpstreamModelForAccount(ctx, account, normalizedModel, defaultMappedModel)
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
 	responsesReq.Model = upstreamModel
 
@@ -231,7 +231,7 @@ func (s *OpenAIGatewayService) ForwardKiroAnthropicMessages(
 	stream bool,
 ) (*ForwardResult, error) {
 	startTime := time.Now()
-	billingModel := resolveOpenAIForwardModel(account, originalModel, "")
+	billingModel, _ := s.ResolveUpstreamModelForAccount(ctx, account, originalModel, "")
 	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
 
 	region := account.GetExtraString("region")

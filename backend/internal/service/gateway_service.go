@@ -550,41 +550,43 @@ func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accou
 
 // GatewayService handles API gateway operations
 type GatewayService struct {
-	accountRepo           AccountRepository
-	groupRepo             GroupRepository
-	usageLogRepo          UsageLogRepository
-	usageBillingRepo      UsageBillingRepository
-	userRepo              UserRepository
-	userSubRepo           UserSubscriptionRepository
-	userGroupRateRepo     UserGroupRateRepository
-	cache                 GatewayCache
-	digestStore           *DigestSessionStore
-	cfg                   *config.Config
-	schedulerSnapshot     *SchedulerSnapshotService
-	billingService        *BillingService
-	rateLimitService      *RateLimitService
-	billingCacheService   *BillingCacheService
-	identityService       *IdentityService
-	httpUpstream          HTTPUpstream
-	deferredService       *DeferredService
-	concurrencyService    *ConcurrencyService
-	claudeTokenProvider   *ClaudeTokenProvider
-	sessionLimitCache     SessionLimitCache // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
-	rpmCache              RPMCache          // RPM 计数缓存（仅 Anthropic OAuth/SetupToken）
-	userGroupRateResolver *userGroupRateResolver
-	userGroupRateCache    *gocache.Cache
-	userGroupRateSF       singleflight.Group
-	modelsListCache       *gocache.Cache
-	modelsListCacheTTL    time.Duration
-	liveModelSourceSF     singleflight.Group
-	settingService        *SettingService
-	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
-	debugModelRouting     atomic.Bool
-	debugClaudeMimic      atomic.Bool
-	channelService        *ChannelService
-	resolver              *ModelPricingResolver
-	debugGatewayBodyFile  atomic.Pointer[os.File] // non-nil when SUB2API_DEBUG_GATEWAY_BODY is set
-	tlsFPProfileService   *TLSFingerprintProfileService
+	accountRepo              AccountRepository
+	groupRepo                GroupRepository
+	usageLogRepo             UsageLogRepository
+	usageBillingRepo         UsageBillingRepository
+	userRepo                 UserRepository
+	userSubRepo              UserSubscriptionRepository
+	userGroupRateRepo        UserGroupRateRepository
+	cache                    GatewayCache
+	digestStore              *DigestSessionStore
+	cfg                      *config.Config
+	schedulerSnapshot        *SchedulerSnapshotService
+	billingService           *BillingService
+	rateLimitService         *RateLimitService
+	billingCacheService      *BillingCacheService
+	identityService          *IdentityService
+	httpUpstream             HTTPUpstream
+	deferredService          *DeferredService
+	concurrencyService       *ConcurrencyService
+	claudeTokenProvider      *ClaudeTokenProvider
+	geminiTokenProvider      *GeminiTokenProvider
+	antigravityTokenProvider *AntigravityTokenProvider
+	sessionLimitCache        SessionLimitCache // 会话数量限制缓存（仅 Anthropic OAuth/SetupToken）
+	rpmCache                 RPMCache          // RPM 计数缓存（仅 Anthropic OAuth/SetupToken）
+	userGroupRateResolver    *userGroupRateResolver
+	userGroupRateCache       *gocache.Cache
+	userGroupRateSF          singleflight.Group
+	modelsListCache          *gocache.Cache
+	modelsListCacheTTL       time.Duration
+	liveModelSourceSF        singleflight.Group
+	settingService           *SettingService
+	responseHeaderFilter     *responseheaders.CompiledHeaderFilter
+	debugModelRouting        atomic.Bool
+	debugClaudeMimic         atomic.Bool
+	channelService           *ChannelService
+	resolver                 *ModelPricingResolver
+	debugGatewayBodyFile     atomic.Pointer[os.File] // non-nil when SUB2API_DEBUG_GATEWAY_BODY is set
+	tlsFPProfileService      *TLSFingerprintProfileService
 }
 
 // NewGatewayService creates a new GatewayService
@@ -607,6 +609,8 @@ func NewGatewayService(
 	httpUpstream HTTPUpstream,
 	deferredService *DeferredService,
 	claudeTokenProvider *ClaudeTokenProvider,
+	geminiTokenProvider *GeminiTokenProvider,
+	antigravityTokenProvider *AntigravityTokenProvider,
 	sessionLimitCache SessionLimitCache,
 	rpmCache RPMCache,
 	digestStore *DigestSessionStore,
@@ -619,35 +623,37 @@ func NewGatewayService(
 	modelsListTTL := resolveModelsListCacheTTL(cfg)
 
 	svc := &GatewayService{
-		accountRepo:          accountRepo,
-		groupRepo:            groupRepo,
-		usageLogRepo:         usageLogRepo,
-		usageBillingRepo:     usageBillingRepo,
-		userRepo:             userRepo,
-		userSubRepo:          userSubRepo,
-		userGroupRateRepo:    userGroupRateRepo,
-		cache:                cache,
-		digestStore:          digestStore,
-		cfg:                  cfg,
-		schedulerSnapshot:    schedulerSnapshot,
-		concurrencyService:   concurrencyService,
-		billingService:       billingService,
-		rateLimitService:     rateLimitService,
-		billingCacheService:  billingCacheService,
-		identityService:      identityService,
-		httpUpstream:         httpUpstream,
-		deferredService:      deferredService,
-		claudeTokenProvider:  claudeTokenProvider,
-		sessionLimitCache:    sessionLimitCache,
-		rpmCache:             rpmCache,
-		userGroupRateCache:   gocache.New(userGroupRateTTL, time.Minute),
-		settingService:       settingService,
-		modelsListCache:      gocache.New(modelsListTTL, time.Minute),
-		modelsListCacheTTL:   modelsListTTL,
-		responseHeaderFilter: compileResponseHeaderFilter(cfg),
-		tlsFPProfileService:  tlsFPProfileService,
-		channelService:       channelService,
-		resolver:             resolver,
+		accountRepo:              accountRepo,
+		groupRepo:                groupRepo,
+		usageLogRepo:             usageLogRepo,
+		usageBillingRepo:         usageBillingRepo,
+		userRepo:                 userRepo,
+		userSubRepo:              userSubRepo,
+		userGroupRateRepo:        userGroupRateRepo,
+		cache:                    cache,
+		digestStore:              digestStore,
+		cfg:                      cfg,
+		schedulerSnapshot:        schedulerSnapshot,
+		concurrencyService:       concurrencyService,
+		billingService:           billingService,
+		rateLimitService:         rateLimitService,
+		billingCacheService:      billingCacheService,
+		identityService:          identityService,
+		httpUpstream:             httpUpstream,
+		deferredService:          deferredService,
+		claudeTokenProvider:      claudeTokenProvider,
+		geminiTokenProvider:      geminiTokenProvider,
+		antigravityTokenProvider: antigravityTokenProvider,
+		sessionLimitCache:        sessionLimitCache,
+		rpmCache:                 rpmCache,
+		userGroupRateCache:       gocache.New(userGroupRateTTL, time.Minute),
+		settingService:           settingService,
+		modelsListCache:          gocache.New(modelsListTTL, time.Minute),
+		modelsListCacheTTL:       modelsListTTL,
+		responseHeaderFilter:     compileResponseHeaderFilter(cfg),
+		tlsFPProfileService:      tlsFPProfileService,
+		channelService:           channelService,
+		resolver:                 resolver,
 	}
 	svc.userGroupRateResolver = newUserGroupRateResolver(
 		userGroupRateRepo,
@@ -3448,8 +3454,9 @@ func summarizeSelectionFailureStats(stats selectionFailureStats) string {
 	)
 }
 
-// isModelSupportedByAccountWithContext 根据账户平台检查模型支持（带 context）
-// 对于 Antigravity 平台，会先获取映射后的最终模型名（包括 thinking 后缀）再检查支持
+// isModelSupportedByAccountWithContext checks public-model eligibility.
+// Accounts with a live model source are checked against that live source; only
+// transports without a live source fall back to transport-specific mapping.
 func (s *GatewayService) isModelSupportedByAccountWithContext(ctx context.Context, account *Account, requestedModel string) bool {
 	if account == nil {
 		return false
@@ -3457,58 +3464,81 @@ func (s *GatewayService) isModelSupportedByAccountWithContext(ctx context.Contex
 	if isInternalLiteLLMBridgeOnlyAccount(account) {
 		return false
 	}
-	if strings.TrimSpace(requestedModel) != "" {
-		policy := LoadKnownIssueModelExclusionPolicy(ctx, s.settingService.SettingRepoOrNil())
-		if _, excluded := policy.Excludes(requestedModel, account, account.Platform, ""); excluded {
-			return false
-		}
-	}
-	if account.Platform == PlatformAntigravity {
-		if strings.TrimSpace(requestedModel) == "" {
-			return true
-		}
-		// 使用与转发阶段一致的映射逻辑：自定义映射优先 → 默认映射兜底
-		mapped := mapAntigravityModel(account, requestedModel)
-		if mapped == "" {
-			return false
-		}
-		// 应用 thinking 后缀后检查最终模型是否在账号映射中
-		if enabled, ok := ThinkingEnabledFromContext(ctx); ok {
-			finalModel := applyThinkingModelSuffix(mapped, enabled)
-			if finalModel == mapped {
-				return true // thinking 后缀未改变模型名，映射已通过
-			}
-			return account.IsModelSupported(finalModel)
-		}
+	requestedModel = strings.TrimSpace(requestedModel)
+	if requestedModel == "" {
 		return true
 	}
-	if strings.TrimSpace(requestedModel) != "" {
-		source, err := s.cachedLiveModelSourceForAccountWithLoader(ctx, *account, s.liveModelSourceForAccount)
-		if err != nil {
-			slog.Warn("gateway.account_live_models_lookup_failed",
-				"account_id", account.ID,
-				"account_name", account.Name,
-				"platform", account.Platform,
-				"requested_model", requestedModel,
-				"error", err,
-			)
-			return false
-		}
-		if strings.TrimSpace(source.Endpoint) == "" {
-			return s.isModelSupportedByAccount(account, requestedModel)
-		}
-		if len(source.Models) == 0 {
-			slog.Warn("gateway.account_model_empty_list_filtered",
-				"account_id", account.ID,
-				"account_name", account.Name,
-				"platform", account.Platform,
-				"requested_model", requestedModel,
-			)
-			return false
-		}
-		return modelListContainsRequestedModel(source.Models, requestedModel)
+	if supported, decided := s.isModelSupportedByLiveSource(ctx, account, requestedModel); decided {
+		return supported
+	}
+	policy := LoadKnownIssueModelExclusionPolicy(ctx, s.settingService.SettingRepoOrNil())
+	if _, excluded := policy.Excludes(requestedModel, account, account.Platform, ""); excluded {
+		return false
 	}
 	return s.isModelSupportedByAccount(account, requestedModel)
+}
+
+func (s *GatewayService) isModelSupportedByLiveSource(ctx context.Context, account *Account, requestedModel string) (supported bool, decided bool) {
+	source, err := s.cachedLiveModelSourceForAccountWithLoader(ctx, *account, s.liveModelSourceForAccount)
+	if err != nil {
+		slog.Warn("gateway.account_live_models_lookup_failed",
+			"account_id", account.ID,
+			"account_name", account.Name,
+			"platform", account.Platform,
+			"requested_model", requestedModel,
+			"error", err,
+		)
+		return false, true
+	}
+	if strings.TrimSpace(source.Endpoint) == "" {
+		return false, false
+	}
+	if len(source.Models) == 0 {
+		slog.Warn("gateway.account_model_empty_list_filtered",
+			"account_id", account.ID,
+			"account_name", account.Name,
+			"platform", account.Platform,
+			"endpoint", source.Endpoint,
+			"capability", source.Capability,
+			"requested_model", requestedModel,
+		)
+		return false, true
+	}
+
+	modelsToCheck := []string{requestedModel}
+	if account.Platform == PlatformAntigravity {
+		if enabled, ok := ThinkingEnabledFromContext(ctx); ok {
+			finalModel := applyThinkingModelSuffix(requestedModel, enabled)
+			if !modelListContainsRequestedModel([]string{requestedModel}, finalModel) {
+				modelsToCheck = append(modelsToCheck, finalModel)
+			}
+		}
+	}
+
+	policy := LoadKnownIssueModelExclusionPolicy(ctx, s.settingService.SettingRepoOrNil())
+	for _, model := range modelsToCheck {
+		if _, excluded := policy.Excludes(model, account, source.Endpoint, source.Capability); excluded {
+			return false, true
+		}
+		if !modelListContainsRequestedModel(source.Models, model) {
+			modelSample := source.Models
+			if len(modelSample) > 10 {
+				modelSample = modelSample[:10]
+			}
+			slog.Warn("gateway.account_model_not_found",
+				"account_id", account.ID,
+				"account_name", account.Name,
+				"platform", account.Platform,
+				"endpoint", source.Endpoint,
+				"capability", source.Capability,
+				"requested_model", model,
+				"model_list_sample", modelSample,
+				"model_list_total", len(source.Models),
+			)
+			return false, true
+		}
+	}
+	return true, true
 }
 
 // isModelSupportedByAccount 根据账户平台检查模型支持（无 context，用于非 Antigravity 平台）
@@ -4029,9 +4059,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		passthroughBody := parsed.Body
 		passthroughModel := parsed.Model
 		if passthroughModel != "" {
-			if mappedModel := account.GetMappedModel(passthroughModel); mappedModel != passthroughModel {
+			if mappedModel, mappingSource := s.ResolveUpstreamModelForAccount(ctx, account, passthroughModel); mappedModel != passthroughModel {
 				passthroughBody = s.replaceModelInBody(passthroughBody, mappedModel)
-				logger.LegacyPrintf("service.gateway", "Passthrough model mapping: %s -> %s (account: %s)", parsed.Model, mappedModel, account.Name)
+				logger.LegacyPrintf("service.gateway", "Passthrough model mapping: %s -> %s (account: %s, source=%s)", parsed.Model, mappedModel, account.Name, mappingSource)
 				passthroughModel = mappedModel
 			}
 		}
@@ -4119,18 +4149,8 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	// - OAuth/SetupToken 账号：使用 Anthropic 标准映射（短ID → 长ID）
 	mappedModel := reqModel
 	mappingSource := ""
-	if account.Type == AccountTypeAPIKey {
-		mappedModel = account.GetMappedModel(reqModel)
-		if mappedModel != reqModel {
-			mappingSource = "account"
-		}
-	}
-	if mappingSource == "" && account.Platform == PlatformAnthropic && account.Type != AccountTypeAPIKey {
-		normalized := claude.NormalizeModelID(reqModel)
-		if normalized != reqModel {
-			mappedModel = normalized
-			mappingSource = "prefix"
-		}
+	if reqModel != "" {
+		mappedModel, mappingSource = s.ResolveUpstreamModelForAccount(ctx, account, reqModel)
 	}
 	if mappedModel != reqModel {
 		// 替换请求体中的模型名
@@ -8232,7 +8252,7 @@ func (s *GatewayService) isUpstreamModelRestrictedByChannel(ctx context.Context,
 	if s.channelService == nil {
 		return false
 	}
-	upstreamModel := resolveAccountUpstreamModel(account, requestedModel)
+	upstreamModel := s.resolveAccountUpstreamModel(ctx, account, requestedModel)
 	if upstreamModel == "" {
 		return false
 	}
@@ -8240,7 +8260,10 @@ func (s *GatewayService) isUpstreamModelRestrictedByChannel(ctx context.Context,
 }
 
 // resolveAccountUpstreamModel 确定账号将请求模型映射为什么上游模型。
-func resolveAccountUpstreamModel(account *Account, requestedModel string) string {
+func (s *GatewayService) resolveAccountUpstreamModel(ctx context.Context, account *Account, requestedModel string) string {
+	if mappedModel, matched := s.ResolveLiveUpstreamModel(ctx, account, requestedModel); matched {
+		return mappedModel
+	}
 	if account.Platform == PlatformAntigravity {
 		return mapAntigravityModel(account, requestedModel)
 	}
@@ -8274,9 +8297,9 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	if account != nil && account.IsAnthropicAPIKeyPassthroughEnabled() {
 		passthroughBody := parsed.Body
 		if reqModel := parsed.Model; reqModel != "" {
-			if mappedModel := account.GetMappedModel(reqModel); mappedModel != reqModel {
+			if mappedModel, mappingSource := s.ResolveUpstreamModelForAccount(ctx, account, reqModel); mappedModel != reqModel {
 				passthroughBody = s.replaceModelInBody(passthroughBody, mappedModel)
-				logger.LegacyPrintf("service.gateway", "CountTokens passthrough model mapping: %s -> %s (account: %s)", reqModel, mappedModel, account.Name)
+				logger.LegacyPrintf("service.gateway", "CountTokens passthrough model mapping: %s -> %s (account: %s, source=%s)", reqModel, mappedModel, account.Name, mappingSource)
 			}
 		}
 		return s.forwardCountTokensAnthropicAPIKeyPassthrough(ctx, c, account, passthroughBody)
@@ -8315,19 +8338,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	if reqModel != "" {
 		mappedModel := reqModel
 		mappingSource := ""
-		if account.Type == AccountTypeAPIKey {
-			mappedModel = account.GetMappedModel(reqModel)
-			if mappedModel != reqModel {
-				mappingSource = "account"
-			}
-		}
-		if mappingSource == "" && account.Platform == PlatformAnthropic && account.Type != AccountTypeAPIKey {
-			normalized := claude.NormalizeModelID(reqModel)
-			if normalized != reqModel {
-				mappedModel = normalized
-				mappingSource = "prefix"
-			}
-		}
+		mappedModel, mappingSource = s.ResolveUpstreamModelForAccount(ctx, account, reqModel)
 		if mappedModel != reqModel {
 			body = s.replaceModelInBody(body, mappedModel)
 			reqModel = mappedModel

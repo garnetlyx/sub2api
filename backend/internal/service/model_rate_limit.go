@@ -68,7 +68,7 @@ func (a *Account) GetModelRateLimitRemainingTimeWithContext(ctx context.Context,
 func resolveFinalAntigravityModelKey(ctx context.Context, account *Account, requestedModel string) string {
 	modelKey := mapAntigravityModel(account, requestedModel)
 	if modelKey == "" {
-		return ""
+		modelKey = strings.TrimSpace(requestedModel)
 	}
 	// thinking 会影响 Antigravity 最终模型名（例如 claude-sonnet-4-5 -> claude-sonnet-4-5-thinking）
 	if enabled, ok := ThinkingEnabledFromContext(ctx); ok {
@@ -85,17 +85,36 @@ func (a *Account) modelRateLimitResetAt(scope string) *time.Time {
 	if !ok {
 		return nil
 	}
-	rawLimit, ok := rawLimits[scope].(map[string]any)
-	if !ok {
-		return nil
+
+	parseResetAt := func(raw any) *time.Time {
+		rawLimit, ok := raw.(map[string]any)
+		if !ok {
+			return nil
+		}
+		resetAtRaw, ok := rawLimit["rate_limit_reset_at"].(string)
+		if !ok || strings.TrimSpace(resetAtRaw) == "" {
+			return nil
+		}
+		resetAt, err := time.Parse(time.RFC3339, resetAtRaw)
+		if err != nil {
+			return nil
+		}
+		return &resetAt
 	}
-	resetAtRaw, ok := rawLimit["rate_limit_reset_at"].(string)
-	if !ok || strings.TrimSpace(resetAtRaw) == "" {
-		return nil
+
+	var latest *time.Time
+	for limitScope, rawLimit := range rawLimits {
+		if !modelListContainsRequestedModel([]string{limitScope}, scope) {
+			continue
+		}
+		resetAt := parseResetAt(rawLimit)
+		if resetAt == nil {
+			continue
+		}
+		if latest == nil || resetAt.After(*latest) {
+			value := *resetAt
+			latest = &value
+		}
 	}
-	resetAt, err := time.Parse(time.RFC3339, resetAtRaw)
-	if err != nil {
-		return nil
-	}
-	return &resetAt
+	return latest
 }

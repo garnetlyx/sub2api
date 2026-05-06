@@ -1109,28 +1109,28 @@ func TestGatewayService_isModelSupportedByAccount(t *testing.T) {
 		expected bool
 	}{
 		{
-			name:     "Antigravity平台-支持默认映射中的claude模型",
+			name:     "Antigravity平台-claude模型透传",
 			account:  &Account{Platform: PlatformAntigravity},
 			model:    "claude-sonnet-4-5",
 			expected: true,
 		},
 		{
-			name:     "Antigravity平台-不支持非默认映射中的claude模型",
+			name:     "Antigravity平台-其他claude模型透传",
 			account:  &Account{Platform: PlatformAntigravity},
 			model:    "claude-3-5-sonnet-20241022",
-			expected: false,
+			expected: true,
 		},
 		{
-			name:     "Antigravity平台-支持gemini模型",
+			name:     "Antigravity平台-gemini模型透传",
 			account:  &Account{Platform: PlatformAntigravity},
 			model:    "gemini-2.5-flash",
 			expected: true,
 		},
 		{
-			name:     "Antigravity平台-不支持gpt模型",
+			name:     "Antigravity平台-gpt模型透传",
 			account:  &Account{Platform: PlatformAntigravity},
 			model:    "gpt-4",
-			expected: false,
+			expected: true,
 		},
 		{
 			name:     "Anthropic平台-无映射配置-支持所有模型",
@@ -1139,13 +1139,13 @@ func TestGatewayService_isModelSupportedByAccount(t *testing.T) {
 			expected: true,
 		},
 		{
-			name: "Anthropic平台-有映射配置-只支持配置的模型",
+			name: "Anthropic平台-有映射配置-未命中仍透传",
 			account: &Account{
 				Platform:    PlatformAnthropic,
 				Credentials: map[string]any{"model_mapping": map[string]any{"claude-opus-4": "x"}},
 			},
 			model:    "claude-3-5-sonnet-20241022",
-			expected: false,
+			expected: true,
 		},
 		{
 			name: "Anthropic平台-有映射配置-支持配置的模型",
@@ -1163,7 +1163,7 @@ func TestGatewayService_isModelSupportedByAccount(t *testing.T) {
 			expected: true,
 		},
 		{
-			name: "Gemini平台-有映射配置-只支持配置的模型",
+			name: "Gemini平台-有映射配置-未命中仍透传",
 			account: &Account{
 				Platform: PlatformGemini,
 				Type:     AccountTypeAPIKey,
@@ -1172,7 +1172,7 @@ func TestGatewayService_isModelSupportedByAccount(t *testing.T) {
 				},
 			},
 			model:    "gemini-2.5-flash",
-			expected: false,
+			expected: true,
 		},
 		{
 			name: "Gemini平台-有映射配置-支持配置的模型",

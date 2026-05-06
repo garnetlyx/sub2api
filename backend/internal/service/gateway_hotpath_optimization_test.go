@@ -215,6 +215,24 @@ func (s *modelsListAccountRepoStub) ListSchedulable(ctx context.Context) ([]Acco
 	return out, nil
 }
 
+func (s *modelsListAccountRepoStub) GetByID(ctx context.Context, id int64) (*Account, error) {
+	for _, accounts := range s.byGroup {
+		for i := range accounts {
+			if accounts[i].ID == id {
+				account := accounts[i]
+				return &account, nil
+			}
+		}
+	}
+	for i := range s.all {
+		if s.all[i].ID == id {
+			account := s.all[i]
+			return &account, nil
+		}
+	}
+	return nil, errors.New("account not found")
+}
+
 func resetGatewayHotpathStatsForTest() {
 	windowCostPrefetchCacheHitTotal.Store(0)
 	windowCostPrefetchCacheMissTotal.Store(0)
@@ -688,6 +706,150 @@ func TestOpenAIGatewayLiveModelSourceUsesSharedAccountCache(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"gpt-5.6"}, source3.Models)
 	require.Equal(t, int64(2), upstream.calls.Load())
+}
+
+func TestOpenAIGatewayLiveModelSourceUsesLocalAccountCacheWhenUnshared(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	account := Account{
+		ID:          12,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://openai-compatible.test/v1",
+		},
+	}
+	upstream := &liveModelsHTTPUpstreamStub{
+		responses: []string{
+			`{"data":[{"id":"gpt-5-5"}]}`,
+			`{"data":[{"id":"gpt-5.6"}]}`,
+		},
+	}
+	openaiGateway := &OpenAIGatewayService{
+		cfg:          &config.Config{},
+		httpUpstream: upstream,
+	}
+
+	source1, err := openaiGateway.LiveModelSourceForAccount(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, []string{"gpt-5.5"}, source1.Models)
+
+	source2, err := openaiGateway.LiveModelSourceForAccount(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, source1.Models, source2.Models)
+	require.Equal(t, int64(1), upstream.calls.Load())
+
+	openaiGateway.liveModelCacheGatewayService().InvalidateLiveModelSourceCache(account.ID)
+	source3, err := openaiGateway.LiveModelSourceForAccount(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, []string{"gpt-5.6"}, source3.Models)
+	require.Equal(t, int64(2), upstream.calls.Load())
+}
+
+func TestGatewayLiveModelSourceDiscoversAntigravityModels(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	account := Account{
+		ID:          21,
+		Platform:    PlatformAntigravity,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"access_token": "ag-token",
+			"project_id":   "project-123",
+		},
+	}
+	repo := &modelsListAccountRepoStub{all: []Account{account}}
+	upstream := &liveModelsHTTPUpstreamStub{
+		responses: []string{`{"models":{"claude-sonnet-4-6":{},"gemini-3-1-pro-high":{}}}`},
+	}
+	svc := &GatewayService{
+		accountRepo:              repo,
+		httpUpstream:             upstream,
+		cfg:                      &config.Config{},
+		antigravityTokenProvider: NewAntigravityTokenProvider(repo, nil, nil),
+		modelsListCache:          gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL:       time.Minute,
+	}
+
+	source, err := svc.LiveModelSourceForAccount(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, "antigravity", source.Endpoint)
+	require.Equal(t, []string{"claude-sonnet-4.6", "gemini-3.1-pro-high"}, source.Models)
+
+	source2, err := svc.LiveModelSourceForAccount(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, source.Models, source2.Models)
+	require.Equal(t, int64(1), upstream.calls.Load())
+}
+
+func TestGetAvailableModelsIncludesAntigravityLiveModels(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	groupID := int64(42)
+	account := Account{
+		ID:          22,
+		Platform:    PlatformAntigravity,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"access_token": "ag-token",
+			"project_id":   "project-123",
+		},
+	}
+	repo := &modelsListAccountRepoStub{byGroup: map[int64][]Account{groupID: {account}}}
+	upstream := &liveModelsHTTPUpstreamStub{
+		responses: []string{`{"models":{"claude-opus-4-6":{},"claude-opus-4-6-thinking":{}}}`},
+	}
+	svc := &GatewayService{
+		accountRepo:              repo,
+		httpUpstream:             upstream,
+		cfg:                      &config.Config{},
+		antigravityTokenProvider: NewAntigravityTokenProvider(repo, nil, nil),
+		modelsListCache:          gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL:       time.Minute,
+	}
+
+	models := svc.GetAvailableModels(context.Background(), &groupID, PlatformAntigravity)
+	require.Equal(t, []string{"claude-opus-4.6", "claude-opus-4.6-thinking"}, models)
+	require.Equal(t, int64(1), upstream.calls.Load())
+}
+
+func TestGatewayModelSupportUsesAntigravityLiveModels(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	account := Account{
+		ID:          23,
+		Platform:    PlatformAntigravity,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"access_token": "ag-token",
+			"project_id":   "project-123",
+		},
+	}
+	repo := &modelsListAccountRepoStub{all: []Account{account}}
+	upstream := &liveModelsHTTPUpstreamStub{
+		responses: []string{`{"models":{"claude-sonnet-4-6":{}}}`},
+	}
+	svc := &GatewayService{
+		accountRepo:              repo,
+		httpUpstream:             upstream,
+		cfg:                      &config.Config{},
+		antigravityTokenProvider: NewAntigravityTokenProvider(repo, nil, nil),
+		modelsListCache:          gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL:       time.Minute,
+	}
+
+	require.True(t, svc.isModelSupportedByAccountWithContext(context.Background(), &account, "claude-sonnet-4.6"))
+	require.False(t, svc.isModelSupportedByAccountWithContext(context.Background(), &account, "claude-opus-4.7"))
+	require.Equal(t, int64(1), upstream.calls.Load())
 }
 
 func TestGetAvailableModels_AppliesKnownIssuePolicyAfterLiveSourceCache(t *testing.T) {

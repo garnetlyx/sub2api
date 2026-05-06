@@ -107,7 +107,27 @@ func TestIsModelRateLimited(t *testing.T) {
 			expected:       true,
 		},
 		{
-			name: "antigravity platform - gemini-3-pro-preview mapped to gemini-3-pro-high",
+			name: "antigravity platform - gemini-3-pro-preview mapped to gemini-3-pro-high by explicit account mapping",
+			account: &Account{
+				Platform: PlatformAntigravity,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{
+						"gemini-3-pro-preview": "gemini-3-pro-high",
+					},
+				},
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"gemini-3-pro-high": map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "gemini-3-pro-preview",
+			expected:       true,
+		},
+		{
+			name: "antigravity platform - gemini-3-pro-preview is not implicitly mapped",
 			account: &Account{
 				Platform: PlatformAntigravity,
 				Extra: map[string]any{
@@ -119,7 +139,7 @@ func TestIsModelRateLimited(t *testing.T) {
 				},
 			},
 			requestedModel: "gemini-3-pro-preview",
-			expected:       true,
+			expected:       false,
 		},
 		{
 			name: "non-antigravity platform - gemini-3-pro-preview NOT mapped",
@@ -137,12 +157,12 @@ func TestIsModelRateLimited(t *testing.T) {
 			expected:       false, // gemini 平台不走 antigravity 映射
 		},
 		{
-			name: "antigravity platform - claude-opus-4-5-thinking mapped to opus-4-6-thinking",
+			name: "antigravity platform - uses requested model key without implicit mapping",
 			account: &Account{
 				Platform: PlatformAntigravity,
 				Extra: map[string]any{
 					modelRateLimitsKey: map[string]any{
-						"claude-opus-4-6-thinking": map[string]any{
+						"claude-opus-4-5-thinking": map[string]any{
 							"rate_limit_reset_at": future,
 						},
 					},
@@ -164,6 +184,34 @@ func TestIsModelRateLimited(t *testing.T) {
 			},
 			requestedModel: "claude-3-5-sonnet-20241022",
 			expected:       false,
+		},
+		{
+			name: "generic numeric separator alias hit - dotted request to hyphen key",
+			account: &Account{
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"gpt-5-5": map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "gpt-5.5",
+			expected:       true,
+		},
+		{
+			name: "generic numeric separator alias hit - hyphen request to dotted key",
+			account: &Account{
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"minimax-m2.7": map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "minimax-m2-7",
+			expected:       true,
 		},
 	}
 
@@ -254,6 +302,21 @@ func TestGetModelRateLimitRemainingTime(t *testing.T) {
 			maxExpected:    6 * time.Minute,
 		},
 		{
+			name: "model rate limited - generic numeric separator alias",
+			account: &Account{
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"gpt-5-5": map[string]any{
+							"rate_limit_reset_at": future5m,
+						},
+					},
+				},
+			},
+			requestedModel: "gpt-5.5",
+			minExpected:    4 * time.Minute,
+			maxExpected:    6 * time.Minute,
+		},
+		{
 			name: "expired rate limit",
 			account: &Account{
 				Extra: map[string]any{
@@ -291,12 +354,12 @@ func TestGetModelRateLimitRemainingTime(t *testing.T) {
 			maxExpected:    0,
 		},
 		{
-			name: "antigravity platform - claude-opus-4-5-thinking mapped to opus-4-6-thinking",
+			name: "antigravity platform - uses requested model key without implicit mapping",
 			account: &Account{
 				Platform: PlatformAntigravity,
 				Extra: map[string]any{
 					modelRateLimitsKey: map[string]any{
-						"claude-opus-4-6-thinking": map[string]any{
+						"claude-opus-4-5-thinking": map[string]any{
 							"rate_limit_reset_at": future5m,
 						},
 					},

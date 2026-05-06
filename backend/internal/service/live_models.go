@@ -14,22 +14,31 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/copilot"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
 	"github.com/imroc/req/v3"
+	gocache "github.com/patrickmn/go-cache"
 )
 
 type LiveModelSource struct {
-	Account    *Account
-	Endpoint   string
-	Capability string
-	Models     []string
+	Account        *Account
+	Endpoint       string
+	Capability     string
+	Models         []string
+	UpstreamModels map[string]string
 }
 
 type liveModelSourceLoader func(context.Context, Account) (LiveModelSource, error)
 
 const liveModelSourceCacheKeyPrefix = "live-model-source|"
+
+type liveModelCatalog struct {
+	Models         []string
+	UpstreamModels map[string]string
+}
 
 var chatGPTLiveModelEndpoints = []string{
 	"https://chatgpt.com/backend-api/models?history_and_training_disabled=false",
@@ -55,41 +64,108 @@ func canonicalLiveModelList(models []string) []string {
 	return out
 }
 
-func publicizeLiveModelList(account *Account, models []string) []string {
-	if account == nil || len(models) == 0 {
-		return canonicalLiveModelList(models)
-	}
-	upstreamModels := account.GetUpstreamModels()
-	if len(upstreamModels) == 0 {
-		return canonicalLiveModelList(models)
-	}
-
-	reverse := make(map[string]string, len(upstreamModels))
-	for publicModel, upstreamModel := range upstreamModels {
-		publicModel = strings.TrimSpace(publicModel)
-		upstreamModel = strings.TrimSpace(upstreamModel)
-		if publicModel == "" || upstreamModel == "" {
-			continue
-		}
-		key := strings.ToLower(upstreamModel)
-		if _, exists := reverse[key]; !exists {
-			reverse[key] = publicModel
-		}
-	}
-
+func cleanLiveModelList(models []string) []string {
+	seen := make(map[string]struct{}, len(models))
 	out := make([]string, 0, len(models))
 	for _, model := range models {
 		model = strings.TrimSpace(model)
 		if model == "" {
 			continue
 		}
-		if publicModel, ok := reverse[strings.ToLower(model)]; ok {
-			out = append(out, publicModel)
+		key := strings.ToLower(model)
+		if _, exists := seen[key]; exists {
 			continue
 		}
+		seen[key] = struct{}{}
 		out = append(out, model)
 	}
-	return canonicalLiveModelList(out)
+	sort.Strings(out)
+	return out
+}
+
+type liveModelBinding struct {
+	Public   string
+	Upstream string
+	Explicit bool
+}
+
+func buildExplicitUpstreamMappings(account *Account) map[string]string {
+	if account == nil {
+		return nil
+	}
+	out := make(map[string]string)
+	for publicModel, upstreamModel := range account.GetUpstreamModels() {
+		publicModel = strings.TrimSpace(publicModel)
+		upstreamModel = strings.TrimSpace(upstreamModel)
+		if publicModel == "" || upstreamModel == "" {
+			continue
+		}
+		out[publicModel] = upstreamModel
+	}
+	for publicModel, upstreamModel := range account.GetModelMapping() {
+		publicModel = strings.TrimSpace(publicModel)
+		upstreamModel = strings.TrimSpace(upstreamModel)
+		if publicModel == "" || upstreamModel == "" || strings.Contains(publicModel, "*") {
+			continue
+		}
+		if _, exists := out[publicModel]; !exists {
+			out[publicModel] = upstreamModel
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func upstreamModelsEquivalent(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	if strings.EqualFold(a, b) {
+		return true
+	}
+	return modelListContainsRequestedModel([]string{a}, b)
+}
+
+func publicizeLiveModelCatalog(account *Account, rawModels []string) liveModelCatalog {
+	rawModels = cleanLiveModelList(rawModels)
+	bindings := make(map[string]liveModelBinding, len(rawModels))
+	add := func(publicModel, upstreamModel string, explicit bool) {
+		publicModel = CanonicalizePublicModel(publicModel)
+		upstreamModel = strings.TrimSpace(upstreamModel)
+		if publicModel == "" || upstreamModel == "" {
+			return
+		}
+		key := strings.ToLower(publicModel)
+		if existing, exists := bindings[key]; !exists || (explicit && !existing.Explicit) {
+			bindings[key] = liveModelBinding{Public: publicModel, Upstream: upstreamModel, Explicit: explicit}
+		}
+	}
+
+	for _, rawModel := range rawModels {
+		add(rawModel, rawModel, false)
+	}
+
+	for publicModel, upstreamModel := range buildExplicitUpstreamMappings(account) {
+		for _, rawModel := range rawModels {
+			if upstreamModelsEquivalent(upstreamModel, rawModel) {
+				add(publicModel, rawModel, true)
+				break
+			}
+		}
+	}
+
+	models := make([]string, 0, len(bindings))
+	upstreamModels := make(map[string]string, len(bindings))
+	for _, binding := range bindings {
+		models = append(models, binding.Public)
+		upstreamModels[binding.Public] = binding.Upstream
+	}
+	sort.Strings(models)
+	return liveModelCatalog{Models: models, UpstreamModels: upstreamModels}
 }
 
 func MergeLiveModelSources(sources []LiveModelSource, policy KnownIssueModelExclusionPolicy) []string {
@@ -243,6 +319,12 @@ func cloneLiveModelSource(source LiveModelSource) LiveModelSource {
 	if source.Models != nil {
 		cloned.Models = append([]string(nil), source.Models...)
 	}
+	if source.UpstreamModels != nil {
+		cloned.UpstreamModels = make(map[string]string, len(source.UpstreamModels))
+		for publicModel, upstreamModel := range source.UpstreamModels {
+			cloned.UpstreamModels[publicModel] = upstreamModel
+		}
+	}
 	return cloned
 }
 
@@ -391,6 +473,9 @@ func (s *GatewayService) doLiveModelsRequest(ctx context.Context, account *Accou
 	if err != nil {
 		return nil, 0, err
 	}
+	if resp == nil {
+		return nil, 0, errors.New("models lookup failed: empty response")
+	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -415,7 +500,7 @@ func (s *GatewayService) liveOpenAICompatibleModels(ctx context.Context, account
 	if err != nil {
 		return nil, err
 	}
-	return canonicalLiveModelList(decodeOpenAIModelIDs(body)), nil
+	return cleanLiveModelList(decodeOpenAIModelIDs(body)), nil
 }
 
 func (s *GatewayService) liveAnthropicModels(ctx context.Context, account *Account) ([]string, error) {
@@ -439,7 +524,7 @@ func (s *GatewayService) liveAnthropicModels(ctx context.Context, account *Accou
 	if err != nil {
 		return nil, err
 	}
-	return canonicalLiveModelList(decodeAnthropicModelIDs(body)), nil
+	return cleanLiveModelList(decodeAnthropicModelIDs(body)), nil
 }
 
 func (s *GatewayService) liveGeminiModels(ctx context.Context, account *Account) ([]string, error) {
@@ -460,10 +545,101 @@ func (s *GatewayService) liveGeminiModels(ctx context.Context, account *Account)
 		if err != nil {
 			return nil, err
 		}
-		return canonicalLiveModelList(decodeGeminiModelIDs(body)), nil
+		return cleanLiveModelList(decodeGeminiModelIDs(body)), nil
 	default:
 		return nil, fmt.Errorf("live gemini models unsupported for account type %s", account.Type)
 	}
+}
+
+func shouldTryNextAntigravityLiveModelsEndpoint(status int) bool {
+	return status == 0 ||
+		status == http.StatusTooManyRequests ||
+		status == http.StatusRequestTimeout ||
+		status == http.StatusNotFound ||
+		status >= 500
+}
+
+func (s *GatewayService) liveAntigravityModels(ctx context.Context, account *Account) ([]string, error) {
+	if account == nil {
+		return nil, errors.New("account is nil")
+	}
+	if s == nil || s.antigravityTokenProvider == nil {
+		return nil, errors.New("antigravity token provider is not configured")
+	}
+	accessToken, err := s.antigravityTokenProvider.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	projectID := strings.TrimSpace(account.GetCredential("project_id"))
+	body, err := json.Marshal(antigravity.FetchAvailableModelsRequest{Project: projectID})
+	if err != nil {
+		return nil, err
+	}
+
+	var lastErr error
+	for _, baseURL := range antigravity.BaseURLs {
+		endpoint := strings.TrimRight(baseURL, "/") + "/v1internal:fetchAvailableModels"
+		validated, validateErr := s.validateUpstreamBaseURL(endpoint)
+		if validateErr != nil {
+			lastErr = validateErr
+			continue
+		}
+		respBody, status, reqErr := s.doLiveModelsRequest(ctx, account, http.MethodPost, validated, func(req *http.Request) {
+			req.Header.Set("Authorization", "Bearer "+accessToken)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("User-Agent", antigravity.GetUserAgent())
+			req.Body = io.NopCloser(strings.NewReader(string(body)))
+			req.ContentLength = int64(len(body))
+		})
+		if reqErr != nil {
+			if shouldTryNextAntigravityLiveModelsEndpoint(status) {
+				lastErr = reqErr
+				continue
+			}
+			return nil, reqErr
+		}
+		var payload antigravity.FetchAvailableModelsResponse
+		if err := json.Unmarshal(respBody, &payload); err != nil {
+			return nil, fmt.Errorf("decode antigravity models: %w", err)
+		}
+		models := make([]string, 0, len(payload.Models))
+		for model := range payload.Models {
+			models = append(models, model)
+		}
+		return cleanLiveModelList(models), nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("antigravity models lookup failed")
+	}
+	return nil, lastErr
+}
+
+func (s *GatewayService) liveGeminiOAuthModels(ctx context.Context, account *Account) ([]string, error) {
+	if account == nil {
+		return nil, errors.New("account is nil")
+	}
+	if s == nil || s.geminiTokenProvider == nil {
+		return nil, errors.New("gemini token provider is not configured")
+	}
+	if account.IsGeminiCodeAssist() {
+		return nil, errors.New("gemini code assist does not expose a live /models endpoint")
+	}
+	endpoint := liveGeminiModelEndpoint(account.GetGeminiBaseURL(geminicli.AIStudioBaseURL))
+	validated, err := s.validateUpstreamBaseURL(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	accessToken, err := s.geminiTokenProvider.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	body, _, err := s.doLiveModelsRequest(ctx, account, http.MethodGet, validated, func(req *http.Request) {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return cleanLiveModelList(decodeGeminiModelIDs(body)), nil
 }
 
 func (s *GatewayService) liveAccountModels(ctx context.Context, account Account) ([]string, string, string, error) {
@@ -490,15 +666,21 @@ func (s *GatewayService) liveAccountModels(ctx context.Context, account Account)
 		models, err = s.liveGeminiModels(ctx, acc)
 		endpoint = "gemini"
 		capability = "generateContent"
+	case acc.IsGemini() && acc.Type == AccountTypeOAuth:
+		models, err = s.liveGeminiOAuthModels(ctx, acc)
+		endpoint = "gemini"
+		capability = "generateContent"
 	case acc.Platform == PlatformAntigravity:
-		return nil, "antigravity", "messages", nil
+		models, err = s.liveAntigravityModels(ctx, acc)
+		endpoint = "antigravity"
+		capability = "messages"
 	default:
 		return nil, "", "", nil
 	}
 	if err != nil {
 		return nil, endpoint, capability, err
 	}
-	return publicizeLiveModelList(acc, models), endpoint, capability, nil
+	return cleanLiveModelList(models), endpoint, capability, nil
 }
 
 func (s *GatewayService) liveModelSourceForAccount(ctx context.Context, account Account) (LiveModelSource, error) {
@@ -506,11 +688,13 @@ func (s *GatewayService) liveModelSourceForAccount(ctx context.Context, account 
 	if err != nil {
 		return LiveModelSource{}, err
 	}
+	catalog := publicizeLiveModelCatalog(&account, models)
 	return LiveModelSource{
-		Account:    cloneAccountForLiveSource(account),
-		Endpoint:   endpoint,
-		Capability: capability,
-		Models:     models,
+		Account:        cloneAccountForLiveSource(account),
+		Endpoint:       endpoint,
+		Capability:     capability,
+		Models:         catalog.Models,
+		UpstreamModels: catalog.UpstreamModels,
 	}, nil
 }
 
@@ -567,6 +751,132 @@ func (s *GatewayService) GetLiveAvailableModels(ctx context.Context, groupID *in
 	return MergeLiveModelSources(s.GetLiveModelSources(ctx, groupID, platform), LoadKnownIssueModelExclusionPolicy(ctx, s.settingService.SettingRepoOrNil()))
 }
 
+func resolveLiveUpstreamModelFromSource(source LiveModelSource, requestedModel string) (string, bool) {
+	requestedModel = strings.TrimSpace(requestedModel)
+	if strings.TrimSpace(source.Endpoint) == "" || requestedModel == "" {
+		return requestedModel, false
+	}
+	for _, candidate := range requestedModelLookupCandidates("", requestedModel) {
+		for publicModel, upstreamModel := range source.UpstreamModels {
+			if strings.TrimSpace(upstreamModel) == "" {
+				continue
+			}
+			if modelListContainsRequestedModel([]string{publicModel}, candidate) {
+				return upstreamModel, true
+			}
+		}
+		for _, publicModel := range source.Models {
+			if modelListContainsRequestedModel([]string{publicModel}, candidate) {
+				if upstreamModel, ok := source.UpstreamModels[publicModel]; ok && strings.TrimSpace(upstreamModel) != "" {
+					return upstreamModel, true
+				}
+				return publicModel, true
+			}
+		}
+	}
+	return requestedModel, false
+}
+
+func (s *GatewayService) ResolveLiveUpstreamModel(ctx context.Context, account *Account, requestedModel string) (string, bool) {
+	if s == nil || account == nil {
+		return strings.TrimSpace(requestedModel), false
+	}
+	source, err := s.cachedLiveModelSourceForAccountWithLoader(ctx, *account, s.liveModelSourceForAccount)
+	if err != nil {
+		return strings.TrimSpace(requestedModel), false
+	}
+	return resolveLiveUpstreamModelFromSource(source, requestedModel)
+}
+
+func (s *GatewayService) cachedLiveModelSourceForAccountOnly(account Account) (LiveModelSource, bool) {
+	if s == nil || s.modelsListCache == nil {
+		return LiveModelSource{}, false
+	}
+	key := liveModelSourceCacheKey(account)
+	cached, ok := s.modelsListCache.Get(key)
+	if !ok {
+		return LiveModelSource{}, false
+	}
+	source, ok := cached.(LiveModelSource)
+	if !ok {
+		s.modelsListCache.Delete(key)
+		return LiveModelSource{}, false
+	}
+	return cloneLiveModelSource(source), true
+}
+
+func (s *GatewayService) ResolveCachedLiveUpstreamModel(account *Account, requestedModel string) (string, bool) {
+	if s == nil || account == nil {
+		return strings.TrimSpace(requestedModel), false
+	}
+	source, ok := s.cachedLiveModelSourceForAccountOnly(*account)
+	if !ok {
+		return strings.TrimSpace(requestedModel), false
+	}
+	return resolveLiveUpstreamModelFromSource(source, requestedModel)
+}
+
+func (s *GatewayService) ResolveUpstreamModelForAccount(ctx context.Context, account *Account, requestedModel string) (string, string) {
+	requestedModel = strings.TrimSpace(requestedModel)
+	if account == nil || requestedModel == "" {
+		return requestedModel, ""
+	}
+	if mappedModel, matched := s.ResolveCachedLiveUpstreamModel(account, requestedModel); matched {
+		return mappedModel, "live"
+	}
+	if account.Type == AccountTypeAPIKey {
+		if mappedModel, matched := account.ResolveUpstreamModel(requestedModel); matched {
+			return mappedModel, "account"
+		}
+	}
+	if account.Platform == PlatformAnthropic && account.Type != AccountTypeAPIKey {
+		normalized := claude.NormalizeModelID(requestedModel)
+		if normalized != requestedModel {
+			return normalized, "prefix"
+		}
+	}
+	return requestedModel, ""
+}
+
+func (s *OpenAIGatewayService) ResolveLiveUpstreamModel(ctx context.Context, account *Account, requestedModel string) (string, bool) {
+	if s == nil || account == nil {
+		return strings.TrimSpace(requestedModel), false
+	}
+	source, err := s.cachedLiveModelSourceForAccount(ctx, *account)
+	if err != nil {
+		return strings.TrimSpace(requestedModel), false
+	}
+	return resolveLiveUpstreamModelFromSource(source, requestedModel)
+}
+
+func (s *OpenAIGatewayService) ResolveCachedLiveUpstreamModel(account *Account, requestedModel string) (string, bool) {
+	if s == nil || account == nil || s.gatewayService == nil {
+		return strings.TrimSpace(requestedModel), false
+	}
+	source, ok := s.gatewayService.cachedLiveModelSourceForAccountOnly(*account)
+	if !ok {
+		return strings.TrimSpace(requestedModel), false
+	}
+	return resolveLiveUpstreamModelFromSource(source, requestedModel)
+}
+
+func (s *OpenAIGatewayService) ResolveUpstreamModelForAccount(ctx context.Context, account *Account, requestedModel string, defaultMappedModel string) (string, string) {
+	requestedModel = strings.TrimSpace(requestedModel)
+	if account == nil || requestedModel == "" {
+		return requestedModel, ""
+	}
+	if defaultMappedModel != "" && defaultMappedModel == requestedModel {
+		return defaultMappedModel, "default"
+	}
+	if mappedModel, matched := s.ResolveCachedLiveUpstreamModel(account, requestedModel); matched {
+		return mappedModel, "live"
+	}
+	if mappedModel, matched := account.ResolveUpstreamModel(requestedModel); matched {
+		return mappedModel, "account"
+	}
+	return requestedModel, ""
+}
+
 func (s *OpenAIGatewayService) liveCopilotModels(ctx context.Context, account *Account) ([]string, error) {
 	if s == nil || s.copilotTokenProvider == nil {
 		return nil, errors.New("copilot token provider is not configured")
@@ -583,7 +893,7 @@ func (s *OpenAIGatewayService) liveCopilotModels(ctx context.Context, account *A
 	if err != nil {
 		return nil, err
 	}
-	return canonicalLiveModelList(models), nil
+	return cleanLiveModelList(models), nil
 }
 
 func (s *OpenAIGatewayService) liveKiroModels(ctx context.Context, account *Account) ([]string, error) {
@@ -615,7 +925,7 @@ func (s *OpenAIGatewayService) liveKiroModels(ctx context.Context, account *Acco
 			models = append(models, modelID)
 		}
 	}
-	return canonicalLiveModelList(models), nil
+	return cleanLiveModelList(models), nil
 }
 
 func (s *OpenAIGatewayService) liveOpenAICompatibleModels(ctx context.Context, account *Account) ([]string, error) {
@@ -660,7 +970,7 @@ func (s *OpenAIGatewayService) liveOpenAIOAuthModels(ctx context.Context, accoun
 			lastErr = fmt.Errorf("models lookup failed: status %d", resp.StatusCode)
 			continue
 		}
-		models := canonicalLiveModelList(decodeChatGPTModelIDs([]byte(resp.String())))
+		models := cleanLiveModelList(decodeChatGPTModelIDs([]byte(resp.String())))
 		if len(models) == 0 {
 			lastErr = errors.New("models lookup returned no models")
 			continue
@@ -701,12 +1011,13 @@ func (s *OpenAIGatewayService) liveModelSourceForAccount(ctx context.Context, ac
 	if err != nil {
 		return LiveModelSource{}, err
 	}
-	models = publicizeLiveModelList(acc, models)
+	catalog := publicizeLiveModelCatalog(acc, models)
 	return LiveModelSource{
-		Account:    acc,
-		Endpoint:   endpoint,
-		Capability: capability,
-		Models:     models,
+		Account:        acc,
+		Endpoint:       endpoint,
+		Capability:     capability,
+		Models:         catalog.Models,
+		UpstreamModels: catalog.UpstreamModels,
 	}, nil
 }
 
@@ -767,8 +1078,20 @@ func (s *OpenAIGatewayService) cachedLiveModelSourceForAccount(ctx context.Conte
 	if s == nil {
 		return LiveModelSource{}, errors.New("openai gateway service is nil")
 	}
-	if s.gatewayService == nil {
-		return s.liveModelSourceForAccount(ctx, account)
+	return s.liveModelCacheGatewayService().cachedLiveModelSourceForAccountWithLoader(ctx, account, s.liveModelSourceForAccount)
+}
+
+func (s *OpenAIGatewayService) liveModelCacheGatewayService() *GatewayService {
+	if s.gatewayService != nil {
+		return s.gatewayService
 	}
-	return s.gatewayService.cachedLiveModelSourceForAccountWithLoader(ctx, account, s.liveModelSourceForAccount)
+	s.liveModelCacheOnce.Do(func() {
+		modelsListTTL := resolveModelsListCacheTTL(s.cfg)
+		s.liveModelCacheGateway = &GatewayService{
+			cfg:                s.cfg,
+			modelsListCache:    gocache.New(modelsListTTL, time.Minute),
+			modelsListCacheTTL: modelsListTTL,
+		}
+	})
+	return s.liveModelCacheGateway
 }

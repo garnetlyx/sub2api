@@ -110,7 +110,7 @@ func (s *OpenAIGatewayService) FindSchedulableEmbeddingAccount(ctx context.Conte
 	return nil, ErrNoAvailableAccounts
 }
 
-func replaceModelForBridge(account *Account, body []byte) []byte {
+func (s *OpenAIGatewayService) replaceModelForBridge(ctx context.Context, account *Account, body []byte) []byte {
 	if account == nil || len(body) == 0 {
 		return body
 	}
@@ -118,7 +118,7 @@ func replaceModelForBridge(account *Account, body []byte) []byte {
 	if requestedModel == "" {
 		return body
 	}
-	mappedModel := account.GetMappedModel(requestedModel)
+	mappedModel, _ := s.ResolveUpstreamModelForAccount(ctx, account, requestedModel, "")
 	if strings.TrimSpace(mappedModel) == "" || mappedModel == requestedModel {
 		return body
 	}
@@ -168,8 +168,9 @@ func (s *OpenAIGatewayService) forwardBridgePassthrough(
 		}
 	}
 
-	body = replaceModelForBridge(account, body)
 	requestedModel := extractRequestedModelFromBody(body)
+	body = s.replaceModelForBridge(ctx, account, body)
+	upstreamModel := extractRequestedModelFromBody(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -210,6 +211,7 @@ func (s *OpenAIGatewayService) forwardBridgePassthrough(
 	return &OpenAIForwardResult{
 		Model:           requestedModel,
 		BillingModel:    requestedModel,
+		UpstreamModel:   upstreamModel,
 		ResponseHeaders: resp.Header.Clone(),
 	}, nil
 }

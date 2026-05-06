@@ -16,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -1873,7 +1872,7 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		}
 	}
 
-	if h.gatewayService != nil && (account.Platform == service.PlatformAnthropic || account.IsGemini()) {
+	if h.gatewayService != nil && (account.Platform == service.PlatformAnthropic || account.IsGemini() || account.Platform == service.PlatformAntigravity) {
 		source, liveErr := h.gatewayService.LiveModelSourceForAccount(ctx, *account)
 		if liveErr != nil {
 			response.Error(c, http.StatusBadGateway, "Failed to fetch live models: "+liveErr.Error())
@@ -1887,6 +1886,8 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 			switch {
 			case account.IsGemini():
 				renderGeminiModels(source.Models)
+			case account.Platform == service.PlatformAntigravity:
+				renderClaudeModels(source.Models)
 			default:
 				renderClaudeModels(source.Models)
 			}
@@ -2109,12 +2110,6 @@ func (h *AccountHandler) BatchRefreshTier(c *gin.Context) {
 	}
 
 	response.Success(c, results)
-}
-
-// GetAntigravityDefaultModelMapping 获取 Antigravity 平台的默认模型映射
-// GET /api/v1/admin/accounts/antigravity/default-model-mapping
-func (h *AccountHandler) GetAntigravityDefaultModelMapping(c *gin.Context) {
-	response.Success(c, domain.DefaultAntigravityModelMapping)
 }
 
 // sanitizeExtraBaseRPM 对 extra map 中的 base_rpm 值进行范围校验和归一化。

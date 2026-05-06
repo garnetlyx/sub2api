@@ -14,7 +14,6 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	pkgerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -896,12 +895,26 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	})
 }
 
-// AntigravityModels 返回 Antigravity 支持的全部模型
+// AntigravityModels returns the live Antigravity model catalog.
 // GET /antigravity/models
 func (h *GatewayHandler) AntigravityModels(c *gin.Context) {
+	var groupID *int64
+	if apiKey, _ := middleware2.GetAPIKeyFromContext(c); apiKey != nil && apiKey.Group != nil {
+		groupID = &apiKey.Group.ID
+	}
+	availableModels := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, service.PlatformAntigravity)
+	models := make([]claude.Model, 0, len(availableModels))
+	for _, modelID := range availableModels {
+		models = append(models, claude.Model{
+			ID:          modelID,
+			Type:        "model",
+			DisplayName: modelID,
+			CreatedAt:   "",
+		})
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"object": "list",
-		"data":   antigravity.DefaultModels(),
+		"data":   models,
 	})
 }
 
