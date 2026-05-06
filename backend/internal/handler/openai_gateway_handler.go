@@ -290,8 +290,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				zap.Int("overloaded", diag.OverloadedCount),
 				zap.Int("temp_unschedulable", diag.TempUnschedulableCount),
 				zap.Int("model_filtered", diag.ModelFilteredCount),
-				zap.Int("copilot_no_model_list", diag.CopilotNoModelList),
-				zap.Int("copilot_model_not_in_list", diag.CopilotModelNotInList),
 				zap.Bool("copilot_compat_excluded", copilotCompatExcluded),
 			)
 			if len(fs.FailedAccountIDs) == 0 {
@@ -745,8 +743,6 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 				zap.Int("overloaded", diag.OverloadedCount),
 				zap.Int("temp_unschedulable", diag.TempUnschedulableCount),
 				zap.Int("model_filtered", diag.ModelFilteredCount),
-				zap.Int("copilot_no_model_list", diag.CopilotNoModelList),
-				zap.Int("copilot_model_not_in_list", diag.CopilotModelNotInList),
 				zap.Bool("copilot_compat_excluded", copilotCompatExcluded),
 			)
 			// 首次调度失败 + 有默认映射模型 → 用默认模型重试
