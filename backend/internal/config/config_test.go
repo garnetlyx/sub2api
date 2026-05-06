@@ -1234,7 +1234,7 @@ func TestValidateConfigErrors(t *testing.T) {
 		},
 		{
 			name:    "gateway models list cache ttl range",
-			mutate:  func(c *Config) { c.Gateway.ModelsListCacheTTLSeconds = 31 },
+			mutate:  func(c *Config) { c.Gateway.ModelsListCacheTTLSeconds = 301 },
 			wantErr: "gateway.models_list_cache_ttl_seconds",
 		},
 		{
