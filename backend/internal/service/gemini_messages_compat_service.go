@@ -402,14 +402,17 @@ func (s *GeminiMessagesCompatService) isModelSupportedByAccount(account *Account
 }
 
 func (s *GeminiMessagesCompatService) isModelSupportedByAccountWithContext(ctx context.Context, account *Account, requestedModel string) bool {
-	if account.Platform == PlatformAntigravity {
-		if strings.TrimSpace(requestedModel) == "" {
-			return true
+	if strings.TrimSpace(requestedModel) == "" {
+		return true
+	}
+	if s.gatewayService != nil {
+		if supported, decided := s.gatewayService.isModelSupportedByLiveSource(ctx, account, requestedModel); decided {
+			return supported
 		}
-		if s.gatewayService != nil {
-			return s.gatewayService.isModelSupportedByAccountWithContext(ctx, account, requestedModel)
+		policy := LoadKnownIssueModelExclusionPolicy(ctx, s.gatewayService.settingService.SettingRepoOrNil())
+		if _, excluded := policy.Excludes(requestedModel, account, account.Platform, ""); excluded {
+			return false
 		}
-		return false
 	}
 	return account.IsModelSupported(requestedModel)
 }

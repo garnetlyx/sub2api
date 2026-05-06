@@ -521,6 +521,57 @@ func TestOpenAIGatewayServiceLiveModelsGateAccountSelection(t *testing.T) {
 	require.Equal(t, int64(1), upstream.calls.Load())
 }
 
+func TestOpenAIGatewayServiceLiveModelsUseSharedCacheForCopilotAndKiro(t *testing.T) {
+	tests := []struct {
+		name     string
+		account  Account
+		endpoint string
+	}{
+		{
+			name: "copilot",
+			account: Account{
+				ID:          31,
+				Platform:    PlatformCopilot,
+				Type:        AccountTypeOAuth,
+				Status:      StatusActive,
+				Schedulable: true,
+			},
+			endpoint: "copilot",
+		},
+		{
+			name: "kiro",
+			account: Account{
+				ID:          32,
+				Platform:    PlatformKiro,
+				Type:        AccountTypeOAuth,
+				Status:      StatusActive,
+				Schedulable: true,
+			},
+			endpoint: "kiro",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gateway := &GatewayService{
+				cfg:                &config.Config{},
+				modelsListCache:    gocache.New(time.Minute, time.Minute),
+				modelsListCacheTTL: time.Minute,
+			}
+			gateway.modelsListCache.Set(liveModelSourceCacheKey(tt.account), LiveModelSource{
+				Account:    cloneAccountForLiveSource(tt.account),
+				Endpoint:   tt.endpoint,
+				Capability: "chat",
+				Models:     []string{"claude-sonnet-4.6"},
+			}, time.Minute)
+			svc := &OpenAIGatewayService{gatewayService: gateway}
+
+			require.True(t, svc.supportsOpenAIGatewayRequestedModel(context.Background(), &tt.account, "claude-sonnet-4-6", "chat"))
+			require.False(t, svc.supportsOpenAIGatewayRequestedModel(context.Background(), &tt.account, "claude-opus-4-7", "chat"))
+		})
+	}
+}
+
 func TestOpenAIGatewayServiceLiveModelLookupFailureIsNotPassthrough(t *testing.T) {
 	account := &Account{
 		ID:          2,

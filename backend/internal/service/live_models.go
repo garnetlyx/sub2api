@@ -622,7 +622,7 @@ func (s *GatewayService) liveGeminiOAuthModels(ctx context.Context, account *Acc
 		return nil, errors.New("gemini token provider is not configured")
 	}
 	if account.IsGeminiCodeAssist() {
-		return nil, errors.New("gemini code assist does not expose a live /models endpoint")
+		return nil, nil
 	}
 	endpoint := liveGeminiModelEndpoint(account.GetGeminiBaseURL(geminicli.AIStudioBaseURL))
 	validated, err := s.validateUpstreamBaseURL(endpoint)
@@ -667,6 +667,9 @@ func (s *GatewayService) liveAccountModels(ctx context.Context, account Account)
 		endpoint = "gemini"
 		capability = "generateContent"
 	case acc.IsGemini() && acc.Type == AccountTypeOAuth:
+		if acc.IsGeminiCodeAssist() {
+			return nil, "", "", nil
+		}
 		models, err = s.liveGeminiOAuthModels(ctx, acc)
 		endpoint = "gemini"
 		capability = "generateContent"

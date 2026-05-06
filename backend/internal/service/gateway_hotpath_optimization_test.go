@@ -620,6 +620,186 @@ func TestLiveModelSourceCacheRefreshesWhenAccountSignatureChanges(t *testing.T) 
 	require.Equal(t, int64(2), upstream.calls.Load())
 }
 
+func TestGatewayLiveModelSourceCacheCoversAllLiveAccountTypes(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	tests := []struct {
+		name         string
+		account      Account
+		firstBody    string
+		secondBody   string
+		wantFirst    []string
+		wantSecond   []string
+		wantEndpoint string
+	}{
+		{
+			name: "openai compatible api key",
+			account: Account{
+				ID:          101,
+				Platform:    PlatformOpenAI,
+				Type:        AccountTypeAPIKey,
+				Status:      StatusActive,
+				Schedulable: true,
+				Credentials: map[string]any{
+					"api_key":  "sk-test",
+					"base_url": "https://openai-compatible.test/v1",
+				},
+			},
+			firstBody:    `{"data":[{"id":"gpt-5-5"}]}`,
+			secondBody:   `{"data":[{"id":"gpt-5-6"}]}`,
+			wantFirst:    []string{"gpt-5.5"},
+			wantSecond:   []string{"gpt-5.6"},
+			wantEndpoint: "openai-compatible",
+		},
+		{
+			name: "anthropic api key",
+			account: Account{
+				ID:          102,
+				Platform:    PlatformAnthropic,
+				Type:        AccountTypeAPIKey,
+				Status:      StatusActive,
+				Schedulable: true,
+				Credentials: map[string]any{
+					"api_key":  "sk-test",
+					"base_url": "https://api.anthropic.test/v1",
+				},
+			},
+			firstBody:    `{"data":[{"id":"claude-sonnet-4-6"}]}`,
+			secondBody:   `{"data":[{"id":"claude-opus-4-7"}]}`,
+			wantFirst:    []string{"claude-sonnet-4.6"},
+			wantSecond:   []string{"claude-opus-4.7"},
+			wantEndpoint: "anthropic",
+		},
+		{
+			name: "gemini api key",
+			account: Account{
+				ID:          103,
+				Platform:    PlatformGemini,
+				Type:        AccountTypeAPIKey,
+				Status:      StatusActive,
+				Schedulable: true,
+				Credentials: map[string]any{
+					"api_key":  "sk-test",
+					"base_url": "https://generativelanguage.test/v1beta",
+				},
+			},
+			firstBody:    `{"models":[{"name":"models/gemini-3-1-pro"}]}`,
+			secondBody:   `{"models":[{"name":"models/gemini-3-1-flash"}]}`,
+			wantFirst:    []string{"gemini-3.1-pro"},
+			wantSecond:   []string{"gemini-3.1-flash"},
+			wantEndpoint: "gemini",
+		},
+		{
+			name: "gemini ai studio oauth",
+			account: Account{
+				ID:          104,
+				Platform:    PlatformGemini,
+				Type:        AccountTypeOAuth,
+				Status:      StatusActive,
+				Schedulable: true,
+				Credentials: map[string]any{
+					"access_token": "gemini-token",
+					"base_url":     "https://generativelanguage.test/v1beta",
+				},
+			},
+			firstBody:    `{"models":[{"name":"models/gemini-3-1-pro"}]}`,
+			secondBody:   `{"models":[{"name":"models/gemini-3-1-flash"}]}`,
+			wantFirst:    []string{"gemini-3.1-pro"},
+			wantSecond:   []string{"gemini-3.1-flash"},
+			wantEndpoint: "gemini",
+		},
+		{
+			name: "antigravity oauth",
+			account: Account{
+				ID:          105,
+				Platform:    PlatformAntigravity,
+				Type:        AccountTypeOAuth,
+				Status:      StatusActive,
+				Schedulable: true,
+				Credentials: map[string]any{
+					"access_token": "ag-token",
+					"project_id":   "project-123",
+				},
+			},
+			firstBody:    `{"models":{"claude-sonnet-4-6":{}}}`,
+			secondBody:   `{"models":{"claude-opus-4-7":{}}}`,
+			wantFirst:    []string{"claude-sonnet-4.6"},
+			wantSecond:   []string{"claude-opus-4.7"},
+			wantEndpoint: "antigravity",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := &liveModelsHTTPUpstreamStub{responses: []string{tt.firstBody, tt.secondBody}}
+			repo := &modelsListAccountRepoStub{all: []Account{tt.account}}
+			svc := &GatewayService{
+				accountRepo:              repo,
+				httpUpstream:             upstream,
+				cfg:                      &config.Config{},
+				geminiTokenProvider:      NewGeminiTokenProvider(repo, nil, nil),
+				antigravityTokenProvider: NewAntigravityTokenProvider(repo, nil, nil),
+				modelsListCache:          gocache.New(time.Minute, time.Minute),
+				modelsListCacheTTL:       time.Minute,
+			}
+
+			source1, err := svc.LiveModelSourceForAccount(context.Background(), tt.account)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantEndpoint, source1.Endpoint)
+			require.Equal(t, tt.wantFirst, source1.Models)
+
+			source2, err := svc.LiveModelSourceForAccount(context.Background(), tt.account)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantFirst, source2.Models)
+			require.Equal(t, int64(1), upstream.calls.Load())
+
+			svc.InvalidateLiveModelSourceCache(tt.account.ID)
+			source3, err := svc.LiveModelSourceForAccount(context.Background(), tt.account)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantSecond, source3.Models)
+			require.Equal(t, int64(2), upstream.calls.Load())
+		})
+	}
+}
+
+func TestGatewayLiveModelSourceNoEndpointAccountsStayUncachedPassthrough(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	account := Account{
+		ID:          106,
+		Platform:    PlatformGemini,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"access_token": "gemini-token",
+			"project_id":   "code-assist-project",
+		},
+	}
+	svc := &GatewayService{
+		cfg:                 &config.Config{},
+		geminiTokenProvider: NewGeminiTokenProvider(nil, nil, nil),
+		modelsListCache:     gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL:  time.Minute,
+	}
+
+	source1, err := svc.LiveModelSourceForAccount(context.Background(), account)
+	require.NoError(t, err)
+	require.Empty(t, source1.Endpoint)
+	require.Empty(t, source1.Models)
+
+	account.Credentials["project_id"] = "different-code-assist-project"
+	source2, err := svc.LiveModelSourceForAccount(context.Background(), account)
+	require.NoError(t, err)
+	require.Empty(t, source2.Endpoint)
+	require.Empty(t, source2.Models)
+
+	hit, miss, store := GatewayModelsListCacheStats()
+	require.Equal(t, int64(0), hit)
+	require.Equal(t, int64(2), miss)
+	require.Equal(t, int64(0), store)
+}
+
 func TestLiveModelSourceCacheDoesNotStoreAccountsWithoutLiveEndpoint(t *testing.T) {
 	resetGatewayHotpathStatsForTest()
 
