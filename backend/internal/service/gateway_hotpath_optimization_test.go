@@ -602,6 +602,94 @@ func TestLiveModelSourceCacheRefreshesWhenAccountSignatureChanges(t *testing.T) 
 	require.Equal(t, int64(2), upstream.calls.Load())
 }
 
+func TestLiveModelSourceCacheDoesNotStoreAccountsWithoutLiveEndpoint(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	account := Account{
+		ID:          8,
+		Platform:    PlatformCopilot,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+	svc := &GatewayService{
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+	}
+	var calls atomic.Int64
+
+	source1, err := svc.cachedLiveModelSourceForAccountWithLoader(context.Background(), account, func(context.Context, Account) (LiveModelSource, error) {
+		calls.Add(1)
+		return LiveModelSource{Account: &account}, nil
+	})
+	require.NoError(t, err)
+	require.Empty(t, source1.Endpoint)
+
+	source2, err := svc.cachedLiveModelSourceForAccountWithLoader(context.Background(), account, func(context.Context, Account) (LiveModelSource, error) {
+		calls.Add(1)
+		return LiveModelSource{Account: &account, Endpoint: "copilot", Capability: "chat", Models: []string{"gpt-5.5"}}, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, "copilot", source2.Endpoint)
+	require.Equal(t, []string{"gpt-5.5"}, source2.Models)
+	require.Equal(t, int64(2), calls.Load())
+
+	source3, err := svc.cachedLiveModelSourceForAccountWithLoader(context.Background(), account, func(context.Context, Account) (LiveModelSource, error) {
+		calls.Add(1)
+		return LiveModelSource{Account: &account, Endpoint: "copilot", Capability: "chat", Models: []string{"gpt-5.6"}}, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"gpt-5.5"}, source3.Models)
+	require.Equal(t, int64(2), calls.Load())
+}
+
+func TestOpenAIGatewayLiveModelSourceUsesSharedAccountCache(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	account := Account{
+		ID:          11,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://openai-compatible.test/v1",
+		},
+	}
+	upstream := &liveModelsHTTPUpstreamStub{
+		responses: []string{
+			`{"data":[{"id":"gpt-5-5"},{"id":"minimax-m2-7"}]}`,
+			`{"data":[{"id":"gpt-5.6"}]}`,
+		},
+	}
+	gateway := &GatewayService{
+		httpUpstream:       upstream,
+		cfg:                &config.Config{},
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+	}
+	openaiGateway := &OpenAIGatewayService{
+		httpUpstream:   upstream,
+		gatewayService: gateway,
+	}
+
+	source1, err := openaiGateway.LiveModelSourceForAccount(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, []string{"gpt-5.5", "minimax-m2.7"}, source1.Models)
+
+	source2, err := openaiGateway.LiveModelSourceForAccount(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, source1.Models, source2.Models)
+	require.Equal(t, int64(1), upstream.calls.Load())
+
+	gateway.InvalidateLiveModelSourceCache(account.ID)
+	source3, err := openaiGateway.LiveModelSourceForAccount(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, []string{"gpt-5.6"}, source3.Models)
+	require.Equal(t, int64(2), upstream.calls.Load())
+}
+
 func TestGetAvailableModels_AppliesKnownIssuePolicyAfterLiveSourceCache(t *testing.T) {
 	resetGatewayHotpathStatsForTest()
 

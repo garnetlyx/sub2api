@@ -9,7 +9,6 @@ export interface KiroTokenInfo {
   region?: string
   idp?: string
   expires_in?: number
-  available_models?: string[]
   [key: string]: unknown
 }
 

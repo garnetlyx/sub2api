@@ -56,13 +56,20 @@ func shouldBridgeOpenAICompatibilityError(account *Account, statusCode int, upst
 	return false
 }
 
-func (s *OpenAIGatewayService) findSchedulableBridgeAccount(ctx context.Context, platform string, name string) (*Account, error) {
+func (s *OpenAIGatewayService) findSchedulableBridgeAccount(ctx context.Context, platform string, names ...string) (*Account, error) {
 	if s == nil || s.accountRepo == nil {
 		return nil, fmt.Errorf("account repository unavailable")
 	}
 	platform = strings.TrimSpace(platform)
-	name = strings.TrimSpace(name)
-	if platform == "" || name == "" {
+	wanted := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		wanted[name] = struct{}{}
+	}
+	if platform == "" || len(wanted) == 0 {
 		return nil, fmt.Errorf("invalid bridge lookup")
 	}
 
@@ -71,7 +78,7 @@ func (s *OpenAIGatewayService) findSchedulableBridgeAccount(ctx context.Context,
 		return nil, err
 	}
 	for i := range accounts {
-		if strings.TrimSpace(accounts[i].Name) == name && accounts[i].IsSchedulable() {
+		if _, ok := wanted[strings.TrimSpace(accounts[i].Name)]; ok && accounts[i].IsSchedulable() {
 			account := accounts[i]
 			return &account, nil
 		}
@@ -82,21 +89,21 @@ func (s *OpenAIGatewayService) findSchedulableBridgeAccount(ctx context.Context,
 func (s *OpenAIGatewayService) FindSchedulableBridgeAccount(ctx context.Context, platform string) (*Account, error) {
 	switch strings.TrimSpace(platform) {
 	case PlatformAnthropic:
-		return s.findSchedulableBridgeAccount(ctx, PlatformAnthropic, "litellm-anthropic-internal")
+		return s.findSchedulableBridgeAccount(ctx, PlatformAnthropic, InternalBridgeAnthropicAccountName, legacyBridgeAnthropicAccountName)
 	case PlatformOpenAI:
-		return s.findSchedulableBridgeAccount(ctx, PlatformOpenAI, "litellm-openai-internal")
+		return s.findSchedulableBridgeAccount(ctx, PlatformOpenAI, InternalBridgeOpenAIAccountName, legacyBridgeOpenAIAccountName)
 	default:
 		return nil, fmt.Errorf("unsupported bridge platform: %s", platform)
 	}
 }
 
 func (s *OpenAIGatewayService) FindSchedulableEmbeddingAccount(ctx context.Context, requestedModel string) (*Account, error) {
-	for _, name := range []string{"omlx-openai-internal", "litellm-openai-internal"} {
+	for _, name := range []string{"omlx-openai-internal", InternalBridgeOpenAIAccountName, legacyBridgeOpenAIAccountName} {
 		account, err := s.findSchedulableBridgeAccount(ctx, PlatformOpenAI, name)
 		if err != nil || account == nil {
 			continue
 		}
-		if account.IsModelSupported(requestedModel) {
+		if _, matched := account.ResolveUpstreamModel(requestedModel); matched {
 			return account, nil
 		}
 	}

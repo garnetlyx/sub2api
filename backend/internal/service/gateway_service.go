@@ -3484,15 +3484,29 @@ func (s *GatewayService) isModelSupportedByAccountWithContext(ctx context.Contex
 	}
 	if strings.TrimSpace(requestedModel) != "" {
 		source, err := s.cachedLiveModelSourceForAccountWithLoader(ctx, *account, s.liveModelSourceForAccount)
-		if err == nil {
-			if strings.TrimSpace(source.Endpoint) == "" {
-				return s.isModelSupportedByAccount(account, requestedModel)
-			}
-			if len(source.Models) == 0 {
-				return false
-			}
-			return modelListContainsRequestedModel(source.Models, requestedModel)
+		if err != nil {
+			slog.Warn("gateway.account_live_models_lookup_failed",
+				"account_id", account.ID,
+				"account_name", account.Name,
+				"platform", account.Platform,
+				"requested_model", requestedModel,
+				"error", err,
+			)
+			return false
 		}
+		if strings.TrimSpace(source.Endpoint) == "" {
+			return s.isModelSupportedByAccount(account, requestedModel)
+		}
+		if len(source.Models) == 0 {
+			slog.Warn("gateway.account_model_empty_list_filtered",
+				"account_id", account.ID,
+				"account_name", account.Name,
+				"platform", account.Platform,
+				"requested_model", requestedModel,
+			)
+			return false
+		}
+		return modelListContainsRequestedModel(source.Models, requestedModel)
 	}
 	return s.isModelSupportedByAccount(account, requestedModel)
 }

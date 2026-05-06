@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"log/slog"
 	"time"
 )
 
@@ -44,21 +43,6 @@ func (r *CopilotTokenRefresher) Refresh(ctx context.Context, account *Account) (
 		return nil, err
 	}
 	newCreds := r.copilotOAuthService.BuildAccountCredentials(result)
-
-	if len(result.AvailableModels) > 0 && r.accountRepo != nil {
-		if extraErr := r.accountRepo.UpdateExtra(ctx, account.ID, map[string]any{"available_models": result.AvailableModels}); extraErr != nil {
-			slog.Warn("copilot_token_refresh.available_models_update_failed",
-				"account_id", account.ID,
-				"error", extraErr,
-			)
-		} else {
-			// Patch in-memory so postRefreshActions → schedulerCache.SetAccount propagates the fresh list.
-			if account.Extra == nil {
-				account.Extra = make(map[string]any)
-			}
-			account.Extra["available_models"] = result.AvailableModels
-		}
-	}
 
 	return MergeCredentials(account.Credentials, newCreds), nil
 }

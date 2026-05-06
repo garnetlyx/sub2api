@@ -945,48 +945,6 @@ func (a *Account) GetOpenAIUserAgent() string {
 	return a.GetCredential("user_agent")
 }
 
-func (a *Account) GetAvailableModels() []string {
-	return a.getExtraStringList("available_models")
-}
-
-func (a *Account) getExtraStringList(key string) []string {
-	if a == nil || a.Extra == nil {
-		return nil
-	}
-	raw, ok := a.Extra[key]
-	if !ok || raw == nil {
-		return nil
-	}
-	switch values := raw.(type) {
-	case []string:
-		out := make([]string, 0, len(values))
-		for _, v := range values {
-			v = strings.TrimSpace(v)
-			if v != "" {
-				out = append(out, v)
-			}
-		}
-		return out
-	case []any:
-		out := make([]string, 0, len(values))
-		for _, item := range values {
-			if s, ok := item.(string); ok {
-				s = strings.TrimSpace(s)
-				if s != "" {
-					out = append(out, s)
-				}
-			}
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
-func (a *Account) GetCopilotAvailableModels() []string {
-	return a.GetAvailableModels()
-}
-
 func (a *Account) GetUpstreamModels() map[string]string {
 	if a == nil || a.Extra == nil {
 		return nil
@@ -1027,12 +985,15 @@ func (a *Account) GetUpstreamModels() map[string]string {
 
 func (a *Account) resolveAvailableUpstreamModel(requestedModel string) (string, bool) {
 	upstreamModels := a.GetUpstreamModels()
+	if len(upstreamModels) == 0 {
+		return requestedModel, false
+	}
 	for _, candidate := range requestedModelLookupCandidates(a.Platform, requestedModel) {
 		if mappedModel, exists := upstreamModels[candidate]; exists && strings.TrimSpace(mappedModel) != "" {
 			return strings.TrimSpace(mappedModel), true
 		}
 	}
-	return requestedModel, true
+	return requestedModel, false
 }
 
 func (a *Account) GetChatGPTAccountID() string {

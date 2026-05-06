@@ -63,8 +63,7 @@ func TestResolveOpenAIForwardModel(t *testing.T) {
 			account: &Account{
 				Credentials: map[string]any{},
 				Extra: map[string]any{
-					"available_models": []any{"deepseek-v4-pro"},
-					"upstream_models":  map[string]any{"deepseek-v4-pro": "deepseek-v4-pro"},
+					"upstream_models": map[string]any{"deepseek-v4-pro": "deepseek-v4-pro"},
 				},
 			},
 			requestedModel:     "deepseek-v4-pro",

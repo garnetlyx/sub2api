@@ -94,7 +94,7 @@ func (h *OpenAIGatewayHandler) SupportsModelForPublicOpenAIEndpoints(ctx context
 		groupID,
 		requestedModel,
 		"omlx-openai-internal",
-		"litellm-openai-internal",
+		service.InternalBridgeOpenAIAccountName,
 	)
 }
 
@@ -102,7 +102,7 @@ func (h *OpenAIGatewayHandler) SupportsModelForPublicOpenAIResponses(ctx context
 	if h == nil || h.gatewayService == nil {
 		return false
 	}
-	return h.gatewayService.HasSchedulableResponsesModelSupport(ctx, groupID, requestedModel, "omlx-openai-internal", "litellm-openai-internal")
+	return h.gatewayService.HasSchedulableResponsesModelSupport(ctx, groupID, requestedModel, "omlx-openai-internal", service.InternalBridgeOpenAIAccountName)
 }
 
 // Responses handles OpenAI Responses API endpoint

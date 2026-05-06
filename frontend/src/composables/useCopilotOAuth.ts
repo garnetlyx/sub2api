@@ -91,9 +91,6 @@ export function useCopilotOAuth() {
     if (tokenInfo.github_user_id) extra.github_user_id = tokenInfo.github_user_id
     if (tokenInfo.email) extra.email = tokenInfo.email
     if (tokenInfo.name) extra.name = tokenInfo.name
-    if (Array.isArray(tokenInfo.available_models) && tokenInfo.available_models.length > 0) {
-      extra.available_models = tokenInfo.available_models
-    }
     return Object.keys(extra).length > 0 ? extra : undefined
   }
 

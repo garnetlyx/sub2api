@@ -13,18 +13,17 @@ import (
 )
 
 type KiroImportResult struct {
-	AccessToken           string           `json:"access_token"`
-	RefreshToken          string           `json:"refresh_token"`
-	ClientID              string           `json:"client_id,omitempty"`
-	ClientSecret          string           `json:"client_secret,omitempty"`
-	ClientSecretExpiresAt time.Time        `json:"client_secret_expires_at,omitempty"`
-	ProfileArn            string           `json:"profile_arn"`
-	Region                string           `json:"region"`
-	Idp                   string           `json:"idp"`
-	Subject               string           `json:"subject,omitempty"`
-	AuthType              string           `json:"auth_type"`
-	ExpiresIn             int64            `json:"expires_in"`
-	AvailableModels       []kiro.ModelInfo `json:"available_models,omitempty"`
+	AccessToken           string    `json:"access_token"`
+	RefreshToken          string    `json:"refresh_token"`
+	ClientID              string    `json:"client_id,omitempty"`
+	ClientSecret          string    `json:"client_secret,omitempty"`
+	ClientSecretExpiresAt time.Time `json:"client_secret_expires_at,omitempty"`
+	ProfileArn            string    `json:"profile_arn"`
+	Region                string    `json:"region"`
+	Idp                   string    `json:"idp"`
+	Subject               string    `json:"subject,omitempty"`
+	AuthType              string    `json:"auth_type"`
+	ExpiresIn             int64     `json:"expires_in"`
 }
 
 type KiroOAuthService struct {
@@ -250,19 +249,16 @@ func (s *KiroOAuthService) ExchangeCode(ctx context.Context, sessionID string, c
 		effectiveRegion = session.Region
 	}
 
-	models, _ := kiro.ListModels(ctx, httpClient, effectiveRegion, tokenResp.AccessToken, tokenResp.ProfileArn)
-
 	s.sessions.Delete(sessionID)
 
 	return &KiroImportResult{
-		AccessToken:     tokenResp.AccessToken,
-		RefreshToken:    tokenResp.RefreshToken,
-		ProfileArn:      tokenResp.ProfileArn,
-		Region:          effectiveRegion,
-		Idp:             session.Idp,
-		AuthType:        "social",
-		ExpiresIn:       tokenResp.ExpiresIn,
-		AvailableModels: models,
+		AccessToken:  tokenResp.AccessToken,
+		RefreshToken: tokenResp.RefreshToken,
+		ProfileArn:   tokenResp.ProfileArn,
+		Region:       effectiveRegion,
+		Idp:          session.Idp,
+		AuthType:     "social",
+		ExpiresIn:    tokenResp.ExpiresIn,
 	}, nil
 }
 
@@ -310,7 +306,6 @@ func (s *KiroOAuthService) PollDeviceFlow(ctx context.Context, sessionID string,
 		return nil, infraerrors.Newf(http.StatusBadGateway, "KIRO_DEVICE_AUTH_FAILED", "device code authorization failed: %s", tokenResp.ErrorDescription)
 	}
 	subject := kiro.ExtractSubjectFromAccessToken(tokenResp.AccessToken)
-	models, _ := kiro.ListModels(ctx, httpClient, session.Region, tokenResp.AccessToken, "")
 	s.sessions.Delete(sessionID)
 	return &KiroImportResult{
 		AccessToken:           tokenResp.AccessToken,
@@ -322,7 +317,6 @@ func (s *KiroOAuthService) PollDeviceFlow(ctx context.Context, sessionID string,
 		Subject:               subject,
 		AuthType:              "device_code",
 		ExpiresIn:             tokenResp.ExpiresIn,
-		AvailableModels:       models,
 	}, nil
 }
 
@@ -354,16 +348,13 @@ func (s *KiroOAuthService) ImportRefreshToken(ctx context.Context, refreshToken 
 		effectiveRegion = region
 	}
 
-	models, _ := kiro.ListModels(ctx, httpClient, effectiveRegion, tokenResp.AccessToken, tokenResp.ProfileArn)
-
 	return &KiroImportResult{
-		AccessToken:     tokenResp.AccessToken,
-		RefreshToken:    tokenResp.RefreshToken,
-		ProfileArn:      tokenResp.ProfileArn,
-		Region:          effectiveRegion,
-		AuthType:        "social",
-		ExpiresIn:       tokenResp.ExpiresIn,
-		AvailableModels: models,
+		AccessToken:  tokenResp.AccessToken,
+		RefreshToken: tokenResp.RefreshToken,
+		ProfileArn:   tokenResp.ProfileArn,
+		Region:       effectiveRegion,
+		AuthType:     "social",
+		ExpiresIn:    tokenResp.ExpiresIn,
 	}, nil
 }
 
@@ -441,9 +432,6 @@ func (s *KiroOAuthService) BuildAccountCredentials(result *KiroImportResult) map
 	if !time.Now().Add(time.Duration(result.ExpiresIn) * time.Second).IsZero() {
 		creds["expires_at"] = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
 	}
-	if mapping := buildKiroModelMapping(result.AvailableModels); len(mapping) > 0 {
-		creds["model_mapping"] = mapping
-	}
 	return creds
 }
 
@@ -467,39 +455,7 @@ func (s *KiroOAuthService) BuildAccountExtra(result *KiroImportResult) map[strin
 	if strings.EqualFold(result.AuthType, "device_code") {
 		extra["oidc_issuer"] = "https://view.awsapps.com/start"
 	}
-	if len(result.AvailableModels) > 0 {
-		modelIDs := make([]string, 0, len(result.AvailableModels))
-		for _, m := range result.AvailableModels {
-			modelID := kiro.NormalizeKiroModelID(m.ModelID)
-			if strings.TrimSpace(modelID) != "" {
-				modelIDs = append(modelIDs, modelID)
-			}
-		}
-		extra["available_models"] = modelIDs
-	}
 	return extra
-}
-
-func buildKiroModelMapping(models []kiro.ModelInfo) map[string]any {
-	if len(models) == 0 {
-		return nil
-	}
-	mapping := make(map[string]any, len(models))
-	for _, model := range models {
-		raw := strings.TrimSpace(model.ModelID)
-		if raw == "" {
-			continue
-		}
-		public := kiro.NormalizeKiroModelID(raw)
-		if public == "" {
-			continue
-		}
-		mapping[public] = raw
-	}
-	if len(mapping) == 0 {
-		return nil
-	}
-	return mapping
 }
 
 func (s *KiroOAuthService) RefreshDeviceAccount(ctx context.Context, account *Account, proxyID *int64) (*KiroImportResult, error) {
@@ -528,7 +484,6 @@ func (s *KiroOAuthService) RefreshDeviceAccount(ctx context.Context, account *Ac
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusUnauthorized, "KIRO_OIDC_REFRESH_FAILED", "oidc refresh failed: %v", err)
 	}
-	models, _ := kiro.ListModels(ctx, httpClient, region, tokenResp.AccessToken, account.GetExtraString("profile_arn"))
 	return &KiroImportResult{
 		AccessToken:           tokenResp.AccessToken,
 		RefreshToken:          coalesceTrimmed(tokenResp.RefreshToken, refreshToken),
@@ -539,7 +494,6 @@ func (s *KiroOAuthService) RefreshDeviceAccount(ctx context.Context, account *Ac
 		Subject:               coalesceTrimmed(kiro.ExtractSubjectFromAccessToken(tokenResp.AccessToken), account.GetExtraString("subject")),
 		AuthType:              "device_code",
 		ExpiresIn:             tokenResp.ExpiresIn,
-		AvailableModels:       models,
 	}, nil
 }
 

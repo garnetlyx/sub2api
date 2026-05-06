@@ -22,7 +22,6 @@ type CopilotImportResult struct {
 	RefreshToken          string    `json:"refresh_token,omitempty"`
 	ExpiresAt             time.Time `json:"expires_at,omitempty"`
 	RefreshTokenExpiresAt time.Time `json:"refresh_token_expires_at,omitempty"`
-	AvailableModels       []string  `json:"available_models,omitempty"`
 }
 
 type CopilotOAuthService struct {
@@ -89,18 +88,16 @@ func (s *CopilotOAuthService) ImportAccessToken(ctx context.Context, accessToken
 		return nil, infraerrors.Newf(http.StatusBadGateway, "COPILOT_TOKEN_EXCHANGE_FAILED", "copilot token exchange failed: %v", err)
 	}
 
-	models, err := copilot.ListModels(ctx, httpClient, copilotToken.Token)
-	if err != nil {
+	if _, err := copilot.ListModels(ctx, httpClient, copilotToken.Token); err != nil {
 		return nil, infraerrors.Newf(http.StatusBadGateway, "COPILOT_MODELS_LOOKUP_FAILED", "copilot models lookup failed: %v", err)
 	}
 
 	return &CopilotImportResult{
-		GitHubLogin:     user.Login,
-		GitHubUserID:    user.ID,
-		Email:           user.Email,
-		Name:            coalesceTrimmed(user.Name, user.Login),
-		AccessToken:     accessToken,
-		AvailableModels: models,
+		GitHubLogin:  user.Login,
+		GitHubUserID: user.ID,
+		Email:        user.Email,
+		Name:         coalesceTrimmed(user.Name, user.Login),
+		AccessToken:  accessToken,
 	}, nil
 }
 
@@ -136,9 +133,6 @@ func (s *CopilotOAuthService) BuildAccountExtra(result *CopilotImportResult) map
 	}
 	if trimmed := strings.TrimSpace(result.Name); trimmed != "" {
 		extra["name"] = trimmed
-	}
-	if len(result.AvailableModels) > 0 {
-		extra["available_models"] = result.AvailableModels
 	}
 	return extra
 }
@@ -355,7 +349,7 @@ func coalesceTrimmed(values ...string) string {
 }
 
 // RefreshByRefreshToken uses the stored GitHub refresh_token to get a new access_token,
-// then re-validates it and fetches the current available_models list.
+// then re-validates the account against Copilot's live model endpoint.
 func (s *CopilotOAuthService) RefreshByRefreshToken(ctx context.Context, account *Account, proxyID *int64) (*CopilotImportResult, error) {
 	refreshToken := strings.TrimSpace(account.GetCredential("refresh_token"))
 	if refreshToken == "" {

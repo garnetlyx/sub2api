@@ -2019,21 +2019,28 @@ func (s *OpenAIGatewayService) supportsOpenAIGatewayRequestedModel(ctx context.C
 	}
 	source, err := s.cachedLiveModelSourceForAccount(ctx, *account)
 	if err != nil {
-		return true
+		slog.Warn("openai.account_live_models_lookup_failed",
+			"account_id", account.ID,
+			"account_name", account.Name,
+			"platform", account.Platform,
+			"requested_model", requestedModel,
+			"capability", capability,
+			"error", err,
+		)
+		return false
 	}
 	if strings.TrimSpace(source.Endpoint) == "" {
 		return true
 	}
 	if len(source.Models) == 0 {
-		if account.IsOpenAIOAuth() {
-			slog.Warn("openai.account_model_empty_list_filtered",
-				"account_id", account.ID,
-				"account_name", account.Name,
-				"platform", account.Platform,
-				"requested_model", requestedModel,
-			)
-		}
-		return !account.IsOpenAIOAuth()
+		slog.Warn("openai.account_model_empty_list_filtered",
+			"account_id", account.ID,
+			"account_name", account.Name,
+			"platform", account.Platform,
+			"requested_model", requestedModel,
+			"capability", capability,
+		)
+		return false
 	}
 	if !modelListContainsRequestedModel(source.Models, requestedModel) {
 		modelSample := source.Models

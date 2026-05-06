@@ -18,7 +18,6 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
@@ -1860,6 +1859,10 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 			return
 		}
 		if source.Endpoint != "" {
+			if len(source.Models) == 0 {
+				response.Error(c, http.StatusBadGateway, "Live model resolver returned no models")
+				return
+			}
 			switch {
 			case account.IsKiro():
 				renderClaudeModels(source.Models)
@@ -1877,6 +1880,10 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 			return
 		}
 		if source.Endpoint != "" {
+			if len(source.Models) == 0 {
+				response.Error(c, http.StatusBadGateway, "Live model resolver returned no models")
+				return
+			}
 			switch {
 			case account.IsGemini():
 				renderGeminiModels(source.Models)
@@ -1887,138 +1894,13 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		}
 	}
 
-	// Handle OpenAI accounts
-	if account.IsOpenAI() {
-		// OpenAI 自动透传会绕过常规模型改写，测试/模型列表也应回落到默认模型集。
-		if account.IsOpenAIPassthroughEnabled() {
-			response.Success(c, canonicalizeOpenAIModels(openai.DefaultModels))
-			return
-		}
-
-		mapping := account.GetModelMapping()
-		if len(mapping) == 0 {
-			response.Success(c, canonicalizeOpenAIModels(openai.DefaultModels))
-			return
-		}
-
-		// Return mapped models
-		var models []openai.Model
-		for requestedModel := range mapping {
-			var found bool
-			for _, dm := range openai.DefaultModels {
-				if dm.ID == requestedModel {
-					models = append(models, dm)
-					found = true
-					break
-				}
-			}
-			if !found {
-				models = append(models, openai.Model{
-					ID:          requestedModel,
-					Object:      "model",
-					Type:        "model",
-					DisplayName: requestedModel,
-				})
-			}
-		}
-		response.Success(c, canonicalizeOpenAIModels(models))
+	if account.IsOpenAI() || account.IsCopilot() || account.IsKiro() || account.IsGemini() ||
+		account.Platform == service.PlatformAnthropic || account.Platform == service.PlatformAntigravity {
+		response.Error(c, http.StatusBadGateway, "Live model resolver unavailable for this account")
 		return
 	}
 
-	if account.IsCopilot() {
-		response.Error(c, http.StatusBadGateway, "Live model resolver unavailable for this Copilot account")
-		return
-	}
-
-	if account.IsKiro() {
-		response.Error(c, http.StatusBadGateway, "Live model resolver unavailable for this Kiro account")
-		return
-	}
-
-	// Handle Gemini accounts
-	if account.IsGemini() {
-		// For OAuth accounts: return default Gemini models
-		if account.IsOAuth() {
-			response.Success(c, canonicalizeGeminiModels(geminicli.DefaultModels))
-			return
-		}
-
-		// For API Key accounts: return models based on model_mapping
-		mapping := account.GetModelMapping()
-		if len(mapping) == 0 {
-			response.Success(c, canonicalizeGeminiModels(geminicli.DefaultModels))
-			return
-		}
-
-		var models []geminicli.Model
-		for requestedModel := range mapping {
-			var found bool
-			for _, dm := range geminicli.DefaultModels {
-				if dm.ID == requestedModel {
-					models = append(models, dm)
-					found = true
-					break
-				}
-			}
-			if !found {
-				models = append(models, geminicli.Model{
-					ID:          requestedModel,
-					Type:        "model",
-					DisplayName: requestedModel,
-					CreatedAt:   "",
-				})
-			}
-		}
-		response.Success(c, canonicalizeGeminiModels(models))
-		return
-	}
-
-	// Handle Antigravity accounts: return Claude + Gemini models
-	if account.Platform == service.PlatformAntigravity {
-		// 直接复用 antigravity.DefaultModels()，与 /v1/models 端点保持同步
-		response.Success(c, canonicalizeAntigravityModels(antigravity.DefaultModels()))
-		return
-	}
-
-	// Handle Claude/Anthropic accounts
-	// For OAuth and Setup-Token accounts: return default models
-	if account.IsOAuth() {
-		response.Success(c, canonicalizeClaudeModels(claude.DefaultModels))
-		return
-	}
-
-	// For API Key accounts: return models based on model_mapping
-	mapping := account.GetModelMapping()
-	if len(mapping) == 0 {
-		// No mapping configured, return default models
-		response.Success(c, canonicalizeClaudeModels(claude.DefaultModels))
-		return
-	}
-
-	// Return mapped models (keys of the mapping are the available model IDs)
-	var models []claude.Model
-	for requestedModel := range mapping {
-		// Try to find display info from default models
-		var found bool
-		for _, dm := range claude.DefaultModels {
-			if dm.ID == requestedModel {
-				models = append(models, dm)
-				found = true
-				break
-			}
-		}
-		// If not found in defaults, create a basic entry
-		if !found {
-			models = append(models, claude.Model{
-				ID:          requestedModel,
-				Type:        "model",
-				DisplayName: requestedModel,
-				CreatedAt:   "",
-			})
-		}
-	}
-
-	response.Success(c, canonicalizeClaudeModels(models))
+	response.BadRequest(c, "Unsupported account platform for live model listing")
 }
 
 // SetPrivacy handles setting privacy for a single OpenAI/Antigravity OAuth account

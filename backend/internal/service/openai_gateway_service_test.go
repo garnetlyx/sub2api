@@ -17,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/cespare/xxhash/v2"
 	"github.com/gin-gonic/gin"
+	gocache "github.com/patrickmn/go-cache"
 	"github.com/stretchr/testify/require"
 )
 
@@ -44,6 +45,85 @@ type groupAwareOpenAIAccountRepo struct {
 type testSettingRepo struct {
 	SettingRepository
 	values map[string]string
+}
+
+func withOpenAILiveModelTestSupport(svc *OpenAIGatewayService, modelIDs ...string) *OpenAIGatewayService {
+	if svc == nil {
+		return nil
+	}
+	if len(modelIDs) == 0 {
+		modelIDs = []string{"gpt-5.1", "gpt-5.2", "gpt-5.4", "gpt-5.5", "gemini-3.1-pro-preview", "deepseek-v4-pro", "model"}
+	}
+	models := canonicalLiveModelList(modelIDs)
+	if svc.cfg == nil {
+		svc.cfg = &config.Config{}
+	}
+	if svc.gatewayService == nil {
+		svc.gatewayService = &GatewayService{cfg: svc.cfg}
+	}
+	if svc.gatewayService.cfg == nil {
+		svc.gatewayService.cfg = svc.cfg
+	}
+	if svc.gatewayService.modelsListCache == nil {
+		svc.gatewayService.modelsListCache = gocache.New(time.Minute, time.Minute)
+		svc.gatewayService.modelsListCacheTTL = time.Minute
+	}
+
+	cacheAccount := func(account Account) {
+		if !account.UsesOpenAIGateway() {
+			return
+		}
+		endpoint := "openai-compatible"
+		switch {
+		case account.IsCopilot():
+			endpoint = "copilot"
+		case account.IsKiro():
+			endpoint = "kiro"
+		case account.IsOpenAIOAuth():
+			endpoint = "chatgpt"
+		}
+		source := LiveModelSource{
+			Account:    cloneAccountForLiveSource(account),
+			Endpoint:   endpoint,
+			Capability: "chat",
+			Models:     models,
+		}
+		svc.gatewayService.modelsListCache.Set(liveModelSourceCacheKey(account), source, time.Minute)
+	}
+
+	switch repo := svc.accountRepo.(type) {
+	case stubOpenAIAccountRepo:
+		for _, account := range repo.accounts {
+			cacheAccount(account)
+		}
+	case *stubOpenAIAccountRepo:
+		if repo != nil {
+			for _, account := range repo.accounts {
+				cacheAccount(account)
+			}
+		}
+	case *groupAwareOpenAIAccountRepo:
+		if repo != nil {
+			for _, account := range repo.accounts {
+				cacheAccount(account)
+			}
+		}
+	}
+	if svc.schedulerSnapshot != nil {
+		if snapshot, ok := svc.schedulerSnapshot.cache.(*openAISnapshotCacheStub); ok && snapshot != nil {
+			for _, account := range snapshot.snapshotAccounts {
+				if account != nil {
+					cacheAccount(*account)
+				}
+			}
+			for _, account := range snapshot.accountsByID {
+				if account != nil {
+					cacheAccount(*account)
+				}
+			}
+		}
+	}
+	return svc
 }
 
 func (r *testSettingRepo) GetValue(ctx context.Context, key string) (string, error) {
@@ -179,11 +259,21 @@ func TestOpenAIGatewayService_HasSchedulableModelSupportIgnoresChannelPricingRes
 				Type:        AccountTypeAPIKey,
 				Status:      StatusActive,
 				Schedulable: true,
-				Extra: map[string]any{
-					"available_models": []any{"deepseek-v4-pro"},
+				Credentials: map[string]any{
+					"api_key":  "sk-test",
+					"base_url": "https://openai-compatible.test/v1",
 				},
 			},
 		}},
+		httpUpstream: &liveModelsHTTPUpstreamStub{
+			responses: []string{`{"data":[{"id":"deepseek-v4-pro"}]}`},
+		},
+		gatewayService: &GatewayService{
+			cfg:                &config.Config{},
+			httpUpstream:       &liveModelsHTTPUpstreamStub{responses: []string{`{"data":[{"id":"deepseek-v4-pro"}]}`}},
+			modelsListCache:    gocache.New(time.Minute, time.Minute),
+			modelsListCacheTTL: time.Minute,
+		},
 		channelService: channelSvc,
 	}
 
@@ -350,23 +440,32 @@ func TestSupportsOpenAIGatewayRequestedModel_CopilotIsPassthrough(t *testing.T) 
 
 func TestOpenAIGatewayService_KnownIssuePolicyExcludesModel(t *testing.T) {
 	account := &Account{
-		Platform:    PlatformCopilot,
-		Type:        AccountTypeOAuth,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
 		Status:      StatusActive,
 		Schedulable: true,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://known-issue.test/v1",
+		},
 	}
 	repo := &testSettingRepo{values: map[string]string{
 		KnownIssueModelExclusionsSettingKey: `[{
 			"model":"claude-opus-4.7",
-			"platform":"copilot",
+			"platform":"openai",
 			"capability":"chat",
 			"evidence":"live provider returned invalid model for chat",
 			"last_verified":"2026-05-05",
 			"remove_when":"provider /models no longer lists the broken model"
 		}]`,
 	}}
+	upstream := &liveModelsHTTPUpstreamStub{responses: []string{`{"data":[{"id":"claude-opus-4.7"},{"id":"claude-sonnet-4.6"}]}`}}
 	svc := &OpenAIGatewayService{
+		accountRepo:  stubOpenAIAccountRepo{accounts: []Account{*account}},
+		httpUpstream: upstream,
 		gatewayService: &GatewayService{
+			httpUpstream:   upstream,
+			cfg:            &config.Config{},
 			settingService: NewSettingService(repo, nil),
 		},
 	}
@@ -374,6 +473,72 @@ func TestOpenAIGatewayService_KnownIssuePolicyExcludesModel(t *testing.T) {
 	require.False(t, svc.supportsOpenAIGatewayRequestedModel(context.Background(), account, "claude-opus-4.7", "chat"))
 	require.True(t, svc.supportsOpenAIGatewayRequestedModel(context.Background(), account, "claude-opus-4.7", "messages"))
 	require.True(t, svc.supportsOpenAIGatewayRequestedModel(context.Background(), account, "claude-sonnet-4.6", "chat"))
+}
+
+func TestOpenAIGatewayServiceLiveModelsGateAccountSelection(t *testing.T) {
+	groupID := int64(1)
+	account := Account{
+		ID:          1,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Concurrency: 1,
+		Priority:    1,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://openai-compatible.test/v1",
+		},
+		Extra: map[string]any{
+			"available_models":   []any{"gpt-5.4"},
+			"unsupported_models": []any{"gpt-5.5"},
+		},
+	}
+	upstream := &liveModelsHTTPUpstreamStub{responses: []string{`{"data":[{"id":"gpt-5-5"}]}`}}
+	gateway := &GatewayService{
+		httpUpstream:       upstream,
+		cfg:                &config.Config{},
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: []Account{account}},
+		httpUpstream:       upstream,
+		gatewayService:     gateway,
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
+	}
+
+	require.True(t, svc.supportsOpenAIGatewayRequestedModel(context.Background(), &account, "gpt-5.5", "chat"))
+	require.False(t, svc.supportsOpenAIGatewayRequestedModel(context.Background(), &account, "gpt-5.4", "chat"))
+
+	selected, err := svc.SelectAccountForModelWithExclusions(context.Background(), &groupID, "", "gpt-5.5", nil)
+	require.NoError(t, err)
+	require.Equal(t, account.ID, selected.ID)
+
+	_, err = svc.SelectAccountForModelWithExclusions(context.Background(), &groupID, "", "gpt-5.4", nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no available OpenAI accounts supporting model")
+	require.Equal(t, int64(1), upstream.calls.Load())
+}
+
+func TestOpenAIGatewayServiceLiveModelLookupFailureIsNotPassthrough(t *testing.T) {
+	account := &Account{
+		ID:          2,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "://bad-url",
+		},
+	}
+	svc := &OpenAIGatewayService{
+		httpUpstream:   &liveModelsHTTPUpstreamStub{},
+		gatewayService: &GatewayService{cfg: &config.Config{}},
+	}
+
+	require.False(t, svc.supportsOpenAIGatewayRequestedModel(context.Background(), account, "gpt-5.5", "chat"))
 }
 
 func TestSupportsOpenAIGatewayRequestedModel_CopilotMatchesClaudeStyleAliases(t *testing.T) {
@@ -449,7 +614,7 @@ func TestSupportsOpenAIGatewayRequestedModel_OpenAIAPIKeyIgnoresAvailableModels(
 
 func TestSupportsOpenAIGatewayRequestedModel_InternalLiteLLMBridgeDoesNotDriveModelSelection(t *testing.T) {
 	account := &Account{
-		Name:        "litellm-openai-internal",
+		Name:        InternalBridgeOpenAIAccountName,
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeAPIKey,
 		Status:      StatusActive,
@@ -664,6 +829,7 @@ func TestOpenAISelectAccountWithLoadAwareness_FiltersUnschedulable(t *testing.T)
 		accountRepo:        stubOpenAIAccountRepo{accounts: []Account{rateLimited, available}},
 		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
 	}
+	withOpenAILiveModelTestSupport(svc, "gpt-5.2")
 
 	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-5.2", nil)
 	if err != nil {
@@ -763,6 +929,7 @@ func TestOpenAISelectAccountWithLoadAwareness_FiltersUnschedulableWhenNoConcurre
 		accountRepo: stubOpenAIAccountRepo{accounts: []Account{rateLimited, available}},
 		// concurrencyService is nil, forcing the non-load-batch selection path.
 	}
+	withOpenAILiveModelTestSupport(svc, "gpt-5.2")
 
 	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-5.2", nil)
 	if err != nil {
