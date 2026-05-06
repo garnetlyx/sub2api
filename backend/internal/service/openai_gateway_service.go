@@ -1952,10 +1952,10 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDB(ctx context.Co
 }
 
 const (
-	InternalBridgeOpenAIAccountName       = "bridge-openai-internal"
-	InternalBridgeAnthropicAccountName    = "bridge-anthropic-internal"
-	legacyBridgeOpenAIAccountName         = "litellm-openai-internal"
-	legacyBridgeAnthropicAccountName      = "litellm-anthropic-internal"
+	InternalBridgeOpenAIAccountName    = "bridge-openai-internal"
+	InternalBridgeAnthropicAccountName = "bridge-anthropic-internal"
+	legacyBridgeOpenAIAccountName      = "litellm-openai-internal"
+	legacyBridgeAnthropicAccountName   = "litellm-anthropic-internal"
 )
 
 func isInternalLiteLLMBridgeOnlyAccountName(name string) bool {
@@ -2280,16 +2280,16 @@ func classifyOpenAICompatibilityMismatch(statusCode int, upstreamMsg string, ups
 				strings.Contains(msg, "extra inputs are not permitted") ||
 				strings.Contains(msg, "is not permitted"))):
 		return "unsupported_parameter", true
+	case strings.Contains(msg, "invalid model name passed in model=") ||
+		strings.Contains(msg, "call `/v1/models` to view available models for your key") ||
+		strings.Contains(msg, "model is not supported when using codex with a chatgpt account"):
+		return "model_unavailable_on_provider", true
 	case strings.Contains(msg, "does not support") ||
 		strings.Contains(msg, "not supported for this model") ||
 		strings.Contains(msg, "model is not supported") ||
 		strings.Contains(msg, "unsupported capability") ||
 		(strings.Contains(code, "unsupported_value") && param != ""):
 		return "unsupported_capability", true
-	case strings.Contains(msg, "invalid model name passed in model=") ||
-		strings.Contains(msg, "call `/v1/models` to view available models for your key") ||
-		strings.Contains(msg, "model is not supported when using codex with a chatgpt account"):
-		return "model_unavailable_on_provider", true
 	case strings.Contains(code, "invalid_type") ||
 		strings.Contains(code, "invalid_value") ||
 		strings.Contains(msg, "invalid type") ||

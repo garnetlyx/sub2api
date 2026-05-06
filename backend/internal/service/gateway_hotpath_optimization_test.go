@@ -606,7 +606,7 @@ func TestGetAvailableModels_ErrorAndGlobalListBranches(t *testing.T) {
 		cfg: &config.Config{},
 	}
 	models := svcOK.GetAvailableModels(context.Background(), nil, "")
-	require.Equal(t, []string{"claude-3-5-sonnet", "gemini-2.5-pro"}, models)
+	require.Equal(t, []string{"claude-3.5-sonnet", "gemini-2.5-pro"}, models)
 	require.Equal(t, int64(1), okRepo.listAllCalls.Load())
 }
 
@@ -640,6 +640,28 @@ func TestGetAvailableModels_CanonicalizesStyleAliasesAcrossProviders(t *testing.
 
 	models := svc.GetAvailableModels(context.Background(), &groupID, "")
 	require.Equal(t, []string{"claude-sonnet-4.6", "gpt-5.4"}, models)
+}
+
+func TestPublicModelNumericVersionAliasesAreGeneric(t *testing.T) {
+	tests := map[string]string{
+		"gpt-5-5":                    "gpt-5.5",
+		"openai/gpt-5-5":             "openai/gpt-5.5",
+		"minimax-m2-7":               "minimax-m2.7",
+		"glm-5-1":                    "glm-5.1",
+		"deepseek-v3-2":              "deepseek-v3.2",
+		"claude-sonnet-4-6":          "claude-sonnet-4.6",
+		"claude-opus-4-7-thinking":   "claude-opus-4.7-thinking",
+		"claude-3-5-sonnet-20241022": "claude-3-5-sonnet-20241022",
+	}
+	for input, expected := range tests {
+		require.Equal(t, expected, CanonicalizePublicModel(input))
+	}
+
+	require.True(t, modelListContainsRequestedModel([]string{"minimax-m2-7"}, "minimax-m2.7"))
+	require.True(t, modelListContainsRequestedModel([]string{"glm-5-1"}, "glm-5.1"))
+	require.True(t, modelListContainsRequestedModel([]string{"deepseek-v3-2"}, "deepseek-v3.2"))
+	require.True(t, modelListContainsRequestedModel([]string{"claude-sonnet-4-6"}, "claude-sonnet-4.6"))
+	require.False(t, modelListContainsRequestedModel([]string{"claude-3-5-sonnet-20241022"}, "claude-3.5-sonnet-20241022"))
 }
 
 func TestGatewayHotpathHelpers_CacheTTLAndStickyContext(t *testing.T) {

@@ -494,10 +494,20 @@ func TestDotHyphenAlternate(t *testing.T) {
 		{"gpt-5-2-instant", "gpt-5.2-instant"},
 		{"gpt-5-4-pro", "gpt-5.4-pro"},
 		{"gpt-5-3-mini", "gpt-5.3-mini"},
+		{"minimax-m2.7", "minimax-m2-7"},
+		{"minimax-m2-7", "minimax-m2.7"},
+		{"glm-5.1", "glm-5-1"},
+		{"glm-5-1", "glm-5.1"},
+		{"deepseek-v3.2", "deepseek-v3-2"},
+		{"deepseek-v3-2", "deepseek-v3.2"},
+		{"claude-sonnet-4.6", "claude-sonnet-4-6"},
+		{"claude-sonnet-4-6", "claude-sonnet-4.6"},
 		// No version separator → empty
 		{"gpt-5-mini", ""},
 		{"agent-mode", ""},
 		{"o3", ""},
+		// Precise dated upstream IDs are not style aliases.
+		{"claude-3-5-sonnet-20241022", ""},
 	}
 	for _, tt := range tests {
 		got := dotHyphenAlternate(tt.input)
@@ -517,11 +527,17 @@ func TestModelListContainsRequestedModel_DotHyphenEquivalence(t *testing.T) {
 		{[]string{"gpt-5-5"}, "gpt-5.5", true},
 		{[]string{"gpt-5-5-pro"}, "gpt-5.5-pro", true},
 		{[]string{"gpt-4-5"}, "gpt-4.5", true},
+		{[]string{"minimax-m2-7"}, "minimax-m2.7", true},
+		{[]string{"glm-5-1"}, "glm-5.1", true},
+		{[]string{"deepseek-v3-2"}, "deepseek-v3.2", true},
+		{[]string{"claude-sonnet-4-6"}, "claude-sonnet-4.6", true},
 		// Hyphen requested, dot in list
 		{[]string{"gpt-5.5"}, "gpt-5-5", true},
+		{[]string{"minimax-m2.7"}, "minimax-m2-7", true},
 		// No match
 		{[]string{"gpt-5-4-pro"}, "gpt-5.5", false},
 		{[]string{"gpt-5-mini"}, "gpt-5.5", false},
+		{[]string{"claude-3-5-sonnet-20241022"}, "claude-3.5-sonnet-20241022", false},
 		// Mixed list with suffixes
 		{[]string{"gpt-5-5", "gpt-5-5-pro", "gpt-5-5-thinking"}, "gpt-5.5-pro", true},
 	}
@@ -554,14 +570,23 @@ func TestRequestedModelLookupCandidates_DotHyphen(t *testing.T) {
 
 func TestCanonicalizePublicModel_HiddenProxyAliases(t *testing.T) {
 	tests := map[string]string{
-		"ark-code-latest-volcengine":     "ark-code-latest",
-		"deepseek-v3.2-volcengine":       "deepseek-v3.2",
-		"doubao-seed-2.0-pro-volcengine": "doubao-seed-2.0-pro",
-		"glm-5-turbo-zhipu":              "glm-5-turbo",
-		"glm-5.1-zhipu":                  "glm-5.1",
-		"kimi-k2.5-volcengine":           "kimi-k2.5",
-		"minimax-m2.7-minimax":           "minimax-m2.7",
-		"openai/glm-5.1-zhipu":           "openai/glm-5.1",
+		"ark-code-latest-volcengine":           "ark-code-latest",
+		"deepseek-v3.2-volcengine":             "deepseek-v3.2",
+		"doubao-seed-2.0-pro-volcengine":       "doubao-seed-2.0-pro",
+		"glm-5-turbo-zhipu":                    "glm-5-turbo",
+		"glm-5.1-zhipu":                        "glm-5.1",
+		"kimi-k2.5-volcengine":                 "kimi-k2.5",
+		"minimax-m2.7-minimax":                 "minimax-m2.7",
+		"openai/glm-5.1-zhipu":                 "openai/glm-5.1",
+		"gpt-5-5":                              "gpt-5.5",
+		"openai/gpt-5-5":                       "openai/gpt-5.5",
+		"minimax-m2-7":                         "minimax-m2.7",
+		"glm-5-1":                              "glm-5.1",
+		"deepseek-v3-2":                        "deepseek-v3.2",
+		"claude-sonnet-4-6":                    "claude-sonnet-4.6",
+		"claude-opus-4-7-thinking":             "claude-opus-4.7-thinking",
+		"claude-3-5-sonnet-20241022":           "claude-3-5-sonnet-20241022",
+		"anthropic/claude-3-5-sonnet-20241022": "anthropic/claude-3-5-sonnet-20241022",
 	}
 
 	for input, expected := range tests {

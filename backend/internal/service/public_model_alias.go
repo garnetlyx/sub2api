@@ -1,15 +1,14 @@
 package service
 
 import (
-	"fmt"
 	"regexp"
 	"strings"
 )
 
 var (
-	claudeStyleAliasPattern = regexp.MustCompile(`^(claude-(?:opus|sonnet|haiku))-(\d+)([.-])(\d+)(-.+)?$`)
-	// Matches "prefix-major.sep-minor" where sep is . or -, e.g. "gpt-5.5", "gpt-5-5-pro".
-	dotHyphenSep = regexp.MustCompile(`^([\w]+-\d+)([.-])(\d+)`)
+	// Matches public model IDs with an ambiguous numeric version separator,
+	// e.g. gpt-5.5, gpt-5-5, minimax-m2.7, minimax-m2-7, claude-sonnet-4-6.
+	numericVersionSepPattern = regexp.MustCompile(`^(.+-[A-Za-z]*\d+)([.-])(\d+)(-.+)?$`)
 )
 
 var hiddenPublicModelAliases = map[string]string{
@@ -41,35 +40,49 @@ func CanonicalizePublicModel(model string) string {
 		return prefix + canonical
 	}
 
-	matches := claudeStyleAliasPattern.FindStringSubmatch(name)
-	if matches == nil {
+	canonical := canonicalizeNumericVersionSeparator(name)
+	if canonical == "" {
 		return trimmed
 	}
-
-	suffix := matches[5]
-	if looksLikeClaudeDateSuffix(suffix) {
-		return trimmed
-	}
-
-	canonical := fmt.Sprintf("%s-%s.%s%s", matches[1], matches[2], matches[4], suffix)
 	return prefix + canonical
 }
 
-func looksLikeClaudeDateSuffix(suffix string) bool {
+func canonicalizeNumericVersionSeparator(model string) string {
+	matches := numericVersionSepPattern.FindStringSubmatch(model)
+	if matches == nil {
+		return ""
+	}
+
+	suffix := matches[4]
+	if looksLikeDateSuffix(suffix) {
+		return ""
+	}
+
+	return matches[1] + "." + matches[3] + suffix
+}
+
+func looksLikeDateSuffix(suffix string) bool {
 	if suffix == "" {
 		return false
 	}
 	trimmed := strings.TrimPrefix(suffix, "-")
-	if len(trimmed) < 8 {
-		return false
-	}
-	datePart := trimmed[:8]
-	for _, ch := range datePart {
-		if ch < '0' || ch > '9' {
-			return false
+	for _, part := range strings.Split(trimmed, "-") {
+		if len(part) < 8 {
+			continue
+		}
+		datePart := part[:8]
+		allDigits := true
+		for _, ch := range datePart {
+			if ch < '0' || ch > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits && (len(part) == 8 || part[8] == '-') {
+			return true
 		}
 	}
-	return len(trimmed) == 8 || trimmed[8] == '-'
+	return false
 }
 
 func publicModelStyleAlternate(model string) string {
@@ -85,17 +98,21 @@ func publicModelStyleAlternate(model string) string {
 		name = trimmed[idx+1:]
 	}
 
-	matches := claudeStyleAliasPattern.FindStringSubmatch(name)
+	matches := numericVersionSepPattern.FindStringSubmatch(name)
 	if matches == nil {
 		return ""
 	}
 
-	suffix := matches[5]
-	if looksLikeClaudeDateSuffix(suffix) {
+	suffix := matches[4]
+	if looksLikeDateSuffix(suffix) {
 		return ""
 	}
 
-	alternate := fmt.Sprintf("%s-%s-%s%s", matches[1], matches[2], matches[4], suffix)
+	alternateSep := "-"
+	if matches[2] == "-" {
+		alternateSep = "."
+	}
+	alternate := matches[1] + alternateSep + matches[3] + suffix
 	return prefix + alternate
 }
 
@@ -122,25 +139,15 @@ func requestedModelLookupCandidates(platform, requestedModel string) []string {
 		canonical := CanonicalizePublicModel(model)
 		add(canonical)
 		add(publicModelStyleAlternate(canonical))
-		add(dotHyphenAlternate(canonical))
 	}
 
 	return candidates
 }
 
 // dotHyphenAlternate flips the dot/hyphen between major and minor version
-// numbers: "gpt-5.5" → "gpt-5-5", "gpt-5-5-pro" → "gpt-5.5-pro".
+// numbers: "gpt-5.5" -> "gpt-5-5", "minimax-m2-7" -> "minimax-m2.7".
 func dotHyphenAlternate(model string) string {
-	matches := dotHyphenSep.FindStringSubmatchIndex(model)
-	if matches == nil {
-		return ""
-	}
-	sep := model[matches[4]:matches[5]]
-	alt := "-"
-	if sep == "-" {
-		alt = "."
-	}
-	return model[:matches[4]] + alt + model[matches[5]:]
+	return publicModelStyleAlternate(model)
 }
 
 func modelListContainsRequestedModel(modelIDs []string, requestedModel string) bool {
