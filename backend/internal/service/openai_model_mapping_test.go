@@ -11,13 +11,13 @@ func TestResolveOpenAIForwardModel(t *testing.T) {
 		expectedModel      string
 	}{
 		{
-			name: "falls back to group default when account has no mapping",
+			name: "passes through when account has no mapping",
 			account: &Account{
 				Credentials: map[string]any{},
 			},
 			requestedModel:     "gpt-5.4",
 			defaultMappedModel: "gpt-4o-mini",
-			expectedModel:      "gpt-4o-mini",
+			expectedModel:      "gpt-5.4",
 		},
 		{
 			name: "preserves exact passthrough mapping instead of group default",
@@ -93,8 +93,8 @@ func TestResolveOpenAIForwardModel_PreventsClaudeModelFromFallingBackToGpt51(t *
 	}
 
 	withDefault := normalizeCodexModel(resolveOpenAIForwardModel(account, "claude-opus-4-6", "gpt-5.4"))
-	if withDefault != "gpt-5.4" {
-		t.Fatalf("normalizeCodexModel(...) = %q, want %q", withDefault, "gpt-5.4")
+	if withDefault != "claude-opus-4-6" {
+		t.Fatalf("normalizeCodexModel(...) = %q, want %q", withDefault, "claude-opus-4-6")
 	}
 }
 

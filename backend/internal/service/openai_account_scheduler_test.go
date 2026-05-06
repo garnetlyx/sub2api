@@ -551,7 +551,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CachedPlatformExclusion
 			Status:      StatusActive,
 			Schedulable: true,
 			Concurrency: 1,
-			Priority:    5,
+			Priority:    0,
 			Extra: map[string]any{
 				"available_models": []any{"gpt-5.4", "gemini-3.1-pro-preview"},
 			},
@@ -588,7 +588,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_CachedPlatformExclusion
 	require.NoError(t, err)
 	require.NotNil(t, selection)
 	require.NotNil(t, selection.Account)
-	require.Equal(t, int64(2411), selection.Account.ID)
+	require.Equal(t, int64(2412), selection.Account.ID)
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
 }
 

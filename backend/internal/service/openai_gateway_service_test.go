@@ -34,16 +34,25 @@ type snapshotUpdateAccountRepo struct {
 	updateExtraCalls chan map[string]any
 }
 
-type observedModelsAccountRepo struct {
-	stubOpenAIAccountRepo
-	updates chan map[string]any
-}
-
 type groupAwareOpenAIAccountRepo struct {
 	AccountRepository
 	accounts      []Account
 	groupCalls    int
 	platformCalls int
+}
+
+type testSettingRepo struct {
+	SettingRepository
+	values map[string]string
+}
+
+func (r *testSettingRepo) GetValue(ctx context.Context, key string) (string, error) {
+	if r != nil && r.values != nil {
+		if value, ok := r.values[key]; ok {
+			return value, nil
+		}
+	}
+	return "", ErrSettingNotFound
 }
 
 func (r *groupAwareOpenAIAccountRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {
@@ -85,17 +94,6 @@ func (r *snapshotUpdateAccountRepo) UpdateExtra(ctx context.Context, id int64, u
 			copied[k] = v
 		}
 		r.updateExtraCalls <- copied
-	}
-	return nil
-}
-
-func (r *observedModelsAccountRepo) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
-	if r.updates != nil {
-		copied := make(map[string]any, len(updates))
-		for k, v := range updates {
-			copied[k] = v
-		}
-		r.updates <- copied
 	}
 	return nil
 }
@@ -334,7 +332,7 @@ func TestOpenAIGatewayService_GenerateSessionHash_AttachesLegacyHashToContext(t 
 	require.NotEmpty(t, openAILegacySessionHashFromContext(c.Request.Context()))
 }
 
-func TestSupportsOpenAIGatewayRequestedModel_CopilotUsesAvailableModels(t *testing.T) {
+func TestSupportsOpenAIGatewayRequestedModel_CopilotIsPassthrough(t *testing.T) {
 	account := &Account{
 		Platform:    PlatformCopilot,
 		Type:        AccountTypeOAuth,
@@ -347,7 +345,35 @@ func TestSupportsOpenAIGatewayRequestedModel_CopilotUsesAvailableModels(t *testi
 
 	require.True(t, supportsOpenAIGatewayRequestedModel(account, "claude-opus-4.7"))
 	require.True(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.4"))
-	require.False(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4.6"))
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4.6"))
+}
+
+func TestOpenAIGatewayService_KnownIssuePolicyExcludesModel(t *testing.T) {
+	account := &Account{
+		Platform:    PlatformCopilot,
+		Type:        AccountTypeOAuth,
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+	repo := &testSettingRepo{values: map[string]string{
+		KnownIssueModelExclusionsSettingKey: `[{
+			"model":"claude-opus-4.7",
+			"platform":"copilot",
+			"capability":"chat",
+			"evidence":"live provider returned invalid model for chat",
+			"last_verified":"2026-05-05",
+			"remove_when":"provider /models no longer lists the broken model"
+		}]`,
+	}}
+	svc := &OpenAIGatewayService{
+		gatewayService: &GatewayService{
+			settingService: NewSettingService(repo, nil),
+		},
+	}
+
+	require.False(t, svc.supportsOpenAIGatewayRequestedModel(context.Background(), account, "claude-opus-4.7", "chat"))
+	require.True(t, svc.supportsOpenAIGatewayRequestedModel(context.Background(), account, "claude-opus-4.7", "messages"))
+	require.True(t, svc.supportsOpenAIGatewayRequestedModel(context.Background(), account, "claude-sonnet-4.6", "chat"))
 }
 
 func TestSupportsOpenAIGatewayRequestedModel_CopilotMatchesClaudeStyleAliases(t *testing.T) {
@@ -363,10 +389,10 @@ func TestSupportsOpenAIGatewayRequestedModel_CopilotMatchesClaudeStyleAliases(t 
 
 	require.True(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4.6"))
 	require.True(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4-6"))
-	require.False(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4.5"))
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4.5"))
 }
 
-func TestSupportsOpenAIGatewayRequestedModel_OpenAIOAuthRejectsClaudeFamily(t *testing.T) {
+func TestSupportsOpenAIGatewayRequestedModel_OpenAIOAuthIsPassthrough(t *testing.T) {
 	account := &Account{
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
@@ -375,10 +401,10 @@ func TestSupportsOpenAIGatewayRequestedModel_OpenAIOAuthRejectsClaudeFamily(t *t
 	}
 
 	require.True(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.4"))
-	require.False(t, supportsOpenAIGatewayRequestedModel(account, "claude-opus-4.7"))
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "claude-opus-4.7"))
 }
 
-func TestSupportsOpenAIGatewayRequestedModel_ObservedModelsDoNotConstrainOpenAIPassthrough(t *testing.T) {
+func TestSupportsOpenAIGatewayRequestedModel_OpenAIPassthroughHasNoModelList(t *testing.T) {
 	account := &Account{
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
@@ -386,15 +412,14 @@ func TestSupportsOpenAIGatewayRequestedModel_ObservedModelsDoNotConstrainOpenAIP
 		Schedulable: true,
 		Extra: map[string]any{
 			"openai_passthrough": true,
-			"observed_models":    []any{"gpt-5.4"},
 		},
 	}
 
 	require.True(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.5"))
-	require.False(t, supportsOpenAIGatewayRequestedModel(account, "claude-opus-4.7"))
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "claude-opus-4.7"))
 }
 
-func TestSupportsOpenAIGatewayRequestedModel_OpenAIAPIKeyWithoutMappingRejectsClaudeFamily(t *testing.T) {
+func TestSupportsOpenAIGatewayRequestedModel_OpenAIAPIKeyWithoutMappingIsPassthrough(t *testing.T) {
 	account := &Account{
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeAPIKey,
@@ -403,10 +428,10 @@ func TestSupportsOpenAIGatewayRequestedModel_OpenAIAPIKeyWithoutMappingRejectsCl
 	}
 
 	require.True(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.4"))
-	require.False(t, supportsOpenAIGatewayRequestedModel(account, "claude-opus-4.7"))
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "claude-opus-4.7"))
 }
 
-func TestSupportsOpenAIGatewayRequestedModel_OpenAIAPIKeyUsesAvailableModels(t *testing.T) {
+func TestSupportsOpenAIGatewayRequestedModel_OpenAIAPIKeyIgnoresAvailableModels(t *testing.T) {
 	account := &Account{
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeAPIKey,
@@ -418,8 +443,8 @@ func TestSupportsOpenAIGatewayRequestedModel_OpenAIAPIKeyUsesAvailableModels(t *
 	}
 
 	require.True(t, supportsOpenAIGatewayRequestedModel(account, "deepseek-v4-pro"))
-	require.False(t, supportsOpenAIGatewayRequestedModel(account, "deepseek-v4-flash"))
-	require.False(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.4"))
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "deepseek-v4-flash"))
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.4"))
 }
 
 func TestSupportsOpenAIGatewayRequestedModel_InternalLiteLLMBridgeDoesNotDriveModelSelection(t *testing.T) {
@@ -440,7 +465,7 @@ func TestSupportsOpenAIGatewayRequestedModel_InternalLiteLLMBridgeDoesNotDriveMo
 	require.False(t, supportsOpenAIGatewayRequestedModel(account, "totally-new-model"))
 }
 
-func TestSupportsOpenAIGatewayRequestedModel_KiroUsesClaudeFamily(t *testing.T) {
+func TestSupportsOpenAIGatewayRequestedModel_KiroIsPassthrough(t *testing.T) {
 	account := &Account{
 		Platform:    PlatformKiro,
 		Type:        AccountTypeOAuth,
@@ -452,7 +477,7 @@ func TestSupportsOpenAIGatewayRequestedModel_KiroUsesClaudeFamily(t *testing.T) 
 	}
 
 	require.True(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4-6"))
-	require.False(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.4"))
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "gpt-5.4"))
 }
 
 func TestSupportsOpenAIGatewayRequestedModel_KiroMatchesClaudeStyleAliases(t *testing.T) {
@@ -467,7 +492,7 @@ func TestSupportsOpenAIGatewayRequestedModel_KiroMatchesClaudeStyleAliases(t *te
 	}
 
 	require.True(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4.6"))
-	require.False(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4.5"))
+	require.True(t, supportsOpenAIGatewayRequestedModel(account, "claude-sonnet-4.5"))
 }
 
 func TestOpenAIGatewayService_GenerateSessionHashWithFallback(t *testing.T) {
@@ -823,7 +848,7 @@ func TestOpenAISelectAccountWithLoadAwareness_StickyUnschedulableClearsSession(t
 	}
 }
 
-func TestOpenAISelectAccountForModelWithExclusions_NoModelSupport(t *testing.T) {
+func TestOpenAISelectAccountForModelWithExclusions_ModelMappingDoesNotFilter(t *testing.T) {
 	repo := stubOpenAIAccountRepo{
 		accounts: []Account{
 			{
@@ -843,14 +868,11 @@ func TestOpenAISelectAccountForModelWithExclusions_NoModelSupport(t *testing.T) 
 	}
 
 	acc, err := svc.SelectAccountForModelWithExclusions(context.Background(), nil, "", "gpt-4", nil)
-	if err == nil {
-		t.Fatalf("expected error for unsupported model")
-	}
-	if acc != nil {
-		t.Fatalf("expected nil account for unsupported model")
-	}
-	if !strings.Contains(err.Error(), "supporting model") {
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if acc == nil || acc.ID != 1 {
+		t.Fatalf("expected passthrough account 1, got %+v", acc)
 	}
 }
 
@@ -1769,82 +1791,6 @@ func TestOpenAIUpdateCodexUsageSnapshotFromHeaders(t *testing.T) {
 		require.Equal(t, 86400, updates["codex_7d_reset_after_seconds"])
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected UpdateExtra to be called")
-	}
-}
-
-func TestOpenAIGatewayService_RememberOpenAIObservedModel(t *testing.T) {
-	repo := &observedModelsAccountRepo{
-		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{{
-			ID:       77,
-			Platform: PlatformOpenAI,
-			Type:     AccountTypeOAuth,
-			Extra: map[string]any{
-				"observed_models": []any{"gpt-5.4"},
-			},
-		}}},
-		updates: make(chan map[string]any, 1),
-	}
-	invalidated := make(chan int64, 2)
-	svc := &OpenAIGatewayService{
-		accountRepo: repo,
-		modelsListInvalidator: func(groupID *int64, platform string) {
-			invalidated <- derefGroupID(groupID)
-		},
-	}
-	account := &Account{
-		ID:       77,
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeOAuth,
-		Extra: map[string]any{
-			"observed_models": []any{"gpt-5.4"},
-		},
-		GroupIDs: []int64{9},
-	}
-	svc.rememberOpenAIObservedModel(context.Background(), nil, account, "openai/gpt-5.5")
-
-	select {
-	case updates := <-repo.updates:
-		models, ok := updates["observed_models"].([]string)
-		require.True(t, ok)
-		require.Equal(t, []string{"gpt-5.4", "gpt-5.5"}, models)
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected observed_models update")
-	}
-	select {
-	case groupID := <-invalidated:
-		require.Equal(t, int64(9), groupID)
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected models list invalidation")
-	}
-}
-
-func TestOpenAIGatewayService_RememberOpenAIObservedModelSkipsAvailableModels(t *testing.T) {
-	repo := &observedModelsAccountRepo{
-		stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{{
-			ID:       78,
-			Platform: PlatformOpenAI,
-			Type:     AccountTypeAPIKey,
-			Extra: map[string]any{
-				"available_models": []any{"gpt-5.4"},
-			},
-		}}},
-		updates: make(chan map[string]any, 1),
-	}
-	svc := &OpenAIGatewayService{accountRepo: repo}
-	account := &Account{
-		ID:       78,
-		Platform: PlatformOpenAI,
-		Type:     AccountTypeAPIKey,
-		Extra: map[string]any{
-			"available_models": []any{"gpt-5.4"},
-		},
-	}
-	svc.rememberOpenAIObservedModel(context.Background(), nil, account, "gpt-5.5")
-
-	select {
-	case updates := <-repo.updates:
-		t.Fatalf("unexpected observed_models update: %#v", updates)
-	case <-time.After(100 * time.Millisecond):
 	}
 }
 

@@ -25,12 +25,9 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
@@ -3453,6 +3450,12 @@ func summarizeSelectionFailureStats(stats selectionFailureStats) string {
 // isModelSupportedByAccountWithContext 根据账户平台检查模型支持（带 context）
 // 对于 Antigravity 平台，会先获取映射后的最终模型名（包括 thinking 后缀）再检查支持
 func (s *GatewayService) isModelSupportedByAccountWithContext(ctx context.Context, account *Account, requestedModel string) bool {
+	if strings.TrimSpace(requestedModel) != "" {
+		policy := LoadKnownIssueModelExclusionPolicy(ctx, s.settingService.SettingRepoOrNil())
+		if _, excluded := policy.Excludes(requestedModel, account, account.Platform, ""); excluded {
+			return false
+		}
+	}
 	if account.Platform == PlatformAntigravity {
 		if strings.TrimSpace(requestedModel) == "" {
 			return true
@@ -8781,55 +8784,10 @@ func (s *GatewayService) validateUpstreamBaseURL(raw string) (string, error) {
 	return normalized, nil
 }
 
-// GetAvailableModels returns the list of models available for a group
-// It aggregates model_mapping keys from all schedulable accounts in the group
+// GetAvailableModels returns a live-discovered model union for a group.
 func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64, platform string) []string {
-	cacheKey := modelsListCacheKey(groupID, platform)
-	if s.modelsListCache != nil {
-		if cached, found := s.modelsListCache.Get(cacheKey); found {
-			if models, ok := cached.([]string); ok {
-				modelsListCacheHitTotal.Add(1)
-				return cloneStringSlice(models)
-			}
-		}
-	}
 	modelsListCacheMissTotal.Add(1)
-
-	accounts, err := s.listSchedulableAccountsForModels(ctx, groupID, platform)
-
-	if err != nil || len(accounts) == 0 {
-		return nil
-	}
-
-	// Collect unique models from all accounts
-	modelSet := make(map[string]struct{})
-	hasAnyMapping := false
-
-	for _, acc := range accounts {
-		hasAnyMapping = s.addAvailableModelsForAccount(modelSet, acc) || hasAnyMapping
-	}
-
-	// If no account has model_mapping, return nil (use default)
-	if !hasAnyMapping {
-		if s.modelsListCache != nil {
-			s.modelsListCache.Set(cacheKey, []string(nil), s.modelsListCacheTTL)
-			modelsListCacheStoreTotal.Add(1)
-		}
-		return nil
-	}
-
-	// Convert to slice
-	models := make([]string, 0, len(modelSet))
-	for model := range modelSet {
-		models = append(models, model)
-	}
-	sort.Strings(models)
-
-	if s.modelsListCache != nil {
-		s.modelsListCache.Set(cacheKey, cloneStringSlice(models), s.modelsListCacheTTL)
-		modelsListCacheStoreTotal.Add(1)
-	}
-	return cloneStringSlice(models)
+	return s.GetLiveAvailableModels(ctx, groupID, platform)
 }
 
 func (s *GatewayService) listSchedulableAccountsForModels(ctx context.Context, groupID *int64, platform string) ([]Account, error) {
@@ -8959,99 +8917,6 @@ func (s *GatewayService) HasSchedulableModelSupportOnPlatform(ctx context.Contex
 		return true
 	}
 	return false
-}
-
-func (s *GatewayService) addAvailableModelsForAccount(modelSet map[string]struct{}, acc Account) bool {
-	addModel := func(model string) {
-		canonical := CanonicalizePublicModel(model)
-		if canonical == "" {
-			return
-		}
-		modelSet[canonical] = struct{}{}
-	}
-
-	switch {
-	case acc.IsOpenAI():
-		if available := acc.GetAvailableModels(); len(available) > 0 {
-			for _, model := range available {
-				addModel(model)
-			}
-			return true
-		}
-		for _, model := range acc.GetObservedModels() {
-			addModel(normalizeOpenAIObservedModel(model))
-		}
-		mapping := acc.GetModelMapping()
-		if acc.IsOpenAIPassthroughEnabled() || len(mapping) == 0 {
-			for _, model := range openai.DefaultModels {
-				addModel(model.ID)
-			}
-			return true
-		}
-		for model := range mapping {
-			addModel(model)
-		}
-		return true
-	case acc.IsCopilot():
-		mapping := acc.GetModelMapping()
-		if len(mapping) > 0 {
-			for model := range mapping {
-				addModel(model)
-			}
-			return true
-		}
-		for _, model := range acc.GetCopilotAvailableModels() {
-			addModel(model)
-		}
-		return len(acc.GetCopilotAvailableModels()) > 0
-	case acc.IsKiro():
-		mapping := acc.GetModelMapping()
-		if len(mapping) > 0 {
-			for model := range mapping {
-				addModel(model)
-			}
-			return true
-		}
-		for _, model := range acc.GetCopilotAvailableModels() {
-			addModel(model)
-		}
-		return len(acc.GetCopilotAvailableModels()) > 0
-	case acc.IsGemini():
-		mapping := acc.GetModelMapping()
-		if acc.IsOAuth() || len(mapping) == 0 {
-			for _, model := range geminicli.DefaultModels {
-				addModel(model.ID)
-			}
-			return true
-		}
-		for model := range mapping {
-			addModel(model)
-		}
-		return true
-	case acc.Platform == PlatformAntigravity:
-		for _, model := range antigravity.DefaultModels() {
-			addModel(model.ID)
-		}
-		return true
-	default:
-		if available := acc.GetAvailableModels(); len(available) > 0 {
-			for _, model := range available {
-				addModel(model)
-			}
-			return true
-		}
-		mapping := acc.GetModelMapping()
-		if acc.IsOAuth() || len(mapping) == 0 {
-			for _, model := range claude.DefaultModels {
-				addModel(model.ID)
-			}
-			return true
-		}
-		for model := range mapping {
-			addModel(model)
-		}
-		return true
-	}
 }
 
 func (s *GatewayService) InvalidateAvailableModelsCache(groupID *int64, platform string) {

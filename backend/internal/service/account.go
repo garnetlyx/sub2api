@@ -571,31 +571,19 @@ func resolveRequestedModelInMapping(mapping map[string]string, requestedModel st
 	return matchWildcardMappingResult(mapping, requestedModel)
 }
 
-// IsModelSupported checks whether this account can serve requestedModel.
-// available_models is account capability metadata and takes precedence when
-// present; model_mapping remains an optional upstream-name rewrite allowlist.
-// If neither is configured, the account is treated as unconstrained.
+// IsModelSupported reports whether the account should remain eligible for a
+// requested public model. Public model routing is passthrough by default:
+// account metadata may rewrite the upstream model name, but it must not act as
+// a public allowlist. Platform-specific transports that truly require a fixed
+// model namespace (for example Bedrock or Antigravity) enforce that in their
+// service-specific selection code.
 func (a *Account) IsModelSupported(requestedModel string) bool {
-	availableModels := a.GetAvailableModels()
-	if len(availableModels) > 0 {
-		return modelListContainsRequestedModel(availableModels, requestedModel)
-	}
-
-	mapping := a.GetModelMapping()
-	if len(mapping) == 0 {
-		return true
-	}
-	for _, candidate := range requestedModelLookupCandidates(a.Platform, requestedModel) {
-		if mappingSupportsRequestedModel(mapping, candidate) {
-			return true
-		}
-	}
-	return false
+	return true
 }
 
 // GetMappedModel resolves the upstream model name for a requested public model.
-// It first applies explicit model_mapping rules, then generic upstream_models
-// metadata paired with available_models.
+// It first applies explicit model_mapping rules, then optional upstream_models
+// metadata. Neither metadata field is a public-model allowlist.
 func (a *Account) GetMappedModel(requestedModel string) string {
 	mappedModel, _ := a.ResolveUpstreamModel(requestedModel)
 	return mappedModel
@@ -603,12 +591,8 @@ func (a *Account) GetMappedModel(requestedModel string) string {
 
 // ResolveUpstreamModel resolves a public model to the actual upstream model
 // name. matched=true means the account explicitly recognized the requested
-// model through model_mapping or available_models/upstream_models metadata.
+// model through model_mapping or upstream_models metadata.
 func (a *Account) ResolveUpstreamModel(requestedModel string) (mappedModel string, matched bool) {
-	availableModels := a.GetAvailableModels()
-	if len(availableModels) > 0 && !modelListContainsRequestedModel(availableModels, requestedModel) {
-		return requestedModel, false
-	}
 	if mappedModel, matched := a.ResolveMappedModel(requestedModel); matched {
 		return mappedModel, true
 	}
@@ -965,10 +949,6 @@ func (a *Account) GetAvailableModels() []string {
 	return a.getExtraStringList("available_models")
 }
 
-func (a *Account) GetObservedModels() []string {
-	return a.getExtraStringList("observed_models")
-}
-
 func (a *Account) getExtraStringList(key string) []string {
 	if a == nil || a.Extra == nil {
 		return nil
@@ -1046,9 +1026,6 @@ func (a *Account) GetUpstreamModels() map[string]string {
 }
 
 func (a *Account) resolveAvailableUpstreamModel(requestedModel string) (string, bool) {
-	if !modelListContainsRequestedModel(a.GetAvailableModels(), requestedModel) {
-		return requestedModel, false
-	}
 	upstreamModels := a.GetUpstreamModels()
 	for _, candidate := range requestedModelLookupCandidates(a.Platform, requestedModel) {
 		if mappedModel, exists := upstreamModels[candidate]; exists && strings.TrimSpace(mappedModel) != "" {

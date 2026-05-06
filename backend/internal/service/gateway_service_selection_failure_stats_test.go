@@ -34,18 +34,6 @@ func TestCollectSelectionFailureStats(t *testing.T) {
 			Status:      StatusActive,
 			Schedulable: true,
 		},
-		// model unsupported
-		{
-			ID:          4,
-			Platform:    PlatformOpenAI,
-			Status:      StatusActive,
-			Schedulable: true,
-			Credentials: map[string]any{
-				"model_mapping": map[string]any{
-					"gpt-image": "gpt-image",
-				},
-			},
-		},
 		// model rate limited
 		{
 			ID:          5,
@@ -72,8 +60,8 @@ func TestCollectSelectionFailureStats(t *testing.T) {
 	excluded := map[int64]struct{}{1: {}}
 	stats := svc.collectSelectionFailureStats(context.Background(), accounts, model, PlatformOpenAI, excluded, false)
 
-	if stats.Total != 6 {
-		t.Fatalf("total=%d want=6", stats.Total)
+	if stats.Total != 5 {
+		t.Fatalf("total=%d want=5", stats.Total)
 	}
 	if stats.Excluded != 1 {
 		t.Fatalf("excluded=%d want=1", stats.Excluded)
@@ -84,8 +72,8 @@ func TestCollectSelectionFailureStats(t *testing.T) {
 	if stats.PlatformFiltered != 1 {
 		t.Fatalf("platform_filtered=%d want=1", stats.PlatformFiltered)
 	}
-	if stats.ModelUnsupported != 1 {
-		t.Fatalf("model_unsupported=%d want=1", stats.ModelUnsupported)
+	if stats.ModelUnsupported != 0 {
+		t.Fatalf("model_unsupported=%d want=0", stats.ModelUnsupported)
 	}
 	if stats.ModelRateLimited != 1 {
 		t.Fatalf("model_rate_limited=%d want=1", stats.ModelRateLimited)

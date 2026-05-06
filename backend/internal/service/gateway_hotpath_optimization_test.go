@@ -3,6 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -10,6 +13,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	gocache "github.com/patrickmn/go-cache"
 	"github.com/stretchr/testify/require"
@@ -115,6 +119,41 @@ type modelsListAccountRepoStub struct {
 
 	listByGroupCalls atomic.Int64
 	listAllCalls     atomic.Int64
+}
+
+type liveModelsHTTPUpstreamStub struct {
+	responses       []string
+	responsesByHost map[string]string
+	calls           atomic.Int64
+}
+
+func (s *liveModelsHTTPUpstreamStub) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	call := int(s.calls.Add(1))
+	idx := call - 1
+	if idx >= len(s.responses) {
+		idx = len(s.responses) - 1
+	}
+	body := "{}"
+	hostMatched := false
+	if req != nil && req.URL != nil && s.responsesByHost != nil {
+		if matched := strings.TrimSpace(s.responsesByHost[req.URL.Host]); matched != "" {
+			body = matched
+			hostMatched = true
+		}
+	}
+	if !hostMatched && idx >= 0 && len(s.responses) > 0 {
+		body = s.responses[idx]
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    req,
+	}, nil
+}
+
+func (s *liveModelsHTTPUpstreamStub) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	return s.Do(req, proxyURL, accountID, accountConcurrency)
 }
 
 type stickyGatewayCacheHotpathStub struct {
@@ -471,7 +510,7 @@ func TestWithWindowCostPrefetch_BatchErrorFallbackSingleQuery(t *testing.T) {
 	require.Equal(t, int64(1), errCount)
 }
 
-func TestGetAvailableModels_UsesShortCacheAndSupportsInvalidation(t *testing.T) {
+func TestGetAvailableModels_UsesLiveUpstreamWithoutCache(t *testing.T) {
 	resetGatewayHotpathStatsForTest()
 
 	groupID := int64(9)
@@ -479,68 +518,44 @@ func TestGetAvailableModels_UsesShortCacheAndSupportsInvalidation(t *testing.T) 
 		byGroup: map[int64][]Account{
 			groupID: {
 				{
-					ID:       1,
-					Platform: PlatformAnthropic,
+					ID:          1,
+					Platform:    PlatformAnthropic,
+					Type:        AccountTypeAPIKey,
+					Status:      StatusActive,
+					Schedulable: true,
 					Credentials: map[string]any{
-						"model_mapping": map[string]any{
-							"claude-3-5-sonnet": "claude-3-5-sonnet",
-							"claude-3-5-haiku":  "claude-3-5-haiku",
-						},
-					},
-				},
-				{
-					ID:       2,
-					Platform: PlatformGemini,
-					Credentials: map[string]any{
-						"model_mapping": map[string]any{
-							"gemini-2.5-pro": "gemini-2.5-pro",
-						},
+						"api_key":  "sk-test",
+						"base_url": "https://upstream.test/v1",
 					},
 				},
 			},
 		},
 	}
-
+	upstream := &liveModelsHTTPUpstreamStub{
+		responses: []string{
+			`{"data":[{"id":"claude-sonnet-4-6"},{"id":"claude-haiku-4-5"}]}`,
+			`{"data":[{"id":"claude-opus-4-6"}]}`,
+		},
+	}
 	svc := &GatewayService{
-		accountRepo:        repo,
-		modelsListCache:    gocache.New(time.Minute, time.Minute),
-		modelsListCacheTTL: time.Minute,
+		accountRepo:  repo,
+		httpUpstream: upstream,
+		cfg:          &config.Config{},
 	}
 
 	models1 := svc.GetAvailableModels(context.Background(), &groupID, PlatformAnthropic)
-	require.Equal(t, []string{"claude-3-5-haiku", "claude-3-5-sonnet"}, models1)
+	require.Equal(t, []string{"claude-haiku-4.5", "claude-sonnet-4.6"}, models1)
 	require.Equal(t, int64(1), repo.listByGroupCalls.Load())
 
-	// TTL 内再次请求应命中缓存，不回源。
 	models2 := svc.GetAvailableModels(context.Background(), &groupID, PlatformAnthropic)
-	require.Equal(t, models1, models2)
-	require.Equal(t, int64(1), repo.listByGroupCalls.Load())
-
-	// 更新仓储数据，但缓存未失效前应继续返回旧值。
-	repo.byGroup[groupID] = []Account{
-		{
-			ID:       3,
-			Platform: PlatformAnthropic,
-			Credentials: map[string]any{
-				"model_mapping": map[string]any{
-					"claude-3-7-sonnet": "claude-3-7-sonnet",
-				},
-			},
-		},
-	}
-	models3 := svc.GetAvailableModels(context.Background(), &groupID, PlatformAnthropic)
-	require.Equal(t, []string{"claude-3-5-haiku", "claude-3-5-sonnet"}, models3)
-	require.Equal(t, int64(1), repo.listByGroupCalls.Load())
-
-	svc.InvalidateAvailableModelsCache(&groupID, PlatformAnthropic)
-	models4 := svc.GetAvailableModels(context.Background(), &groupID, PlatformAnthropic)
-	require.Equal(t, []string{"claude-3-7-sonnet"}, models4)
 	require.Equal(t, int64(2), repo.listByGroupCalls.Load())
+	require.Equal(t, int64(2), upstream.calls.Load())
+	require.Equal(t, []string{"claude-opus-4.6"}, models2)
 
 	hit, miss, store := GatewayModelsListCacheStats()
-	require.Equal(t, int64(2), hit)
+	require.Equal(t, int64(0), hit)
 	require.Equal(t, int64(2), miss)
-	require.Equal(t, int64(2), store)
+	require.Equal(t, int64(0), store)
 }
 
 func TestGetAvailableModels_ErrorAndGlobalListBranches(t *testing.T) {
@@ -550,38 +565,45 @@ func TestGetAvailableModels_ErrorAndGlobalListBranches(t *testing.T) {
 		err: errors.New("db error"),
 	}
 	svcErr := &GatewayService{
-		accountRepo:        errRepo,
-		modelsListCache:    gocache.New(time.Minute, time.Minute),
-		modelsListCacheTTL: time.Minute,
+		accountRepo: errRepo,
+		cfg:         &config.Config{},
 	}
-	require.Nil(t, svcErr.GetAvailableModels(context.Background(), nil, ""))
+	require.Empty(t, svcErr.GetAvailableModels(context.Background(), nil, ""))
 
 	okRepo := &modelsListAccountRepoStub{
 		all: []Account{
 			{
-				ID:       1,
-				Platform: PlatformAnthropic,
+				ID:          1,
+				Platform:    PlatformAnthropic,
+				Type:        AccountTypeAPIKey,
+				Status:      StatusActive,
+				Schedulable: true,
 				Credentials: map[string]any{
-					"model_mapping": map[string]any{
-						"claude-3-5-sonnet": "claude-3-5-sonnet",
-					},
+					"api_key":  "sk-test",
+					"base_url": "https://anthropic.test/v1",
 				},
 			},
 			{
-				ID:       2,
-				Platform: PlatformGemini,
+				ID:          2,
+				Platform:    PlatformGemini,
+				Type:        AccountTypeAPIKey,
+				Status:      StatusActive,
+				Schedulable: true,
+				Priority:    2,
 				Credentials: map[string]any{
-					"model_mapping": map[string]any{
-						"gemini-2.5-pro": "gemini-2.5-pro",
-					},
+					"api_key":  "gemini-key",
+					"base_url": "https://gemini.test",
 				},
 			},
 		},
 	}
 	svcOK := &GatewayService{
-		accountRepo:        okRepo,
-		modelsListCache:    gocache.New(time.Minute, time.Minute),
-		modelsListCacheTTL: time.Minute,
+		accountRepo: okRepo,
+		httpUpstream: &liveModelsHTTPUpstreamStub{responsesByHost: map[string]string{
+			"anthropic.test": `{"data":[{"id":"claude-3-5-sonnet"}]}`,
+			"gemini.test":    `{"models":[{"name":"models/gemini-2.5-pro"}]}`,
+		}},
+		cfg: &config.Config{},
 	}
 	models := svcOK.GetAvailableModels(context.Background(), nil, "")
 	require.Equal(t, []string{"claude-3-5-sonnet", "gemini-2.5-pro"}, models)
@@ -596,17 +618,14 @@ func TestGetAvailableModels_CanonicalizesStyleAliasesAcrossProviders(t *testing.
 		byGroup: map[int64][]Account{
 			groupID: {
 				{
-					ID:       1,
-					Platform: PlatformCopilot,
-					Extra: map[string]any{
-						"available_models": []any{"claude-sonnet-4.6", "gpt-5.4"},
-					},
-				},
-				{
-					ID:       2,
-					Platform: PlatformKiro,
-					Extra: map[string]any{
-						"available_models": []any{"claude-sonnet-4-6"},
+					ID:          1,
+					Platform:    PlatformAnthropic,
+					Type:        AccountTypeAPIKey,
+					Status:      StatusActive,
+					Schedulable: true,
+					Credentials: map[string]any{
+						"api_key":  "sk-test",
+						"base_url": "https://upstream.test/v1",
 					},
 				},
 			},
@@ -614,48 +633,13 @@ func TestGetAvailableModels_CanonicalizesStyleAliasesAcrossProviders(t *testing.
 	}
 
 	svc := &GatewayService{
-		accountRepo:        repo,
-		modelsListCache:    gocache.New(time.Minute, time.Minute),
-		modelsListCacheTTL: time.Minute,
+		accountRepo:  repo,
+		httpUpstream: &liveModelsHTTPUpstreamStub{responses: []string{`{"data":[{"id":"claude-sonnet-4.6"},{"id":"claude-sonnet-4-6"},{"id":"gpt-5.4"}]}`}},
+		cfg:          &config.Config{},
 	}
 
 	models := svc.GetAvailableModels(context.Background(), &groupID, "")
 	require.Equal(t, []string{"claude-sonnet-4.6", "gpt-5.4"}, models)
-}
-
-func TestGetAvailableModels_IncludesOpenAIPassthroughObservedModels(t *testing.T) {
-	resetGatewayHotpathStatsForTest()
-
-	groupID := int64(88)
-	repo := &modelsListAccountRepoStub{
-		byGroup: map[int64][]Account{
-			groupID: {
-				{
-					ID:          1,
-					Platform:    PlatformOpenAI,
-					Type:        AccountTypeOAuth,
-					Status:      StatusActive,
-					Schedulable: true,
-					Extra: map[string]any{
-						"openai_passthrough": true,
-						"observed_models":    []any{"openai/gpt-5.5", "gpt-5.6-xhigh"},
-					},
-				},
-			},
-		},
-	}
-
-	svc := &GatewayService{
-		accountRepo:        repo,
-		modelsListCache:    gocache.New(time.Minute, time.Minute),
-		modelsListCacheTTL: time.Minute,
-	}
-
-	models := svc.GetAvailableModels(context.Background(), &groupID, PlatformOpenAI)
-	require.Contains(t, models, "gpt-5.5")
-	require.Contains(t, models, "gpt-5.6")
-	require.NotContains(t, models, "gpt-5.6-xhigh")
-	require.Contains(t, models, "gpt-5.4")
 }
 
 func TestGatewayHotpathHelpers_CacheTTLAndStickyContext(t *testing.T) {

@@ -34,6 +34,7 @@ type OpenAIAccountScheduleRequest struct {
 	StickyAccountID    int64
 	PreviousResponseID string
 	RequestedModel     string
+	Capability         string
 	RequiredTransport  OpenAIUpstreamTransport
 	ExcludedIDs        map[int64]struct{}
 	ExcludedPlatforms  map[string]struct{}
@@ -340,7 +341,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	if isOpenAIPlatformExcluded(req.ExcludedPlatforms, account.Platform) {
 		return nil, nil
 	}
-	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
+	if !s.service.supportsOpenAIGatewayRequestedModel(ctx, account, req.RequestedModel, req.Capability) {
 		return nil, nil
 	}
 	if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
@@ -619,7 +620,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 				fmt.Sprintf("Privacy not set, required by group [%s]", schedGroup.Name))
 			continue
 		}
-		if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
+		if !s.service.supportsOpenAIGatewayRequestedModel(ctx, account, req.RequestedModel, req.Capability) {
 			continue
 		}
 		if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
@@ -849,6 +850,20 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 	excludedPlatforms map[string]struct{},
 	requiredTransport OpenAIUpstreamTransport,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
+	return s.SelectAccountWithSchedulerForCapability(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, excludedPlatforms, requiredTransport, "")
+}
+
+func (s *OpenAIGatewayService) SelectAccountWithSchedulerForCapability(
+	ctx context.Context,
+	groupID *int64,
+	previousResponseID string,
+	sessionHash string,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+	excludedPlatforms map[string]struct{},
+	requiredTransport OpenAIUpstreamTransport,
+	capability string,
+) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	decision := OpenAIAccountScheduleDecision{}
 	scheduler := s.getOpenAIAccountScheduler()
 	if scheduler == nil {
@@ -870,6 +885,7 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 		StickyAccountID:    stickyAccountID,
 		PreviousResponseID: previousResponseID,
 		RequestedModel:     requestedModel,
+		Capability:         capability,
 		RequiredTransport:  requiredTransport,
 		ExcludedIDs:        excludedIDs,
 		ExcludedPlatforms:  excludedPlatforms,

@@ -1,19 +1,16 @@
 package service
 
 // resolveOpenAIForwardModel determines the upstream model for OpenAI-compatible
-// forwarding. Group-level default mapping only applies when the account itself
-// did not match any explicit model_mapping rule.
+// forwarding. Passthrough is the default: group-level defaults are only used
+// when the caller explicitly retried routing with that fallback model.
 func resolveOpenAIForwardModel(account *Account, requestedModel, defaultMappedModel string) string {
 	if account == nil {
-		if defaultMappedModel != "" {
-			return defaultMappedModel
-		}
 		return requestedModel
 	}
 
-	mappedModel, matched := account.ResolveUpstreamModel(requestedModel)
-	if !matched && defaultMappedModel != "" {
+	if defaultMappedModel != "" && defaultMappedModel == requestedModel {
 		return defaultMappedModel
 	}
+	mappedModel, _ := account.ResolveUpstreamModel(requestedModel)
 	return mappedModel
 }

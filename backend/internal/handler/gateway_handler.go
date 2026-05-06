@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -22,7 +21,6 @@ import (
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -854,15 +852,13 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 }
 
-// Models handles listing available models
+// Models handles listing live-discovered models.
 // GET /v1/models
-// Returns models based on account configurations (model_mapping whitelist)
-// Falls back to default models if no whitelist is configured
 func (h *GatewayHandler) Models(c *gin.Context) {
 	apiKey, _ := middleware2.GetAPIKeyFromContext(c)
 
 	var groupID *int64
-	var platform string
+	platform := ""
 
 	if apiKey != nil && apiKey.Group != nil {
 		groupID = &apiKey.Group.ID
@@ -872,55 +868,31 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		platform = forcedPlatform
 	}
 
-	// Get available models from account configurations (without platform filter)
-	availableModels := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, "")
-	if h.cfg != nil && h.cfg.RunMode == config.RunModeSimple {
-		modelSet := make(map[string]struct{}, len(availableModels)+len(openai.DefaultModels))
-		for _, modelID := range availableModels {
-			modelSet[modelID] = struct{}{}
-		}
-		for _, model := range openai.DefaultModels {
-			modelSet[model.ID] = struct{}{}
-		}
-		if len(modelSet) > 0 {
-			availableModels = availableModels[:0]
-			for modelID := range modelSet {
-				availableModels = append(availableModels, modelID)
-			}
-			sort.Strings(availableModels)
-		}
+	var sources []service.LiveModelSource
+	if platform == "" || platform == service.PlatformOpenAI || platform == service.PlatformCopilot || platform == service.PlatformKiro {
+		sources = service.AppendLiveModels(sources, h.openaiGatewayService.GetLiveModelSources(c.Request.Context(), groupID))
+	}
+	if platform == "" || platform == service.PlatformAnthropic || platform == service.PlatformGemini || platform == service.PlatformAntigravity {
+		sources = service.AppendLiveModels(sources, h.gatewayService.GetLiveModelSources(c.Request.Context(), groupID, platform))
 	}
 
-	if len(availableModels) > 0 {
-		// Build model list from whitelist
-		models := make([]claude.Model, 0, len(availableModels))
-		for _, modelID := range availableModels {
-			models = append(models, claude.Model{
-				ID:          modelID,
-				Type:        "model",
-				DisplayName: modelID,
-				CreatedAt:   "2024-01-01T00:00:00Z",
-			})
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"object": "list",
-			"data":   models,
+	availableModels := service.MergeLiveModelSources(
+		sources,
+		service.LoadKnownIssueModelExclusionPolicy(c.Request.Context(), h.settingService.SettingRepoOrNil()),
+	)
+
+	models := make([]claude.Model, 0, len(availableModels))
+	for _, modelID := range availableModels {
+		models = append(models, claude.Model{
+			ID:          modelID,
+			Type:        "model",
+			DisplayName: modelID,
+			CreatedAt:   "",
 		})
-		return
 	}
-
-	// Fallback to default models
-	if platform == "openai" || platform == "copilot" {
-		c.JSON(http.StatusOK, gin.H{
-			"object": "list",
-			"data":   openai.DefaultModels,
-		})
-		return
-	}
-
 	c.JSON(http.StatusOK, gin.H{
 		"object": "list",
-		"data":   claude.DefaultModels,
+		"data":   models,
 	})
 }
 
