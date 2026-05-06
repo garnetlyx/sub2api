@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -62,11 +61,22 @@ func TestListModelsUsesKiroCLIListAvailableModelsRequest(t *testing.T) {
 	require.Equal(t, "anthropic", models[0].ProviderName)
 }
 
-func TestListModelsRequiresProfileArnWithoutRequest(t *testing.T) {
-	requested := false
+func TestListModelsOmitsProfileArnWhenUnavailable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requested = true
-		t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "KIRO_CLI", r.URL.Query().Get("origin"))
+		require.Empty(t, r.URL.Query().Get("profileArn"))
+
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		var payload map[string]string
+		require.NoError(t, json.Unmarshal(body, &payload))
+		require.Equal(t, "KIRO_CLI", payload["origin"])
+		_, hasProfileArn := payload["profileArn"]
+		require.False(t, hasProfileArn)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[{"modelId":"auto"}]}`))
 	}))
 	defer server.Close()
 
@@ -79,8 +89,7 @@ func TestListModelsRequiresProfileArnWithoutRequest(t *testing.T) {
 	})
 
 	models, err := ListModels(context.Background(), server.Client(), "us-east-1", "access-token", " ")
-	require.Error(t, err)
-	require.True(t, strings.Contains(err.Error(), "profile_arn"))
-	require.Nil(t, models)
-	require.False(t, requested)
+	require.NoError(t, err)
+	require.Len(t, models, 1)
+	require.Equal(t, "auto", models[0].ModelID)
 }

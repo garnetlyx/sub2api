@@ -366,21 +366,20 @@ func ListModels(ctx context.Context, httpClient *http.Client, region string, acc
 		return nil, fmt.Errorf("list models requires access token")
 	}
 	profileArn = strings.TrimSpace(profileArn)
-	if profileArn == "" {
-		return nil, fmt.Errorf("list models requires profile_arn")
-	}
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
 
 	params := url.Values{}
 	params.Set("origin", kiroCLIOrigin)
-	params.Set("profileArn", profileArn)
+	if profileArn != "" {
+		params.Set("profileArn", profileArn)
+	}
 	endpoint := strings.TrimRight(qAPIEndpoint(region), "/") + "/?" + params.Encode()
 
-	reqBody := map[string]string{
-		"origin":     kiroCLIOrigin,
-		"profileArn": profileArn,
+	reqBody := map[string]string{"origin": kiroCLIOrigin}
+	if profileArn != "" {
+		reqBody["profileArn"] = profileArn
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
