@@ -2008,6 +2008,13 @@ func (s *OpenAIGatewayService) supportsOpenAIGatewayRequestedModel(ctx context.C
 	policy := LoadKnownIssueModelExclusionPolicy(ctx, s.settingRepoOrNil())
 	_, excluded := policy.Excludes(requestedModel, account, "openai-compatible", capability)
 	if excluded {
+		slog.Warn("openai.account_model_excluded_by_known_issue",
+			"account_id", account.ID,
+			"account_name", account.Name,
+			"platform", account.Platform,
+			"requested_model", requestedModel,
+			"capability", capability,
+		)
 		return false
 	}
 	source, err := s.cachedLiveModelSourceForAccount(ctx, *account)
@@ -2018,9 +2025,32 @@ func (s *OpenAIGatewayService) supportsOpenAIGatewayRequestedModel(ctx context.C
 		return true
 	}
 	if len(source.Models) == 0 {
-		return account.IsOpenAIOAuth()
+		if account.IsOpenAIOAuth() {
+			slog.Warn("openai.account_model_empty_list_filtered",
+				"account_id", account.ID,
+				"account_name", account.Name,
+				"platform", account.Platform,
+				"requested_model", requestedModel,
+			)
+		}
+		return !account.IsOpenAIOAuth()
 	}
-	return modelListContainsRequestedModel(source.Models, requestedModel)
+	if !modelListContainsRequestedModel(source.Models, requestedModel) {
+		modelSample := source.Models
+		if len(modelSample) > 10 {
+			modelSample = modelSample[:10]
+		}
+		slog.Warn("openai.account_model_not_found",
+			"account_id", account.ID,
+			"account_name", account.Name,
+			"platform", account.Platform,
+			"requested_model", requestedModel,
+			"model_list_sample", modelSample,
+			"model_list_total", len(source.Models),
+		)
+		return false
+	}
+	return true
 }
 
 func (s *OpenAIGatewayService) settingRepoOrNil() SettingRepository {
