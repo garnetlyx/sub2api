@@ -44,6 +44,43 @@ func canonicalLiveModelList(models []string) []string {
 	return out
 }
 
+func publicizeLiveModelList(account *Account, models []string) []string {
+	if account == nil || len(models) == 0 {
+		return canonicalLiveModelList(models)
+	}
+	upstreamModels := account.GetUpstreamModels()
+	if len(upstreamModels) == 0 {
+		return canonicalLiveModelList(models)
+	}
+
+	reverse := make(map[string]string, len(upstreamModels))
+	for publicModel, upstreamModel := range upstreamModels {
+		publicModel = strings.TrimSpace(publicModel)
+		upstreamModel = strings.TrimSpace(upstreamModel)
+		if publicModel == "" || upstreamModel == "" {
+			continue
+		}
+		key := strings.ToLower(upstreamModel)
+		if _, exists := reverse[key]; !exists {
+			reverse[key] = publicModel
+		}
+	}
+
+	out := make([]string, 0, len(models))
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if publicModel, ok := reverse[strings.ToLower(model)]; ok {
+			out = append(out, publicModel)
+			continue
+		}
+		out = append(out, model)
+	}
+	return canonicalLiveModelList(out)
+}
+
 func MergeLiveModelSources(sources []LiveModelSource, policy KnownIssueModelExclusionPolicy) []string {
 	modelSet := make(map[string]struct{})
 	for _, source := range sources {
@@ -382,6 +419,49 @@ func (s *OpenAIGatewayService) liveKiroModels(ctx context.Context, account *Acco
 func (s *OpenAIGatewayService) liveOpenAICompatibleModels(ctx context.Context, account *Account) ([]string, error) {
 	gateway := &GatewayService{httpUpstream: s.httpUpstream, cfg: s.cfg}
 	return gateway.liveOpenAICompatibleModels(ctx, account)
+}
+
+func (s *OpenAIGatewayService) liveModelSourceForAccount(ctx context.Context, account Account) (LiveModelSource, error) {
+	acc := cloneAccountForLiveSource(account)
+	var (
+		models     []string
+		endpoint   string
+		capability = "chat"
+		err        error
+	)
+	switch {
+	case acc.IsCopilot():
+		models, err = s.liveCopilotModels(ctx, acc)
+		endpoint = "copilot"
+	case acc.IsKiro():
+		models, err = s.liveKiroModels(ctx, acc)
+		endpoint = "kiro"
+	case acc.IsOpenAIApiKey() && !isInternalLiteLLMBridgeOnlyAccount(acc):
+		models, err = s.liveOpenAICompatibleModels(ctx, acc)
+		endpoint = "openai-compatible"
+	default:
+		return LiveModelSource{Account: acc}, nil
+	}
+	if err != nil {
+		return LiveModelSource{}, err
+	}
+	return LiveModelSource{
+		Account:    acc,
+		Endpoint:   endpoint,
+		Capability: capability,
+		Models:     publicizeLiveModelList(acc, models),
+	}, nil
+}
+
+func (s *OpenAIGatewayService) cachedLiveModelSourceForAccount(ctx context.Context, account Account) (LiveModelSource, error) {
+	if s == nil {
+		return LiveModelSource{}, errors.New("openai gateway service is nil")
+	}
+	return s.liveModelSourceForAccount(ctx, account)
+}
+
+func (s *OpenAIGatewayService) LiveModelSourceForAccount(ctx context.Context, account Account) (LiveModelSource, error) {
+	return s.cachedLiveModelSourceForAccount(ctx, account)
 }
 
 func (s *OpenAIGatewayService) GetLiveModelSources(ctx context.Context, groupID *int64) []LiveModelSource {
