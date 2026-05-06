@@ -533,6 +533,10 @@ func TestNormalizeCodexModel_PreservesExplicitAndUnknownModels(t *testing.T) {
 		"openai/gpt-5.5":         "gpt-5.5",
 		"claude-opus-4-7":        "claude-opus-4-7",
 		"gemini-3-flash-preview": "gemini-3-flash-preview",
+		// ChatGPT backend-api slugs use hyphens for version separators.
+		"gpt-5-5":       "gpt-5.5",
+		"gpt-5-5-low":   "gpt-5.5",
+		"gpt-5-6-xhigh": "gpt-5.6",
 	}
 
 	for input, expected := range cases {

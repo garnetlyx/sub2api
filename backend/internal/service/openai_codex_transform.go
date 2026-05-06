@@ -480,8 +480,12 @@ func normalizeCodexModel(model string) string {
 	if strings.HasPrefix(normalized, "gpt-") {
 		for _, suffix := range []string{"-none", "-minimal", "-low", "-medium", "-high", "-xhigh"} {
 			if strings.HasSuffix(normalized, suffix) && len(modelID) > len(suffix) {
-				return modelID[:len(modelID)-len(suffix)]
+				modelID = modelID[:len(modelID)-len(suffix)]
+				break
 			}
+		}
+		if canonical := CanonicalizePublicModel(modelID); canonical != "" {
+			return canonical
 		}
 		return modelID
 	}
