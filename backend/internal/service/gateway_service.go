@@ -53,7 +53,7 @@ const (
 	maxCacheControlBlocks  = 4 // Anthropic API 允许的最大 cache_control 块数量
 
 	defaultUserGroupRateCacheTTL = 30 * time.Second
-	defaultModelsListCacheTTL    = 15 * time.Second
+	defaultModelsListCacheTTL    = 60 * time.Second
 	postUsageBillingTimeout      = 15 * time.Second
 	debugGatewayBodyEnv          = "SUB2API_DEBUG_GATEWAY_BODY"
 )
@@ -576,6 +576,7 @@ type GatewayService struct {
 	userGroupRateSF       singleflight.Group
 	modelsListCache       *gocache.Cache
 	modelsListCacheTTL    time.Duration
+	liveModelSourceSF     singleflight.Group
 	settingService        *SettingService
 	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
 	debugModelRouting     atomic.Bool
@@ -3450,6 +3451,12 @@ func summarizeSelectionFailureStats(stats selectionFailureStats) string {
 // isModelSupportedByAccountWithContext 根据账户平台检查模型支持（带 context）
 // 对于 Antigravity 平台，会先获取映射后的最终模型名（包括 thinking 后缀）再检查支持
 func (s *GatewayService) isModelSupportedByAccountWithContext(ctx context.Context, account *Account, requestedModel string) bool {
+	if account == nil {
+		return false
+	}
+	if isInternalLiteLLMBridgeOnlyAccount(account) {
+		return false
+	}
 	if strings.TrimSpace(requestedModel) != "" {
 		policy := LoadKnownIssueModelExclusionPolicy(ctx, s.settingService.SettingRepoOrNil())
 		if _, excluded := policy.Excludes(requestedModel, account, account.Platform, ""); excluded {
@@ -3475,11 +3482,26 @@ func (s *GatewayService) isModelSupportedByAccountWithContext(ctx context.Contex
 		}
 		return true
 	}
+	if strings.TrimSpace(requestedModel) != "" {
+		source, err := s.cachedLiveModelSourceForAccountWithLoader(ctx, *account, s.liveModelSourceForAccount)
+		if err == nil {
+			if strings.TrimSpace(source.Endpoint) == "" {
+				return s.isModelSupportedByAccount(account, requestedModel)
+			}
+			if len(source.Models) == 0 {
+				return false
+			}
+			return modelListContainsRequestedModel(source.Models, requestedModel)
+		}
+	}
 	return s.isModelSupportedByAccount(account, requestedModel)
 }
 
 // isModelSupportedByAccount 根据账户平台检查模型支持（无 context，用于非 Antigravity 平台）
 func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedModel string) bool {
+	if isInternalLiteLLMBridgeOnlyAccount(account) {
+		return false
+	}
 	if account.Platform == PlatformAntigravity {
 		if strings.TrimSpace(requestedModel) == "" {
 			return true
@@ -8766,6 +8788,13 @@ func (s *GatewayService) buildCustomRelayURL(baseURL, path string, account *Acco
 }
 
 func (s *GatewayService) validateUpstreamBaseURL(raw string) (string, error) {
+	if s == nil || s.cfg == nil {
+		normalized, err := urlvalidator.ValidateURLFormat(raw, true)
+		if err != nil {
+			return "", fmt.Errorf("invalid base_url: %w", err)
+		}
+		return normalized, nil
+	}
 	if s.cfg != nil && !s.cfg.Security.URLAllowlist.Enabled {
 		normalized, err := urlvalidator.ValidateURLFormat(raw, s.cfg.Security.URLAllowlist.AllowInsecureHTTP)
 		if err != nil {
@@ -8786,7 +8815,6 @@ func (s *GatewayService) validateUpstreamBaseURL(raw string) (string, error) {
 
 // GetAvailableModels returns a live-discovered model union for a group.
 func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64, platform string) []string {
-	modelsListCacheMissTotal.Add(1)
 	return s.GetLiveAvailableModels(ctx, groupID, platform)
 }
 

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/copilot"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/kiro"
+	"github.com/imroc/req/v3"
 )
 
 type LiveModelSource struct {
@@ -23,6 +25,15 @@ type LiveModelSource struct {
 	Endpoint   string
 	Capability string
 	Models     []string
+}
+
+type liveModelSourceLoader func(context.Context, Account) (LiveModelSource, error)
+
+const liveModelSourceCacheKeyPrefix = "live-model-source|"
+
+var chatGPTLiveModelEndpoints = []string{
+	"https://chatgpt.com/backend-api/models?history_and_training_disabled=false",
+	"https://chatgpt.com/backend-api/models",
 }
 
 func canonicalLiveModelList(models []string) []string {
@@ -183,9 +194,170 @@ func decodeGeminiModelIDs(body []byte) []string {
 	return models
 }
 
+func decodeChatGPTModelIDs(body []byte) []string {
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil
+	}
+
+	models := make(map[string]struct{})
+	var walk func(any)
+	walk = func(value any) {
+		switch node := value.(type) {
+		case map[string]any:
+			if slug, ok := node["slug"].(string); ok {
+				slug = strings.TrimSpace(slug)
+				if slug != "" {
+					models[slug] = struct{}{}
+				}
+			}
+			for _, child := range node {
+				walk(child)
+			}
+		case []any:
+			for _, child := range node {
+				walk(child)
+			}
+		}
+	}
+	walk(payload)
+
+	out := make([]string, 0, len(models))
+	for model := range models {
+		out = append(out, model)
+	}
+	return out
+}
+
 func cloneAccountForLiveSource(account Account) *Account {
 	cloned := account
 	return &cloned
+}
+
+func cloneLiveModelSource(source LiveModelSource) LiveModelSource {
+	cloned := source
+	if source.Account != nil {
+		account := *source.Account
+		cloned.Account = &account
+	}
+	if source.Models != nil {
+		cloned.Models = append([]string(nil), source.Models...)
+	}
+	return cloned
+}
+
+func liveModelSourceCacheKey(account Account) string {
+	signature := map[string]any{
+		"id":          account.ID,
+		"name":        account.Name,
+		"platform":    account.Platform,
+		"type":        account.Type,
+		"credentials": account.Credentials,
+		"extra":       account.Extra,
+		"proxy_id":    account.ProxyID,
+		"proxy_url":   proxyURLForAccount(&account),
+		"updated_at":  account.UpdatedAt.UnixNano(),
+	}
+	data, err := json.Marshal(signature)
+	if err != nil {
+		data = []byte(fmt.Sprintf("%d|%s|%s|%s|%d", account.ID, account.Name, account.Platform, account.Type, account.UpdatedAt.UnixNano()))
+	}
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%s%d|%s|%x", liveModelSourceCacheKeyPrefix, account.ID, strings.TrimSpace(account.Platform), sum[:8])
+}
+
+func (s *GatewayService) liveModelSourceCacheTTL() time.Duration {
+	if s == nil {
+		return 0
+	}
+	if s.modelsListCacheTTL > 0 {
+		return s.modelsListCacheTTL
+	}
+	return resolveModelsListCacheTTL(s.cfg)
+}
+
+func (s *GatewayService) cachedLiveModelSourceForAccountWithLoader(ctx context.Context, account Account, loader liveModelSourceLoader) (LiveModelSource, error) {
+	if s == nil {
+		return LiveModelSource{}, errors.New("gateway service is nil")
+	}
+	if loader == nil {
+		return LiveModelSource{}, errors.New("live model source loader is nil")
+	}
+
+	cache := s.modelsListCache
+	ttl := s.liveModelSourceCacheTTL()
+	if cache == nil || ttl <= 0 {
+		return loader(ctx, account)
+	}
+
+	key := liveModelSourceCacheKey(account)
+	if cached, ok := cache.Get(key); ok {
+		if source, ok := cached.(LiveModelSource); ok {
+			modelsListCacheHitTotal.Add(1)
+			return cloneLiveModelSource(source), nil
+		}
+		cache.Delete(key)
+	}
+	modelsListCacheMissTotal.Add(1)
+
+	value, err, _ := s.liveModelSourceSF.Do(key, func() (any, error) {
+		if cached, ok := cache.Get(key); ok {
+			if source, ok := cached.(LiveModelSource); ok {
+				return cloneLiveModelSource(source), nil
+			}
+			cache.Delete(key)
+		}
+
+		source, err := loader(ctx, account)
+		if err != nil {
+			return LiveModelSource{}, err
+		}
+		source = cloneLiveModelSource(source)
+		cache.Set(key, source, ttl)
+		modelsListCacheStoreTotal.Add(1)
+		return source, nil
+	})
+	if err != nil {
+		return LiveModelSource{}, err
+	}
+	source, ok := value.(LiveModelSource)
+	if !ok {
+		return LiveModelSource{}, errors.New("cached live model source has invalid type")
+	}
+	return cloneLiveModelSource(source), nil
+}
+
+func (s *GatewayService) InvalidateLiveModelSourceCache(accountIDs ...int64) {
+	if s == nil || s.modelsListCache == nil {
+		return
+	}
+	if len(accountIDs) == 0 {
+		for key := range s.modelsListCache.Items() {
+			if strings.HasPrefix(key, liveModelSourceCacheKeyPrefix) {
+				s.modelsListCache.Delete(key)
+			}
+		}
+		return
+	}
+
+	prefixes := make([]string, 0, len(accountIDs))
+	for _, accountID := range accountIDs {
+		if accountID <= 0 {
+			continue
+		}
+		prefixes = append(prefixes, fmt.Sprintf("%s%d|", liveModelSourceCacheKeyPrefix, accountID))
+	}
+	if len(prefixes) == 0 {
+		return
+	}
+	for key := range s.modelsListCache.Items() {
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(key, prefix) {
+				s.modelsListCache.Delete(key)
+				break
+			}
+		}
+	}
 }
 
 func proxyURLForAccount(account *Account) string {
@@ -294,21 +466,54 @@ func (s *GatewayService) liveGeminiModels(ctx context.Context, account *Account)
 
 func (s *GatewayService) liveAccountModels(ctx context.Context, account Account) ([]string, string, string, error) {
 	acc := cloneAccountForLiveSource(account)
+	if isInternalLiteLLMBridgeOnlyAccount(acc) {
+		return nil, "", "", nil
+	}
+	var (
+		models     []string
+		endpoint   string
+		capability string
+		err        error
+	)
 	switch {
 	case acc.IsOpenAIApiKey() && !isInternalLiteLLMBridgeOnlyAccount(acc):
-		models, err := s.liveOpenAICompatibleModels(ctx, acc)
-		return models, "openai-compatible", "chat", err
+		models, err = s.liveOpenAICompatibleModels(ctx, acc)
+		endpoint = "openai-compatible"
+		capability = "chat"
 	case acc.IsAnthropic() && acc.Type == AccountTypeAPIKey:
-		models, err := s.liveAnthropicModels(ctx, acc)
-		return models, "anthropic", "messages", err
+		models, err = s.liveAnthropicModels(ctx, acc)
+		endpoint = "anthropic"
+		capability = "messages"
 	case acc.IsGemini() && acc.Type == AccountTypeAPIKey:
-		models, err := s.liveGeminiModels(ctx, acc)
-		return models, "gemini", "generateContent", err
+		models, err = s.liveGeminiModels(ctx, acc)
+		endpoint = "gemini"
+		capability = "generateContent"
 	case acc.Platform == PlatformAntigravity:
 		return nil, "antigravity", "messages", nil
 	default:
 		return nil, "", "", nil
 	}
+	if err != nil {
+		return nil, endpoint, capability, err
+	}
+	return publicizeLiveModelList(acc, models), endpoint, capability, nil
+}
+
+func (s *GatewayService) liveModelSourceForAccount(ctx context.Context, account Account) (LiveModelSource, error) {
+	models, endpoint, capability, err := s.liveAccountModels(ctx, account)
+	if err != nil {
+		return LiveModelSource{}, err
+	}
+	return LiveModelSource{
+		Account:    cloneAccountForLiveSource(account),
+		Endpoint:   endpoint,
+		Capability: capability,
+		Models:     models,
+	}, nil
+}
+
+func (s *GatewayService) LiveModelSourceForAccount(ctx context.Context, account Account) (LiveModelSource, error) {
+	return s.cachedLiveModelSourceForAccountWithLoader(ctx, account, s.liveModelSourceForAccount)
 }
 
 func (s *GatewayService) GetLiveModelSources(ctx context.Context, groupID *int64, platform string) []LiveModelSource {
@@ -330,7 +535,7 @@ func (s *GatewayService) GetLiveModelSources(ctx context.Context, groupID *int64
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			models, endpoint, capability, err := s.liveAccountModels(ctx, account)
+			source, err := s.cachedLiveModelSourceForAccountWithLoader(ctx, account, s.liveModelSourceForAccount)
 			if err != nil {
 				slog.Warn("live_models_lookup_failed",
 					"account_id", account.ID,
@@ -340,15 +545,10 @@ func (s *GatewayService) GetLiveModelSources(ctx context.Context, groupID *int64
 				)
 				return
 			}
-			if len(models) == 0 {
+			if len(source.Models) == 0 {
 				return
 			}
-			sourceCh <- LiveModelSource{
-				Account:    cloneAccountForLiveSource(account),
-				Endpoint:   endpoint,
-				Capability: capability,
-				Models:     models,
-			}
+			sourceCh <- source
 		}()
 	}
 	wg.Wait()
@@ -421,6 +621,57 @@ func (s *OpenAIGatewayService) liveOpenAICompatibleModels(ctx context.Context, a
 	return gateway.liveOpenAICompatibleModels(ctx, account)
 }
 
+func (s *OpenAIGatewayService) liveOpenAIOAuthModels(ctx context.Context, account *Account) ([]string, error) {
+	if s == nil {
+		return nil, errors.New("openai gateway service is nil")
+	}
+	token, _, err := s.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+
+	client := req.C().SetTimeout(30 * time.Second).ImpersonateChrome()
+	if proxyURL := proxyURLForAccount(account); proxyURL != "" {
+		client.SetProxyURL(proxyURL)
+	}
+
+	var lastErr error
+	for _, endpoint := range chatGPTLiveModelEndpoints {
+		req := client.R().
+			SetContext(ctx).
+			SetHeader("Authorization", "Bearer "+token).
+			SetHeader("Origin", "https://chatgpt.com").
+			SetHeader("Referer", "https://chatgpt.com/").
+			SetHeader("Accept", "application/json").
+			SetHeader("sec-fetch-mode", "cors").
+			SetHeader("sec-fetch-site", "same-origin").
+			SetHeader("sec-fetch-dest", "empty")
+		if chatGPTAccountID := strings.TrimSpace(account.GetChatGPTAccountID()); chatGPTAccountID != "" {
+			req.SetHeader("chatgpt-account-id", chatGPTAccountID)
+		}
+		resp, err := req.Get(endpoint)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if !resp.IsSuccessState() {
+			lastErr = fmt.Errorf("models lookup failed: status %d", resp.StatusCode)
+			continue
+		}
+		models := canonicalLiveModelList(decodeChatGPTModelIDs([]byte(resp.String())))
+		if len(models) == 0 {
+			lastErr = errors.New("models lookup returned no models")
+			continue
+		}
+		return models, nil
+	}
+
+	if lastErr == nil {
+		lastErr = errors.New("models lookup returned no models")
+	}
+	return nil, lastErr
+}
+
 func (s *OpenAIGatewayService) liveModelSourceForAccount(ctx context.Context, account Account) (LiveModelSource, error) {
 	acc := cloneAccountForLiveSource(account)
 	var (
@@ -436,6 +687,9 @@ func (s *OpenAIGatewayService) liveModelSourceForAccount(ctx context.Context, ac
 	case acc.IsKiro():
 		models, err = s.liveKiroModels(ctx, acc)
 		endpoint = "kiro"
+	case acc.IsOpenAIOAuth():
+		models, err = s.liveOpenAIOAuthModels(ctx, acc)
+		endpoint = "chatgpt"
 	case acc.IsOpenAIApiKey() && !isInternalLiteLLMBridgeOnlyAccount(acc):
 		models, err = s.liveOpenAICompatibleModels(ctx, acc)
 		endpoint = "openai-compatible"
@@ -445,19 +699,13 @@ func (s *OpenAIGatewayService) liveModelSourceForAccount(ctx context.Context, ac
 	if err != nil {
 		return LiveModelSource{}, err
 	}
+	models = publicizeLiveModelList(acc, models)
 	return LiveModelSource{
 		Account:    acc,
 		Endpoint:   endpoint,
 		Capability: capability,
-		Models:     publicizeLiveModelList(acc, models),
+		Models:     models,
 	}, nil
-}
-
-func (s *OpenAIGatewayService) cachedLiveModelSourceForAccount(ctx context.Context, account Account) (LiveModelSource, error) {
-	if s == nil {
-		return LiveModelSource{}, errors.New("openai gateway service is nil")
-	}
-	return s.liveModelSourceForAccount(ctx, account)
 }
 
 func (s *OpenAIGatewayService) LiveModelSourceForAccount(ctx context.Context, account Account) (LiveModelSource, error) {
@@ -483,41 +731,20 @@ func (s *OpenAIGatewayService) GetLiveModelSources(ctx context.Context, groupID 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			acc := cloneAccountForLiveSource(account)
-			var models []string
-			var endpoint string
-			var err error
-			switch {
-			case acc.IsCopilot():
-				models, err = s.liveCopilotModels(ctx, acc)
-				endpoint = "copilot"
-			case acc.IsKiro():
-				models, err = s.liveKiroModels(ctx, acc)
-				endpoint = "kiro"
-			case acc.IsOpenAIApiKey() && !isInternalLiteLLMBridgeOnlyAccount(acc):
-				models, err = s.liveOpenAICompatibleModels(ctx, acc)
-				endpoint = "openai-compatible"
-			default:
-				return
-			}
+			source, err := s.cachedLiveModelSourceForAccount(ctx, account)
 			if err != nil {
 				slog.Warn("openai_live_models_lookup_failed",
-					"account_id", acc.ID,
-					"account_name", acc.Name,
-					"platform", acc.Platform,
+					"account_id", account.ID,
+					"account_name", account.Name,
+					"platform", account.Platform,
 					"error", err,
 				)
 				return
 			}
-			if len(models) == 0 {
+			if len(source.Models) == 0 {
 				return
 			}
-			sourceCh <- LiveModelSource{
-				Account:    acc,
-				Endpoint:   endpoint,
-				Capability: "chat",
-				Models:     models,
-			}
+			sourceCh <- source
 		}()
 	}
 	wg.Wait()
@@ -532,4 +759,14 @@ func (s *OpenAIGatewayService) GetLiveModelSources(ctx context.Context, groupID 
 
 func AppendLiveModels(dst []LiveModelSource, src []LiveModelSource) []LiveModelSource {
 	return append(dst, src...)
+}
+
+func (s *OpenAIGatewayService) cachedLiveModelSourceForAccount(ctx context.Context, account Account) (LiveModelSource, error) {
+	if s == nil {
+		return LiveModelSource{}, errors.New("openai gateway service is nil")
+	}
+	if s.gatewayService == nil {
+		return s.liveModelSourceForAccount(ctx, account)
+	}
+	return s.gatewayService.cachedLiveModelSourceForAccountWithLoader(ctx, account, s.liveModelSourceForAccount)
 }

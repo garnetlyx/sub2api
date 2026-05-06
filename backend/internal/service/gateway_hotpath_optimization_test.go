@@ -510,7 +510,99 @@ func TestWithWindowCostPrefetch_BatchErrorFallbackSingleQuery(t *testing.T) {
 	require.Equal(t, int64(1), errCount)
 }
 
-func TestGetAvailableModels_UsesLiveUpstreamWithoutCache(t *testing.T) {
+func TestGetAvailableModels_UsesPerAccountLiveSourceCache(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	groupID := int64(9)
+	account := Account{
+		ID:          1,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://upstream.test/v1",
+		},
+	}
+	repo := &modelsListAccountRepoStub{
+		byGroup: map[int64][]Account{
+			groupID: {account},
+		},
+	}
+	upstream := &liveModelsHTTPUpstreamStub{
+		responses: []string{
+			`{"data":[{"id":"claude-sonnet-4-6"},{"id":"claude-haiku-4-5"}]}`,
+			`{"data":[{"id":"claude-opus-4-6"}]}`,
+		},
+	}
+	svc := &GatewayService{
+		accountRepo:        repo,
+		httpUpstream:       upstream,
+		cfg:                &config.Config{},
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+	}
+
+	models1 := svc.GetAvailableModels(context.Background(), &groupID, PlatformAnthropic)
+	require.Equal(t, []string{"claude-haiku-4.5", "claude-sonnet-4.6"}, models1)
+	require.Equal(t, int64(1), repo.listByGroupCalls.Load())
+
+	models2 := svc.GetAvailableModels(context.Background(), &groupID, PlatformAnthropic)
+	require.Equal(t, int64(2), repo.listByGroupCalls.Load())
+	require.Equal(t, int64(1), upstream.calls.Load())
+	require.Equal(t, models1, models2)
+
+	svc.InvalidateLiveModelSourceCache(account.ID)
+	models3 := svc.GetAvailableModels(context.Background(), &groupID, PlatformAnthropic)
+	require.Equal(t, int64(2), upstream.calls.Load())
+	require.Equal(t, []string{"claude-opus-4.6"}, models3)
+
+	hit, miss, store := GatewayModelsListCacheStats()
+	require.Equal(t, int64(1), hit)
+	require.Equal(t, int64(2), miss)
+	require.Equal(t, int64(2), store)
+}
+
+func TestLiveModelSourceCacheRefreshesWhenAccountSignatureChanges(t *testing.T) {
+	resetGatewayHotpathStatsForTest()
+
+	account := Account{
+		ID:          7,
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://upstream.test/v1",
+		},
+	}
+	upstream := &liveModelsHTTPUpstreamStub{
+		responses: []string{
+			`{"data":[{"id":"claude-sonnet-4.6"}]}`,
+			`{"data":[{"id":"claude-opus-4.7"}]}`,
+		},
+	}
+	svc := &GatewayService{
+		httpUpstream:       upstream,
+		cfg:                &config.Config{},
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+	}
+
+	source1, err := svc.LiveModelSourceForAccount(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, []string{"claude-sonnet-4.6"}, source1.Models)
+
+	account.Credentials["base_url"] = "https://upstream.test/v1/"
+	source2, err := svc.LiveModelSourceForAccount(context.Background(), account)
+	require.NoError(t, err)
+	require.Equal(t, []string{"claude-opus-4.7"}, source2.Models)
+	require.Equal(t, int64(2), upstream.calls.Load())
+}
+
+func TestGetAvailableModels_AppliesKnownIssuePolicyAfterLiveSourceCache(t *testing.T) {
 	resetGatewayHotpathStatsForTest()
 
 	groupID := int64(9)
@@ -531,31 +623,33 @@ func TestGetAvailableModels_UsesLiveUpstreamWithoutCache(t *testing.T) {
 			},
 		},
 	}
-	upstream := &liveModelsHTTPUpstreamStub{
-		responses: []string{
-			`{"data":[{"id":"claude-sonnet-4-6"},{"id":"claude-haiku-4-5"}]}`,
-			`{"data":[{"id":"claude-opus-4-6"}]}`,
-		},
-	}
+	settings := &testSettingRepo{values: map[string]string{
+		KnownIssueModelExclusionsSettingKey: `[{
+			"model":"claude-opus-4-7",
+			"platform":"anthropic",
+			"evidence":"live provider returned invalid model for chat",
+			"last_verified":"2026-05-06",
+			"remove_when":"provider /models no longer lists the broken model"
+		}]`,
+	}}
 	svc := &GatewayService{
-		accountRepo:  repo,
-		httpUpstream: upstream,
-		cfg:          &config.Config{},
+		accountRepo: repo,
+		httpUpstream: &liveModelsHTTPUpstreamStub{
+			responses: []string{`{"data":[{"id":"claude-opus-4-7"},{"id":"claude-sonnet-4-6"}]}`},
+		},
+		cfg:                &config.Config{},
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+		settingService:     NewSettingService(settings, &config.Config{}),
 	}
 
 	models1 := svc.GetAvailableModels(context.Background(), &groupID, PlatformAnthropic)
-	require.Equal(t, []string{"claude-haiku-4.5", "claude-sonnet-4.6"}, models1)
-	require.Equal(t, int64(1), repo.listByGroupCalls.Load())
+	require.Equal(t, []string{"claude-sonnet-4.6"}, models1)
 
+	delete(settings.values, KnownIssueModelExclusionsSettingKey)
 	models2 := svc.GetAvailableModels(context.Background(), &groupID, PlatformAnthropic)
-	require.Equal(t, int64(2), repo.listByGroupCalls.Load())
-	require.Equal(t, int64(2), upstream.calls.Load())
-	require.Equal(t, []string{"claude-opus-4.6"}, models2)
-
-	hit, miss, store := GatewayModelsListCacheStats()
-	require.Equal(t, int64(0), hit)
-	require.Equal(t, int64(2), miss)
-	require.Equal(t, int64(0), store)
+	require.Equal(t, []string{"claude-opus-4.7", "claude-sonnet-4.6"}, models2)
+	require.Equal(t, int64(1), svc.httpUpstream.(*liveModelsHTTPUpstreamStub).calls.Load())
 }
 
 func TestGetAvailableModels_ErrorAndGlobalListBranches(t *testing.T) {
@@ -677,6 +771,7 @@ func TestGatewayHotpathHelpers_CacheTTLAndStickyContext(t *testing.T) {
 	})
 
 	t.Run("resolve_models_list_cache_ttl", func(t *testing.T) {
+		require.Equal(t, 60*time.Second, defaultModelsListCacheTTL)
 		require.Equal(t, defaultModelsListCacheTTL, resolveModelsListCacheTTL(nil))
 
 		cfg := &config.Config{

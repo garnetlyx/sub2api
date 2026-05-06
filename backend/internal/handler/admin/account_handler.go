@@ -58,6 +58,8 @@ type AccountHandler struct {
 	sessionLimitCache       service.SessionLimitCache
 	rpmCache                service.RPMCache
 	tokenCacheInvalidator   service.TokenCacheInvalidator
+	gatewayService          *service.GatewayService
+	openaiGatewayService    *service.OpenAIGatewayService
 }
 
 // NewAccountHandler creates a new admin account handler
@@ -75,6 +77,8 @@ func NewAccountHandler(
 	sessionLimitCache service.SessionLimitCache,
 	rpmCache service.RPMCache,
 	tokenCacheInvalidator service.TokenCacheInvalidator,
+	gatewayService *service.GatewayService,
+	openaiGatewayService *service.OpenAIGatewayService,
 ) *AccountHandler {
 	return &AccountHandler{
 		adminService:            adminService,
@@ -90,7 +94,17 @@ func NewAccountHandler(
 		sessionLimitCache:       sessionLimitCache,
 		rpmCache:                rpmCache,
 		tokenCacheInvalidator:   tokenCacheInvalidator,
+		gatewayService:          gatewayService,
+		openaiGatewayService:    openaiGatewayService,
 	}
+}
+
+func (h *AccountHandler) invalidateLiveModelCaches(accountIDs ...int64) {
+	if h == nil || h.gatewayService == nil {
+		return
+	}
+	h.gatewayService.InvalidateAvailableModelsCache(nil, "")
+	h.gatewayService.InvalidateLiveModelSourceCache(accountIDs...)
 }
 
 // CreateAccountRequest represents create account request
@@ -537,6 +551,7 @@ func (h *AccountHandler) Create(c *gin.Context) {
 		if execErr != nil {
 			return nil, execErr
 		}
+		h.invalidateLiveModelCaches(account.ID)
 		// Antigravity OAuth: 新账号直接设置隐私
 		h.adminService.ForceAntigravityPrivacy(ctx, account)
 		// OpenAI OAuth: 新账号直接设置隐私
@@ -625,6 +640,7 @@ func (h *AccountHandler) Update(c *gin.Context) {
 		return
 	}
 
+	h.invalidateLiveModelCaches(accountID)
 	response.Success(c, h.buildAccountResponseWithRuntime(c.Request.Context(), account))
 }
 
@@ -643,6 +659,7 @@ func (h *AccountHandler) Delete(c *gin.Context) {
 		return
 	}
 
+	h.invalidateLiveModelCaches(accountID)
 	response.Success(c, gin.H{"message": "Account deleted successfully"})
 }
 
@@ -839,6 +856,7 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 			if updateErr != nil {
 				return nil, "", fmt.Errorf("failed to update credentials: %w", updateErr)
 			}
+			h.invalidateLiveModelCaches(account.ID)
 			h.adminService.EnsureAntigravityPrivacy(ctx, updatedAccount)
 			return updatedAccount, "missing_project_id_temporary", nil
 		}
@@ -881,6 +899,7 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 	if err != nil {
 		return nil, "", err
 	}
+	h.invalidateLiveModelCaches(account.ID)
 
 	// 刷新成功后，清除 token 缓存，确保下次请求使用新 token
 	if h.tokenCacheInvalidator != nil {
@@ -1209,6 +1228,7 @@ func (h *AccountHandler) BatchCreate(c *gin.Context) {
 				})
 				continue
 			}
+			h.invalidateLiveModelCaches(account.ID)
 			// 收集需要异步设置隐私的 OAuth 账号
 			if account.Type == service.AccountTypeOAuth {
 				switch account.Platform {
@@ -1337,6 +1357,7 @@ func (h *AccountHandler) BatchUpdateCredentials(c *gin.Context) {
 			})
 			continue
 		}
+		h.invalidateLiveModelCaches(u.ID)
 		success++
 		successIDs = append(successIDs, u.ID)
 		results = append(results, gin.H{
@@ -1417,6 +1438,7 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		return
 	}
 
+	h.invalidateLiveModelCaches(req.AccountIDs...)
 	response.Success(c, result)
 }
 
@@ -1791,22 +1813,82 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 		response.NotFound(c, "Account not found")
 		return
 	}
+	ctx := c.Request.Context()
+
+	renderOpenAIModels := func(modelIDs []string) {
+		models := make([]openai.Model, 0, len(modelIDs))
+		for _, modelID := range modelIDs {
+			models = append(models, openai.Model{
+				ID:          modelID,
+				Object:      "model",
+				Type:        "model",
+				DisplayName: modelID,
+			})
+		}
+		response.Success(c, canonicalizeOpenAIModels(models))
+	}
+
+	renderClaudeModels := func(modelIDs []string) {
+		models := make([]claude.Model, 0, len(modelIDs))
+		for _, modelID := range canonicalizeModelIDs(modelIDs) {
+			models = append(models, claude.Model{
+				ID:          modelID,
+				Type:        "model",
+				DisplayName: modelID,
+			})
+		}
+		response.Success(c, canonicalizeClaudeModels(models))
+	}
+
+	renderGeminiModels := func(modelIDs []string) {
+		models := make([]geminicli.Model, 0, len(modelIDs))
+		for _, modelID := range modelIDs {
+			models = append(models, geminicli.Model{
+				ID:          modelID,
+				Type:        "model",
+				DisplayName: modelID,
+				CreatedAt:   "",
+			})
+		}
+		response.Success(c, canonicalizeGeminiModels(models))
+	}
+
+	if h.openaiGatewayService != nil && (account.IsOpenAI() || account.IsCopilot() || account.IsKiro()) {
+		source, liveErr := h.openaiGatewayService.LiveModelSourceForAccount(ctx, *account)
+		if liveErr != nil {
+			response.Error(c, http.StatusBadGateway, "Failed to fetch live models: "+liveErr.Error())
+			return
+		}
+		if source.Endpoint != "" {
+			switch {
+			case account.IsKiro():
+				renderClaudeModels(source.Models)
+			default:
+				renderOpenAIModels(source.Models)
+			}
+			return
+		}
+	}
+
+	if h.gatewayService != nil && (account.Platform == service.PlatformAnthropic || account.IsGemini()) {
+		source, liveErr := h.gatewayService.LiveModelSourceForAccount(ctx, *account)
+		if liveErr != nil {
+			response.Error(c, http.StatusBadGateway, "Failed to fetch live models: "+liveErr.Error())
+			return
+		}
+		if source.Endpoint != "" {
+			switch {
+			case account.IsGemini():
+				renderGeminiModels(source.Models)
+			default:
+				renderClaudeModels(source.Models)
+			}
+			return
+		}
+	}
 
 	// Handle OpenAI accounts
 	if account.IsOpenAI() {
-		if modelIDs := account.GetAvailableModels(); len(modelIDs) > 0 {
-			models := make([]openai.Model, 0, len(modelIDs))
-			for _, modelID := range modelIDs {
-				models = append(models, openai.Model{
-					ID:          modelID,
-					Object:      "model",
-					Type:        "model",
-					DisplayName: modelID,
-				})
-			}
-			response.Success(c, canonicalizeOpenAIModels(models))
-			return
-		}
 		// OpenAI 自动透传会绕过常规模型改写，测试/模型列表也应回落到默认模型集。
 		if account.IsOpenAIPassthroughEnabled() {
 			response.Success(c, canonicalizeOpenAIModels(openai.DefaultModels))
@@ -1844,61 +1926,17 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	}
 
 	if account.IsCopilot() {
-		modelIDs := account.GetCopilotAvailableModels()
-		if len(modelIDs) == 0 {
-			mapping := account.GetModelMapping()
-			for requestedModel := range mapping {
-				modelIDs = append(modelIDs, requestedModel)
-			}
-		}
-		models := make([]openai.Model, 0, len(modelIDs))
-		for _, modelID := range modelIDs {
-			models = append(models, openai.Model{
-				ID:          modelID,
-				Object:      "model",
-				Type:        "model",
-				DisplayName: modelID,
-			})
-		}
-		response.Success(c, canonicalizeOpenAIModels(models))
+		response.Error(c, http.StatusBadGateway, "Live model resolver unavailable for this Copilot account")
 		return
 	}
 
 	if account.IsKiro() {
-		modelIDs := account.GetCopilotAvailableModels()
-		if len(modelIDs) == 0 {
-			mapping := account.GetModelMapping()
-			for requestedModel := range mapping {
-				modelIDs = append(modelIDs, requestedModel)
-			}
-		}
-		models := make([]claude.Model, 0, len(modelIDs))
-		for _, modelID := range canonicalizeModelIDs(modelIDs) {
-			models = append(models, claude.Model{
-				ID:          modelID,
-				Type:        "model",
-				DisplayName: modelID,
-			})
-		}
-		response.Success(c, canonicalizeClaudeModels(models))
+		response.Error(c, http.StatusBadGateway, "Live model resolver unavailable for this Kiro account")
 		return
 	}
 
 	// Handle Gemini accounts
 	if account.IsGemini() {
-		if modelIDs := account.GetAvailableModels(); len(modelIDs) > 0 {
-			models := make([]geminicli.Model, 0, len(modelIDs))
-			for _, modelID := range modelIDs {
-				models = append(models, geminicli.Model{
-					ID:          modelID,
-					Type:        "model",
-					DisplayName: modelID,
-					CreatedAt:   "",
-				})
-			}
-			response.Success(c, canonicalizeGeminiModels(models))
-			return
-		}
 		// For OAuth accounts: return default Gemini models
 		if account.IsOAuth() {
 			response.Success(c, canonicalizeGeminiModels(geminicli.DefaultModels))
@@ -1943,19 +1981,6 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	}
 
 	// Handle Claude/Anthropic accounts
-	if modelIDs := account.GetAvailableModels(); len(modelIDs) > 0 {
-		models := make([]claude.Model, 0, len(modelIDs))
-		for _, modelID := range canonicalizeModelIDs(modelIDs) {
-			models = append(models, claude.Model{
-				ID:          modelID,
-				Type:        "model",
-				DisplayName: modelID,
-			})
-		}
-		response.Success(c, canonicalizeClaudeModels(models))
-		return
-	}
-
 	// For OAuth and Setup-Token accounts: return default models
 	if account.IsOAuth() {
 		response.Success(c, canonicalizeClaudeModels(claude.DefaultModels))
@@ -2082,6 +2107,7 @@ func (h *AccountHandler) RefreshTier(c *gin.Context) {
 		response.ErrorFrom(c, updateErr)
 		return
 	}
+	h.invalidateLiveModelCaches(accountID)
 
 	response.Success(c, gin.H{
 		"tier_id":             tierID,
@@ -2179,6 +2205,7 @@ func (h *AccountHandler) BatchRefreshTier(c *gin.Context) {
 					"error":      updateErr.Error(),
 				})
 			} else {
+				h.invalidateLiveModelCaches(acc.ID)
 				successCount++
 			}
 			mu.Unlock()

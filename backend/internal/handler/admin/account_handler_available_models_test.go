@@ -28,7 +28,7 @@ func (s *availableModelsAdminService) GetAccount(_ context.Context, id int64) (*
 func setupAvailableModelsRouter(adminSvc service.AdminService) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	handler := NewAccountHandler(adminSvc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	router.GET("/api/v1/admin/accounts/:id/models", handler.GetAvailableModels)
 	return router
 }
@@ -104,7 +104,7 @@ func TestAccountHandlerGetAvailableModels_OpenAIOAuthPassthroughFallsBackToDefau
 	require.Greater(t, len(resp.Data), 1)
 }
 
-func TestAccountHandlerGetAvailableModels_CopilotCanonicalizesStyleAliases(t *testing.T) {
+func TestAccountHandlerGetAvailableModels_CopilotRequiresLiveResolver(t *testing.T) {
 	svc := &availableModelsAdminService{
 		stubAdminService: newStubAdminService(),
 		account: service.Account{
@@ -113,9 +113,6 @@ func TestAccountHandlerGetAvailableModels_CopilotCanonicalizesStyleAliases(t *te
 			Platform: service.PlatformCopilot,
 			Type:     service.AccountTypeOAuth,
 			Status:   service.StatusActive,
-			Extra: map[string]any{
-				"available_models": []any{"claude-sonnet-4-6", "claude-sonnet-4.6"},
-			},
 		},
 	}
 	router := setupAvailableModelsRouter(svc)
@@ -124,19 +121,11 @@ func TestAccountHandlerGetAvailableModels_CopilotCanonicalizesStyleAliases(t *te
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/44/models", nil)
 	router.ServeHTTP(rec, req)
 
-	require.Equal(t, http.StatusOK, rec.Code)
-
-	var resp struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.Len(t, resp.Data, 1)
-	require.Equal(t, "claude-sonnet-4.6", resp.Data[0].ID)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Contains(t, rec.Body.String(), "Live model resolver unavailable")
 }
 
-func TestAccountHandlerGetAvailableModels_KiroUsesCanonicalPublicNames(t *testing.T) {
+func TestAccountHandlerGetAvailableModels_KiroRequiresLiveResolver(t *testing.T) {
 	svc := &availableModelsAdminService{
 		stubAdminService: newStubAdminService(),
 		account: service.Account{
@@ -145,9 +134,6 @@ func TestAccountHandlerGetAvailableModels_KiroUsesCanonicalPublicNames(t *testin
 			Platform: service.PlatformKiro,
 			Type:     service.AccountTypeOAuth,
 			Status:   service.StatusActive,
-			Extra: map[string]any{
-				"available_models": []any{"claude-sonnet-4-6"},
-			},
 		},
 	}
 	router := setupAvailableModelsRouter(svc)
@@ -156,14 +142,6 @@ func TestAccountHandlerGetAvailableModels_KiroUsesCanonicalPublicNames(t *testin
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/45/models", nil)
 	router.ServeHTTP(rec, req)
 
-	require.Equal(t, http.StatusOK, rec.Code)
-
-	var resp struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	require.Len(t, resp.Data, 1)
-	require.Equal(t, "claude-sonnet-4.6", resp.Data[0].ID)
+	require.Equal(t, http.StatusBadGateway, rec.Code)
+	require.Contains(t, rec.Body.String(), "Live model resolver unavailable")
 }
