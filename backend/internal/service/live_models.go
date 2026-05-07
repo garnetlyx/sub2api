@@ -200,6 +200,16 @@ func liveOpenAIModelEndpoint(baseURL string) string {
 	return base + "/v1/models"
 }
 
+// liveOpenAIModelFallbackEndpoint returns the /models path without /v1/ for
+// providers whose base URL does not follow the standard OpenAI /v1 convention.
+func liveOpenAIModelFallbackEndpoint(baseURL string) string {
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if base == "" {
+		return ""
+	}
+	return base + "/models"
+}
+
 func liveAnthropicModelEndpoint(baseURL string) string {
 	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if base == "" {
@@ -492,10 +502,19 @@ func (s *GatewayService) liveOpenAICompatibleModels(ctx context.Context, account
 	if apiKey == "" {
 		return nil, errors.New("openai api_key is not configured")
 	}
-	body, _, err := s.doLiveModelsRequest(ctx, account, http.MethodGet, validated, func(req *http.Request) {
+	authSetter := func(req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
-	})
+	}
+	body, statusCode, err := s.doLiveModelsRequest(ctx, account, http.MethodGet, validated, authSetter)
 	if err != nil {
+		if statusCode == 404 {
+			fbEndpoint := liveOpenAIModelFallbackEndpoint(account.GetOpenAIBaseURL())
+			if fbValidated, fbErr := s.validateUpstreamBaseURL(fbEndpoint); fbErr == nil && fbValidated != validated {
+				if fbBody, _, fbErr := s.doLiveModelsRequest(ctx, account, http.MethodGet, fbValidated, authSetter); fbErr == nil {
+					return cleanLiveModelList(decodeOpenAIModelIDs(fbBody)), nil
+				}
+			}
+		}
 		return nil, err
 	}
 	return cleanLiveModelList(decodeOpenAIModelIDs(body)), nil
@@ -511,15 +530,25 @@ func (s *GatewayService) liveAnthropicModels(ctx context.Context, account *Accou
 	if err != nil {
 		return nil, err
 	}
-	body, _, err := s.doLiveModelsRequest(ctx, account, http.MethodGet, validated, func(req *http.Request) {
+	configureAPIKey := func(req *http.Request) {
 		if tokenType == "oauth" {
 			setHeaderRaw(req.Header, "authorization", "Bearer "+token)
 		} else {
 			setHeaderRaw(req.Header, "x-api-key", token)
 		}
 		setHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
-	})
+	}
+	body, statusCode, err := s.doLiveModelsRequest(ctx, account, http.MethodGet, validated, configureAPIKey)
 	if err != nil {
+		if statusCode == 401 && tokenType != "oauth" {
+			configureBearer := func(req *http.Request) {
+				setHeaderRaw(req.Header, "authorization", "Bearer "+token)
+				setHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
+			}
+			if fbBody, _, fbErr := s.doLiveModelsRequest(ctx, account, http.MethodGet, validated, configureBearer); fbErr == nil {
+				return cleanLiveModelList(decodeAnthropicModelIDs(fbBody)), nil
+			}
+		}
 		return nil, err
 	}
 	return cleanLiveModelList(decodeAnthropicModelIDs(body)), nil
