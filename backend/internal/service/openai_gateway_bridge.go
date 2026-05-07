@@ -106,6 +106,13 @@ func (s *OpenAIGatewayService) FindSchedulableEmbeddingAccount(ctx context.Conte
 		if _, matched := account.ResolveUpstreamModel(requestedModel); matched {
 			return account, nil
 		}
+		// Accounts like omlx have no static model_mapping or upstream_models;
+		// their models come entirely from live discovery.
+		if s.gatewayService != nil {
+			if supported, decided := s.gatewayService.isModelSupportedByLiveSource(ctx, account, requestedModel); decided && supported {
+				return account, nil
+			}
+		}
 	}
 	return nil, ErrNoAvailableAccounts
 }
