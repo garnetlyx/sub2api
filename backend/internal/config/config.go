@@ -1370,7 +1370,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.usage_record.auto_scale_check_interval_seconds", 3)
 	viper.SetDefault("gateway.usage_record.auto_scale_cooldown_seconds", 10)
 	viper.SetDefault("gateway.user_group_rate_cache_ttl_seconds", 30)
-	viper.SetDefault("gateway.models_list_cache_ttl_seconds", 60)
+	viper.SetDefault("gateway.models_list_cache_ttl_seconds", 86400)
 	// TLS指纹伪装配置（默认关闭，需要账号级别单独启用）
 	// 用户消息串行队列默认值
 	viper.SetDefault("gateway.user_message_queue.enabled", false)
@@ -1994,8 +1994,8 @@ func (c *Config) Validate() error {
 	if c.Gateway.UserGroupRateCacheTTLSeconds <= 0 {
 		return fmt.Errorf("gateway.user_group_rate_cache_ttl_seconds must be positive")
 	}
-	if c.Gateway.ModelsListCacheTTLSeconds < 10 || c.Gateway.ModelsListCacheTTLSeconds > 300 {
-		return fmt.Errorf("gateway.models_list_cache_ttl_seconds must be between 10-300")
+	if c.Gateway.ModelsListCacheTTLSeconds < 10 || c.Gateway.ModelsListCacheTTLSeconds > 86400 {
+		return fmt.Errorf("gateway.models_list_cache_ttl_seconds must be between 10-86400")
 	}
 	if c.Gateway.Scheduling.StickySessionMaxWaiting <= 0 {
 		return fmt.Errorf("gateway.scheduling.sticky_session_max_waiting must be positive")
