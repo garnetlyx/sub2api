@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -150,11 +151,23 @@ func publicizeLiveModelCatalog(account *Account, rawModels []string) liveModelCa
 	}
 
 	for publicModel, upstreamModel := range buildExplicitUpstreamMappings(account) {
+		matched := false
 		for _, rawModel := range rawModels {
 			if upstreamModelsEquivalent(upstreamModel, rawModel) {
 				add(publicModel, rawModel, true)
+				matched = true
 				break
 			}
+		}
+		if !matched {
+			if account != nil {
+				slog.Debug("gateway.model_from_config_fallback",
+					"account_id", account.ID,
+					"public_model", publicModel,
+					"upstream_model", upstreamModel,
+				)
+			}
+			add(publicModel, upstreamModel, true)
 		}
 	}
 
@@ -208,6 +221,32 @@ func liveOpenAIModelFallbackEndpoint(baseURL string) string {
 		return ""
 	}
 	return base + "/models"
+}
+
+// liveAnthropicCrossProtocolEndpoint strips the last path segment from an
+// Anthropic base URL and returns an OpenAI-compatible /v1/models endpoint.
+// Returns empty string if the base URL has no path to strip (e.g. a bare domain).
+// Example: "https://api.deepseek.com/anthropic" → "https://api.deepseek.com/v1/models"
+func liveAnthropicCrossProtocolEndpoint(baseURL string) string {
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if base == "" {
+		return ""
+	}
+	parsed, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	path := strings.TrimRight(parsed.Path, "/")
+	if path == "" {
+		return ""
+	}
+	lastSlash := strings.LastIndex(path, "/")
+	if lastSlash > 0 {
+		parsed.Path = path[:lastSlash]
+	} else {
+		parsed.Path = ""
+	}
+	return parsed.String() + "/v1/models"
 }
 
 func liveAnthropicModelEndpoint(baseURL string) string {
@@ -547,6 +586,23 @@ func (s *GatewayService) liveAnthropicModels(ctx context.Context, account *Accou
 			}
 			if fbBody, _, fbErr := s.doLiveModelsRequest(ctx, account, http.MethodGet, validated, configureBearer); fbErr == nil {
 				return cleanLiveModelList(decodeAnthropicModelIDs(fbBody)), nil
+			}
+		}
+		apiKey := strings.TrimSpace(account.GetCredential("api_key"))
+		if cpEndpoint := liveAnthropicCrossProtocolEndpoint(account.GetBaseURL()); cpEndpoint != "" && apiKey != "" {
+			if cpValidated, cpErr := s.validateUpstreamBaseURL(cpEndpoint); cpErr == nil && cpValidated != validated {
+				slog.Debug("gateway.anthropic_cross_protocol_fallback",
+					"account_id", account.ID,
+					"account_name", account.Name,
+					"anthropic_endpoint", validated,
+					"cross_protocol_endpoint", cpValidated,
+				)
+				cpAuth := func(req *http.Request) {
+					req.Header.Set("Authorization", "Bearer "+apiKey)
+				}
+				if cpBody, _, cpErr := s.doLiveModelsRequest(ctx, account, http.MethodGet, cpValidated, cpAuth); cpErr == nil {
+					return cleanLiveModelList(decodeOpenAIModelIDs(cpBody)), nil
+				}
 			}
 		}
 		return nil, err
