@@ -3,6 +3,8 @@ package service
 import (
 	"net/http"
 	"strings"
+
+	"github.com/gin-gonic/gin"
 )
 
 // headerWireCasing 定义每个白名单 header 在真实 Claude CLI 抓包中的准确大小写。
@@ -88,6 +90,20 @@ func resolveWireCasing(key string) string {
 		return wk
 	}
 	return key
+}
+
+func resolveDirectProviderAPIKeyUserAgent(c *gin.Context, account *Account) string {
+	if account != nil {
+		if customUA := strings.TrimSpace(account.GetDirectProviderUserAgent()); customUA != "" {
+			return customUA
+		}
+	}
+	if c != nil {
+		if incomingUA := strings.TrimSpace(c.GetHeader("User-Agent")); incomingUA != "" {
+			return incomingUA
+		}
+	}
+	return directProviderDefaultUserAgent
 }
 
 // setHeaderRaw sets a header bypassing Go's canonical-case normalization.

@@ -180,6 +180,7 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardStreamPreservesBodyAnd
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "authorization"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "x-goog-api-key"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "cookie"))
+	require.Equal(t, "claude-cli/1.0.0", getHeaderRaw(upstream.lastReq.Header, "User-Agent"))
 	require.Equal(t, "2023-06-01", getHeaderRaw(upstream.lastReq.Header, "anthropic-version"))
 	require.Equal(t, "interleaved-thinking-2025-05-14", getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "x-stainless-lang"), "API Key 透传不应注入 OAuth 指纹头")
@@ -261,9 +262,40 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBo
 	require.Equal(t, "upstream-anthropic-key", getHeaderRaw(upstream.lastReq.Header, "x-api-key"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "authorization"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "cookie"))
+	require.Equal(t, directProviderDefaultUserAgent, getHeaderRaw(upstream.lastReq.Header, "User-Agent"))
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.JSONEq(t, upstreamRespBody, rec.Body.String())
 	require.Empty(t, rec.Header().Get("Set-Cookie"))
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_UserAgentOverridePrecedence(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("User-Agent", "incoming-client/1.0")
+
+	body := []byte(`{"model":"claude-3-5-sonnet-latest","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+	upstream := &anthropicHTTPUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"msg_1","type":"message","usage":{"input_tokens":1,"output_tokens":1}}`)),
+		},
+	}
+	svc := &GatewayService{
+		cfg:              &config.Config{},
+		httpUpstream:     upstream,
+		rateLimitService: &RateLimitService{},
+	}
+	account := newAnthropicAPIKeyAccountForTest()
+	account.Credentials["user_agent"] = "configured-provider/1.0"
+
+	result, err := svc.forwardAnthropicAPIKeyPassthrough(context.Background(), c, account, body, "claude-3-5-sonnet-latest", "claude-3-5-sonnet-latest", false, time.Now())
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "configured-provider/1.0", getHeaderRaw(upstream.lastReq.Header, "User-Agent"))
 }
 
 // TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingEdgeCases 覆盖透传模式下模型映射的各种边界情况
@@ -687,6 +719,42 @@ func TestGatewayService_AnthropicOAuth_NotAffectedByAPIKeyPassthroughToggle(t *t
 	require.NoError(t, err)
 	require.Equal(t, "Bearer oauth-token", getHeaderRaw(req.Header, "authorization"))
 	require.Contains(t, getHeaderRaw(req.Header, "anthropic-beta"), claude.BetaOAuth, "OAuth 链路仍应按原逻辑补齐 oauth beta")
+}
+
+func TestGatewayService_AnthropicAPIKeyNonPassthrough_UserAgentPrecedence(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"claude-3-7-sonnet-20250219"}`)
+	svc := &GatewayService{}
+	account := &Account{
+		ID:       301,
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"api_key":  "upstream-anthropic-key",
+			"base_url": "https://api.anthropic.com",
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("User-Agent", "incoming-ant-client/1.0")
+
+	req, err := svc.buildUpstreamRequest(context.Background(), c, account, body, "upstream-anthropic-key", "apikey", "claude-3-7-sonnet-20250219", false, false)
+	require.NoError(t, err)
+	require.Equal(t, "incoming-ant-client/1.0", getHeaderRaw(req.Header, "User-Agent"))
+
+	account.Credentials["user_agent"] = "configured-ant-provider/1.0"
+	req, err = svc.buildUpstreamRequest(context.Background(), c, account, body, "upstream-anthropic-key", "apikey", "claude-3-7-sonnet-20250219", false, false)
+	require.NoError(t, err)
+	require.Equal(t, "configured-ant-provider/1.0", getHeaderRaw(req.Header, "User-Agent"))
+
+	delete(account.Credentials, "user_agent")
+	c.Request.Header.Del("User-Agent")
+	req, err = svc.buildUpstreamRequest(context.Background(), c, account, body, "upstream-anthropic-key", "apikey", "claude-3-7-sonnet-20250219", false, false)
+	require.NoError(t, err)
+	require.Equal(t, directProviderDefaultUserAgent, getHeaderRaw(req.Header, "User-Agent"))
 }
 
 func TestGatewayService_AnthropicOAuth_ForwardPreservesBillingHeaderSystemBlock(t *testing.T) {

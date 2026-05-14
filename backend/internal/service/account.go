@@ -900,6 +900,18 @@ func (a *Account) GetOpenAIUserAgent() string {
 	return a.GetCredential("user_agent")
 }
 
+func (a *Account) GetDirectProviderUserAgent() string {
+	if a == nil || a.Type != AccountTypeAPIKey {
+		return ""
+	}
+	switch a.Platform {
+	case PlatformOpenAI, PlatformAnthropic:
+		return a.GetCredential("user_agent")
+	default:
+		return ""
+	}
+}
+
 func (a *Account) GetUpstreamModels() map[string]string {
 	if a == nil || a.Extra == nil {
 		return nil

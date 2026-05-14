@@ -104,7 +104,7 @@ func TestForwardNativeAPIKeyChatCompletions_DefaultsUserAgentWhenIncomingMissing
 
 	require.NoError(t, err)
 	require.NotNil(t, upstream.lastReq)
-	require.Equal(t, openAIUpstreamDefaultUserAgent, upstream.lastReq.Header.Get("User-Agent"))
+	require.Equal(t, directProviderDefaultUserAgent, upstream.lastReq.Header.Get("User-Agent"))
 }
 
 func TestResolveOpenAIUpstreamUserAgent(t *testing.T) {
@@ -117,13 +117,14 @@ func TestResolveOpenAIUpstreamUserAgent(t *testing.T) {
 
 	require.Equal(t, "configured/9.9", resolveOpenAIUpstreamUserAgent(c, &Account{
 		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
 		Credentials: map[string]any{"user_agent": " configured/9.9 "},
 	}))
 	require.Equal(t, "codex-tui/0.130.0", resolveOpenAIUpstreamUserAgent(c, &Account{}))
 
 	c.Request.Header.Del("User-Agent")
-	require.Equal(t, openAIUpstreamDefaultUserAgent, resolveOpenAIUpstreamUserAgent(c, &Account{}))
-	require.Equal(t, openAIUpstreamDefaultUserAgent, resolveOpenAIUpstreamUserAgent(nil, nil))
+	require.Equal(t, directProviderDefaultUserAgent, resolveOpenAIUpstreamUserAgent(c, &Account{}))
+	require.Equal(t, directProviderDefaultUserAgent, resolveOpenAIUpstreamUserAgent(nil, nil))
 }
 
 func nativeChatTestResponse() *http.Response {

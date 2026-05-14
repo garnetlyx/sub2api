@@ -733,17 +733,7 @@ func (s *OpenAIGatewayService) forwardNativeAPIKeyChatCompletions(
 }
 
 func resolveOpenAIUpstreamUserAgent(c *gin.Context, account *Account) string {
-	if account != nil {
-		if customUA := strings.TrimSpace(account.GetOpenAIUserAgent()); customUA != "" {
-			return customUA
-		}
-	}
-	if c != nil {
-		if incomingUA := strings.TrimSpace(c.GetHeader("User-Agent")); incomingUA != "" {
-			return incomingUA
-		}
-	}
-	return openAIUpstreamDefaultUserAgent
+	return resolveDirectProviderAPIKeyUserAgent(c, account)
 }
 
 // forwardCopilotChatCompletions sends a Chat Completions request directly to the Copilot API

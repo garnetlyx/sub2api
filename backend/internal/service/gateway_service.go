@@ -4907,6 +4907,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 			}
 		}
 	}
+	setHeaderRaw(req.Header, "User-Agent", resolveDirectProviderAPIKeyUserAgent(c, account))
 
 	// 覆盖入站鉴权残留，并注入上游认证
 	req.Header.Del("authorization")
@@ -5727,6 +5728,9 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 				addHeaderRaw(req.Header, wireKey, v)
 			}
 		}
+	}
+	if account.Type == AccountTypeAPIKey {
+		setHeaderRaw(req.Header, "User-Agent", resolveDirectProviderAPIKeyUserAgent(c, account))
 	}
 
 	// OAuth账号：应用缓存的指纹到请求头（覆盖白名单透传的头）
@@ -8615,6 +8619,7 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 			}
 		}
 	}
+	setHeaderRaw(req.Header, "User-Agent", resolveDirectProviderAPIKeyUserAgent(c, account))
 
 	req.Header.Del("authorization")
 	req.Header.Del("x-api-key")
@@ -8714,6 +8719,9 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 				addHeaderRaw(req.Header, wireKey, v)
 			}
 		}
+	}
+	if account.Type == AccountTypeAPIKey {
+		setHeaderRaw(req.Header, "User-Agent", resolveDirectProviderAPIKeyUserAgent(c, account))
 	}
 
 	// OAuth 账号：应用指纹到请求头（受设置开关控制）
