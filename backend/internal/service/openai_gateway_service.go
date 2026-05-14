@@ -38,9 +38,10 @@ const (
 	// ChatGPT internal API for OAuth accounts
 	chatgptCodexURL = "https://chatgpt.com/backend-api/codex/responses"
 	// OpenAI Platform API for API Key accounts (fallback)
-	openaiPlatformAPIURL   = "https://api.openai.com/v1/responses"
-	openaiStickySessionTTL = time.Hour // 粘性会话TTL
-	codexCLIUserAgent      = "codex_cli_rs/0.104.0"
+	openaiPlatformAPIURL           = "https://api.openai.com/v1/responses"
+	openaiStickySessionTTL         = time.Hour // 粘性会话TTL
+	codexCLIUserAgent              = "codex_cli_rs/0.104.0"
+	openAIUpstreamDefaultUserAgent = "curl/8.7.1"
 	// codex_cli_only 拒绝时单个请求头日志长度上限（字符）
 	codexCLIOnlyHeaderValueMaxBytes = 256
 

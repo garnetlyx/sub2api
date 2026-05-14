@@ -606,6 +606,7 @@ func (s *OpenAIGatewayService) forwardNativeAPIKeyChatCompletions(
 	} else {
 		req.Header.Set("Accept", "application/json")
 	}
+	req.Header.Set("User-Agent", resolveOpenAIUpstreamUserAgent(c, account))
 
 	proxyURL := ""
 	if account.Proxy != nil {
@@ -729,6 +730,20 @@ func (s *OpenAIGatewayService) forwardNativeAPIKeyChatCompletions(
 		BillingModel: billingModel, UpstreamModel: upstreamModel,
 		Stream: false, Duration: time.Since(startTime),
 	}, nil
+}
+
+func resolveOpenAIUpstreamUserAgent(c *gin.Context, account *Account) string {
+	if account != nil {
+		if customUA := strings.TrimSpace(account.GetOpenAIUserAgent()); customUA != "" {
+			return customUA
+		}
+	}
+	if c != nil {
+		if incomingUA := strings.TrimSpace(c.GetHeader("User-Agent")); incomingUA != "" {
+			return incomingUA
+		}
+	}
+	return openAIUpstreamDefaultUserAgent
 }
 
 // forwardCopilotChatCompletions sends a Chat Completions request directly to the Copilot API
