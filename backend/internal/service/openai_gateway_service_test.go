@@ -191,6 +191,14 @@ func (r stubOpenAIAccountRepo) GetByID(ctx context.Context, id int64) (*Account,
 	return nil, errors.New("account not found")
 }
 
+func (r stubOpenAIAccountRepo) ExistsByName(ctx context.Context, name string) (bool, error) {
+	return false, nil
+}
+
+func (r stubOpenAIAccountRepo) ExistsByNameExcluding(ctx context.Context, name string, excludeID int64) (bool, error) {
+	return false, nil
+}
+
 func (r stubOpenAIAccountRepo) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, platform string) ([]Account, error) {
 	var result []Account
 	for _, acc := range r.accounts {

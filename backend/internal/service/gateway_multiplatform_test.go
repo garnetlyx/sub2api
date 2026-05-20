@@ -53,6 +53,14 @@ func (m *mockAccountRepoForPlatform) ExistsByID(ctx context.Context, id int64) (
 	return ok, nil
 }
 
+func (m *mockAccountRepoForPlatform) ExistsByName(ctx context.Context, name string) (bool, error) {
+	return false, nil
+}
+
+func (m *mockAccountRepoForPlatform) ExistsByNameExcluding(ctx context.Context, name string, excludeID int64) (bool, error) {
+	return false, nil
+}
+
 func (m *mockAccountRepoForPlatform) ListSchedulableByPlatform(ctx context.Context, platform string) ([]Account, error) {
 	if m.listPlatformFunc != nil {
 		return m.listPlatformFunc(ctx, platform)

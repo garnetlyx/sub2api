@@ -46,6 +46,14 @@ func (m *mockAccountRepoForGemini) ExistsByID(ctx context.Context, id int64) (bo
 	return ok, nil
 }
 
+func (m *mockAccountRepoForGemini) ExistsByName(ctx context.Context, name string) (bool, error) {
+	return false, nil
+}
+
+func (m *mockAccountRepoForGemini) ExistsByNameExcluding(ctx context.Context, name string, excludeID int64) (bool, error) {
+	return false, nil
+}
+
 func (m *mockAccountRepoForGemini) ListSchedulableByPlatform(ctx context.Context, platform string) ([]Account, error) {
 	var result []Account
 	for _, acc := range m.accounts {

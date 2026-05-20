@@ -132,7 +132,7 @@ func (r *accountRepository) Create(ctx context.Context, account *service.Account
 
 	created, err := builder.Save(ctx)
 	if err != nil {
-		return translatePersistenceError(err, service.ErrAccountNotFound, nil)
+		return translatePersistenceError(err, service.ErrAccountNotFound, service.ErrAccountNameExists)
 	}
 
 	account.ID = created.ID
@@ -251,6 +251,29 @@ func (r *accountRepository) GetByIDs(ctx context.Context, ids []int64) ([]*servi
 //   - 适用于删除前的存在性检查等只需判断有无的场景
 func (r *accountRepository) ExistsByID(ctx context.Context, id int64) (bool, error) {
 	exists, err := r.client.Account.Query().Where(dbaccount.IDEQ(id)).Exist(ctx)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func (r *accountRepository) ExistsByName(ctx context.Context, name string) (bool, error) {
+	return r.existsByName(ctx, name, 0)
+}
+
+func (r *accountRepository) ExistsByNameExcluding(ctx context.Context, name string, excludeID int64) (bool, error) {
+	return r.existsByName(ctx, name, excludeID)
+}
+
+func (r *accountRepository) existsByName(ctx context.Context, name string, excludeID int64) (bool, error) {
+	preds := []dbpredicate.Account{
+		dbaccount.NameEQ(name),
+		dbaccount.DeletedAtIsNil(),
+	}
+	if excludeID > 0 {
+		preds = append(preds, dbaccount.IDNEQ(excludeID))
+	}
+	exists, err := r.client.Account.Query().Where(preds...).Exist(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -392,7 +415,7 @@ func (r *accountRepository) Update(ctx context.Context, account *service.Account
 
 	updated, err := builder.Save(ctx)
 	if err != nil {
-		return translatePersistenceError(err, service.ErrAccountNotFound, nil)
+		return translatePersistenceError(err, service.ErrAccountNotFound, service.ErrAccountNameExists)
 	}
 	account.UpdatedAt = updated.UpdatedAt
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &account.ID, nil, buildSchedulerGroupPayload(account.GroupIDs)); err != nil {

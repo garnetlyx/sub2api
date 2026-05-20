@@ -10,8 +10,9 @@ import (
 )
 
 var (
-	ErrAccountNotFound = infraerrors.NotFound("ACCOUNT_NOT_FOUND", "account not found")
-	ErrAccountNilInput = infraerrors.BadRequest("ACCOUNT_NIL_INPUT", "account input cannot be nil")
+	ErrAccountNotFound   = infraerrors.NotFound("ACCOUNT_NOT_FOUND", "account not found")
+	ErrAccountNilInput   = infraerrors.BadRequest("ACCOUNT_NIL_INPUT", "account input cannot be nil")
+	ErrAccountNameExists = infraerrors.Conflict("ACCOUNT_NAME_EXISTS", "account name already exists")
 )
 
 const AccountListGroupUngrouped int64 = -1
@@ -25,6 +26,10 @@ type AccountRepository interface {
 	GetByIDs(ctx context.Context, ids []int64) ([]*Account, error)
 	// ExistsByID 检查账号是否存在，仅返回布尔值，用于删除前的轻量级存在性检查
 	ExistsByID(ctx context.Context, id int64) (bool, error)
+	// ExistsByName checks whether an active (non-deleted) account already uses the name.
+	ExistsByName(ctx context.Context, name string) (bool, error)
+	// ExistsByNameExcluding checks whether another active account already uses the name.
+	ExistsByNameExcluding(ctx context.Context, name string, excludeID int64) (bool, error)
 	// GetByCRSAccountID finds an account previously synced from CRS.
 	// Returns (nil, nil) if not found.
 	GetByCRSAccountID(ctx context.Context, crsAccountID string) (*Account, error)

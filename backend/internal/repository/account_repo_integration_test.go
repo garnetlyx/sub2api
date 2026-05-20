@@ -115,6 +115,48 @@ func (s *AccountRepoSuite) TestCreate() {
 	s.Require().Equal("test-create", got.Name)
 }
 
+func (s *AccountRepoSuite) TestExistsByName() {
+	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "name-check"})
+
+	exists, err := s.repo.ExistsByName(s.ctx, account.Name)
+	s.Require().NoError(err)
+	s.Require().True(exists)
+
+	notExists, err := s.repo.ExistsByName(s.ctx, "missing-name")
+	s.Require().NoError(err)
+	s.Require().False(notExists)
+}
+
+func (s *AccountRepoSuite) TestExistsByNameExcluding() {
+	account := mustCreateAccount(s.T(), s.client, &service.Account{Name: "exclude-check"})
+
+	exists, err := s.repo.ExistsByNameExcluding(s.ctx, account.Name, account.ID)
+	s.Require().NoError(err)
+	s.Require().False(exists)
+
+	other := mustCreateAccount(s.T(), s.client, &service.Account{Name: "exclude-check-other"})
+	exists, err = s.repo.ExistsByNameExcluding(s.ctx, other.Name, account.ID)
+	s.Require().NoError(err)
+	s.Require().True(exists)
+}
+
+func (s *AccountRepoSuite) TestCreate_DuplicateNameFails() {
+	mustCreateAccount(s.T(), s.client, &service.Account{Name: "dup-name"})
+
+	err := s.repo.Create(s.ctx, &service.Account{
+		Name:        "dup-name",
+		Platform:    service.PlatformAnthropic,
+		Type:        service.AccountTypeOAuth,
+		Status:      service.StatusActive,
+		Credentials: map[string]any{},
+		Extra:       map[string]any{},
+		Concurrency: 3,
+		Priority:    50,
+		Schedulable: true,
+	})
+	s.Require().ErrorIs(err, service.ErrAccountNameExists)
+}
+
 func (s *AccountRepoSuite) TestGetByID_NotFound() {
 	_, err := s.repo.GetByID(s.ctx, 999999)
 	s.Require().Error(err, "expected error for non-existent ID")

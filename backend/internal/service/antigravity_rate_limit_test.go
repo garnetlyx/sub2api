@@ -89,6 +89,14 @@ type stubAntigravityAccountRepo struct {
 	extraUpdateCalls    []extraUpdateCall
 }
 
+func (s *stubAntigravityAccountRepo) ExistsByName(ctx context.Context, name string) (bool, error) {
+	return false, nil
+}
+
+func (s *stubAntigravityAccountRepo) ExistsByNameExcluding(ctx context.Context, name string, excludeID int64) (bool, error) {
+	return false, nil
+}
+
 func (s *stubAntigravityAccountRepo) SetRateLimited(ctx context.Context, id int64, resetAt time.Time) error {
 	s.rateCalls = append(s.rateCalls, rateLimitCall{accountID: id, resetAt: resetAt})
 	return nil

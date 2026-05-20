@@ -50,6 +50,14 @@ func (s *accountRepoStub) ExistsByID(ctx context.Context, id int64) (bool, error
 	return s.exists, s.existsErr
 }
 
+func (s *accountRepoStub) ExistsByName(ctx context.Context, name string) (bool, error) {
+	panic("unexpected ExistsByName call")
+}
+
+func (s *accountRepoStub) ExistsByNameExcluding(ctx context.Context, name string, excludeID int64) (bool, error) {
+	panic("unexpected ExistsByNameExcluding call")
+}
+
 func (s *accountRepoStub) GetByCRSAccountID(ctx context.Context, crsAccountID string) (*Account, error) {
 	panic("unexpected GetByCRSAccountID call")
 }

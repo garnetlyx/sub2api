@@ -12,19 +12,26 @@ import (
 
 type accountRepoStubForBulkUpdate struct {
 	accountRepoStub
-	bulkUpdateErr    error
-	bulkUpdateIDs    []int64
-	bindGroupErrByID map[int64]error
-	bindGroupsCalls  []int64
-	getByIDsAccounts []*Account
-	getByIDsErr      error
-	getByIDsCalled   bool
-	getByIDsIDs      []int64
-	getByIDAccounts  map[int64]*Account
-	getByIDErrByID   map[int64]error
-	getByIDCalled    []int64
-	listByGroupData  map[int64][]Account
-	listByGroupErr   map[int64]error
+	bulkUpdateErr              error
+	bulkUpdateIDs              []int64
+	bindGroupErrByID           map[int64]error
+	bindGroupsCalls            []int64
+	getByIDsAccounts           []*Account
+	getByIDsErr                error
+	getByIDsCalled             bool
+	getByIDsIDs                []int64
+	getByIDAccounts            map[int64]*Account
+	getByIDErrByID             map[int64]error
+	getByIDCalled              []int64
+	existsByName               bool
+	existsByNameErr            error
+	existsByNameCalls          []string
+	existsByNameExcludingCalls []struct {
+		name      string
+		excludeID int64
+	}
+	listByGroupData map[int64][]Account
+	listByGroupErr  map[int64]error
 }
 
 func (s *accountRepoStubForBulkUpdate) BulkUpdate(_ context.Context, ids []int64, _ AccountBulkUpdate) (int64, error) {
@@ -61,6 +68,19 @@ func (s *accountRepoStubForBulkUpdate) GetByID(_ context.Context, id int64) (*Ac
 		return account, nil
 	}
 	return nil, errors.New("account not found")
+}
+
+func (s *accountRepoStubForBulkUpdate) ExistsByName(_ context.Context, name string) (bool, error) {
+	s.existsByNameCalls = append(s.existsByNameCalls, name)
+	return s.existsByName, s.existsByNameErr
+}
+
+func (s *accountRepoStubForBulkUpdate) ExistsByNameExcluding(_ context.Context, name string, excludeID int64) (bool, error) {
+	s.existsByNameExcludingCalls = append(s.existsByNameExcludingCalls, struct {
+		name      string
+		excludeID int64
+	}{name: name, excludeID: excludeID})
+	return s.existsByName, s.existsByNameErr
 }
 
 func (s *accountRepoStubForBulkUpdate) ListByGroup(_ context.Context, groupID int64) ([]Account, error) {
@@ -169,4 +189,56 @@ func TestAdminService_BulkUpdateAccounts_MixedChannelPreCheckBlocksOnExistingCon
 	require.Contains(t, err.Error(), "mixed channel")
 	// No BindGroups should have been called since the check runs before any write.
 	require.Empty(t, repo.bindGroupsCalls)
+}
+
+func TestAdminService_BulkUpdateAccounts_NameConflictOnMultipleAccounts(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDAccounts: map[int64]*Account{
+			1: {ID: 1, Name: "a1"},
+			2: {ID: 2, Name: "a2"},
+		},
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	input := &BulkUpdateAccountsInput{
+		AccountIDs: []int64{1, 2},
+		Name:       "shared-name",
+	}
+
+	result, err := svc.BulkUpdateAccounts(context.Background(), input)
+	require.Nil(t, result)
+	require.ErrorIs(t, err, ErrAccountNameExists)
+	require.Empty(t, repo.bulkUpdateIDs)
+}
+
+func TestAdminService_CreateAccount_NameConflict(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{existsByName: true}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	_, err := svc.CreateAccount(context.Background(), &CreateAccountInput{
+		Name:        "dup-name",
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{},
+		Extra:       map[string]any{},
+	})
+	require.ErrorIs(t, err, ErrAccountNameExists)
+	require.Empty(t, repo.bulkUpdateIDs)
+	require.Equal(t, []string{"dup-name"}, repo.existsByNameCalls)
+}
+
+func TestAdminService_UpdateAccount_NameConflict(t *testing.T) {
+	repo := &accountRepoStubForBulkUpdate{
+		getByIDAccounts: map[int64]*Account{
+			1: {ID: 1, Name: "existing"},
+		},
+		existsByName: true,
+	}
+	svc := &adminServiceImpl{accountRepo: repo}
+
+	_, err := svc.UpdateAccount(context.Background(), 1, &UpdateAccountInput{Name: "dup-name"})
+	require.ErrorIs(t, err, ErrAccountNameExists)
+	require.Len(t, repo.existsByNameExcludingCalls, 1)
+	require.Equal(t, "dup-name", repo.existsByNameExcludingCalls[0].name)
+	require.Equal(t, int64(1), repo.existsByNameExcludingCalls[0].excludeID)
 }

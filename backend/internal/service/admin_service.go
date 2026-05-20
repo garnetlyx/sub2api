@@ -1487,6 +1487,19 @@ func (s *adminServiceImpl) GetAccountsByIDs(ctx context.Context, ids []int64) ([
 }
 
 func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccountInput) (*Account, error) {
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		return nil, infraerrors.BadRequest("ACCOUNT_NAME_REQUIRED", "account name cannot be empty")
+	}
+
+	exists, err := s.accountRepo.ExistsByName(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		return nil, ErrAccountNameExists
+	}
+
 	// 绑定分组
 	groupIDs := input.GroupIDs
 	// 如果没有指定分组,自动绑定对应平台的默认分组
@@ -1511,7 +1524,7 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	}
 
 	account := &Account{
-		Name:        input.Name,
+		Name:        name,
 		Notes:       normalizeAccountNotes(input.Notes),
 		Platform:    input.Platform,
 		Type:        input.Type,
@@ -1598,7 +1611,20 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	wasOveragesEnabled := account.IsOveragesEnabled()
 
 	if input.Name != "" {
-		account.Name = input.Name
+		name := strings.TrimSpace(input.Name)
+		if name == "" {
+			return nil, infraerrors.BadRequest("ACCOUNT_NAME_REQUIRED", "account name cannot be empty")
+		}
+		if name != account.Name {
+			exists, err := s.accountRepo.ExistsByNameExcluding(ctx, name, account.ID)
+			if err != nil {
+				return nil, err
+			}
+			if exists {
+				return nil, ErrAccountNameExists
+			}
+			account.Name = name
+		}
 	}
 	if input.Type != "" {
 		account.Type = input.Type
@@ -1774,9 +1800,6 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		Credentials: input.Credentials,
 		Extra:       input.Extra,
 	}
-	if input.Name != "" {
-		repoUpdates.Name = &input.Name
-	}
 	if input.ProxyID != nil {
 		repoUpdates.ProxyID = input.ProxyID
 	}
@@ -1803,6 +1826,24 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	}
 	if input.Schedulable != nil {
 		repoUpdates.Schedulable = input.Schedulable
+	}
+
+	if input.Name != "" {
+		name := strings.TrimSpace(input.Name)
+		if name == "" {
+			return nil, infraerrors.BadRequest("ACCOUNT_NAME_REQUIRED", "account name cannot be empty")
+		}
+		if len(input.AccountIDs) > 1 {
+			return nil, infraerrors.Conflict("ACCOUNT_NAME_EXISTS", "account name already exists")
+		}
+		exists, err := s.accountRepo.ExistsByNameExcluding(ctx, name, input.AccountIDs[0])
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			return nil, ErrAccountNameExists
+		}
+		repoUpdates.Name = &name
 	}
 
 	// Run bulk update for column/jsonb fields first.
