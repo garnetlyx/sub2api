@@ -4128,6 +4128,8 @@ type openaiStreamingResult struct {
 	firstTokenMs *int
 }
 
+const openaiResponsesKeepaliveEvent = `data: {"type":"response.in_progress","response":{}}` + "\n\n"
+
 func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel string) (*openaiStreamingResult, error) {
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -4197,8 +4199,10 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	if keepaliveTicker != nil {
 		keepaliveCh = keepaliveTicker.C
 	}
-	// 记录上次收到上游数据的时间，用于控制 keepalive 发送频率
-	lastDataAt := time.Now()
+	// Track the last downstream data event, not every upstream SSE line. Some
+	// upstreams send comment/blank-line pings that do not reset Codex's data-event
+	// idle timer.
+	lastDownstreamDataAt := time.Now()
 
 	// 仅发送一次错误事件，避免多次写入导致协议混乱。
 	// 注意：OpenAI `/v1/responses` streaming 事件必须符合 OpenAI Responses schema；
@@ -4267,8 +4271,6 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 		return resultWithUsage(), fmt.Errorf("stream read error: %w", scanErr), true
 	}
 	processSSELine := func(line string, queueDrained bool) {
-		lastDataAt = time.Now()
-
 		// Extract data from SSE line (supports both "data: " and "data:" formats)
 		if data, ok := extractOpenAISSEDataLine(line); ok {
 
@@ -4308,6 +4310,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 						clientDisconnected = true
 						logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming flush, continuing to drain upstream for billing")
 					}
+				}
+				if !clientDisconnected {
+					lastDownstreamDataAt = time.Now()
 				}
 			}
 
@@ -4412,10 +4417,10 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			if clientDisconnected {
 				continue
 			}
-			if time.Since(lastDataAt) < keepaliveInterval {
+			if time.Since(lastDownstreamDataAt) < keepaliveInterval {
 				continue
 			}
-			if _, err := bufferedWriter.WriteString(":\n\n"); err != nil {
+			if _, err := bufferedWriter.WriteString(openaiResponsesKeepaliveEvent); err != nil {
 				clientDisconnected = true
 				logger.LegacyPrintf("service.openai_gateway", "Client disconnected during streaming, continuing to drain upstream for billing")
 				continue
@@ -4423,7 +4428,9 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 			if err := flushBuffered(); err != nil {
 				clientDisconnected = true
 				logger.LegacyPrintf("service.openai_gateway", "Client disconnected during keepalive flush, continuing to drain upstream for billing")
+				continue
 			}
+			lastDownstreamDataAt = time.Now()
 		}
 	}
 

@@ -1683,6 +1683,97 @@ func TestOpenAIStreamingMissingTerminalEventReturnsIncompleteError(t *testing.T)
 	}
 }
 
+func TestOpenAIStreamingKeepaliveUsesResponsesDataEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamDataIntervalTimeout: 0,
+			StreamKeepaliveInterval:   5,
+			MaxLineSize:               defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     http.Header{},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "model", "model")
+		done <- err
+	}()
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(rec.Body.String(), openaiResponsesKeepaliveEvent)
+	}, 6*time.Second, 100*time.Millisecond)
+	require.NotContains(t, rec.Body.String(), ":\n\n")
+
+	_, _ = pw.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"))
+	_ = pw.Close()
+
+	require.NoError(t, <-done)
+}
+
+func TestOpenAIStreamingKeepaliveIgnoresUpstreamCommentPings(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamDataIntervalTimeout: 0,
+			StreamKeepaliveInterval:   5,
+			MaxLineSize:               defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     http.Header{},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, &Account{ID: 1}, time.Now(), "model", "model")
+		done <- err
+	}()
+
+	go func() {
+		deadline := time.After(6 * time.Second)
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-deadline:
+				return
+			case <-ticker.C:
+				_, _ = pw.Write([]byte(":\n\n"))
+			}
+		}
+	}()
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(rec.Body.String(), openaiResponsesKeepaliveEvent)
+	}, 7*time.Second, 100*time.Millisecond)
+
+	_, _ = pw.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"))
+	_ = pw.Close()
+
+	require.NoError(t, <-done)
+}
+
 func TestOpenAIStreamingPassthroughMissingTerminalEventReturnsIncompleteError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
