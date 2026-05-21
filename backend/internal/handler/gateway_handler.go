@@ -32,6 +32,37 @@ const gatewayCompatibilityMetricsLogInterval = 1024
 
 var gatewayCompatibilityMetricsLogCounter atomic.Uint64
 
+const codexGatewayModelBaseInstructions = "You are Codex, a coding agent running in the Codex CLI."
+
+type codexGatewayReasoningLevel struct {
+	Effort      string `json:"effort"`
+	Description string `json:"description"`
+}
+
+type codexGatewayTruncationPolicy struct {
+	Mode  string `json:"mode"`
+	Limit int64  `json:"limit"`
+}
+
+type codexGatewayModelInfo struct {
+	Slug                       string                       `json:"slug"`
+	DisplayName                string                       `json:"display_name"`
+	SupportedReasoningLevels   []codexGatewayReasoningLevel `json:"supported_reasoning_levels"`
+	ShellType                  string                       `json:"shell_type"`
+	Visibility                 string                       `json:"visibility"`
+	SupportedInAPI             bool                         `json:"supported_in_api"`
+	Priority                   int                          `json:"priority"`
+	BaseInstructions           string                       `json:"base_instructions"`
+	SupportsReasoningSummaries bool                         `json:"supports_reasoning_summaries"`
+	SupportVerbosity           bool                         `json:"support_verbosity"`
+	TruncationPolicy           codexGatewayTruncationPolicy `json:"truncation_policy"`
+	SupportsParallelToolCalls  bool                         `json:"supports_parallel_tool_calls"`
+	ContextWindow              int64                        `json:"context_window"`
+	ExperimentalSupportedTools []string                     `json:"experimental_supported_tools"`
+	InputModalities            []string                     `json:"input_modalities"`
+	SupportsSearchTool         bool                         `json:"supports_search_tool"`
+}
+
 // GatewayHandler handles API gateway requests
 type GatewayHandler struct {
 	gatewayService            *service.GatewayService
@@ -889,10 +920,7 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 			CreatedAt:   "",
 		})
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"object": "list",
-		"data":   models,
-	})
+	c.JSON(http.StatusOK, gatewayModelListResponse(models))
 }
 
 // AntigravityModels returns the live Antigravity model catalog.
@@ -927,6 +955,55 @@ func cloneAPIKeyWithGroup(apiKey *service.APIKey, group *service.Group) *service
 	cloned.GroupID = &groupID
 	cloned.Group = group
 	return &cloned
+}
+
+func gatewayModelListResponse(models []claude.Model) gin.H {
+	return gin.H{
+		"object": "list",
+		"data":   models,
+		"models": codexGatewayModels(models),
+	}
+}
+
+func codexGatewayModels(models []claude.Model) []codexGatewayModelInfo {
+	catalog := make([]codexGatewayModelInfo, 0, len(models))
+	for _, model := range models {
+		modelID := strings.TrimSpace(model.ID)
+		if modelID == "" {
+			continue
+		}
+		displayName := strings.TrimSpace(model.DisplayName)
+		if displayName == "" {
+			displayName = modelID
+		}
+		catalog = append(catalog, codexGatewayModelInfo{
+			Slug:        modelID,
+			DisplayName: displayName,
+			SupportedReasoningLevels: []codexGatewayReasoningLevel{
+				{Effort: "low", Description: "low"},
+				{Effort: "medium", Description: "medium"},
+				{Effort: "high", Description: "high"},
+				{Effort: "xhigh", Description: "xhigh"},
+			},
+			ShellType:                  "default",
+			Visibility:                 "list",
+			SupportedInAPI:             true,
+			Priority:                   len(catalog) + 1,
+			BaseInstructions:           codexGatewayModelBaseInstructions,
+			SupportsReasoningSummaries: false,
+			SupportVerbosity:           false,
+			TruncationPolicy: codexGatewayTruncationPolicy{
+				Mode:  "bytes",
+				Limit: 10000,
+			},
+			SupportsParallelToolCalls:  false,
+			ContextWindow:              272000,
+			ExperimentalSupportedTools: []string{},
+			InputModalities:            []string{"text", "image"},
+			SupportsSearchTool:         false,
+		})
+	}
+	return catalog
 }
 
 // Usage handles getting account balance and usage statistics for CC Switch integration
