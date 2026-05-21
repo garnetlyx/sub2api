@@ -169,6 +169,9 @@ func TestLoadDefaultGatewayCompatibilityExclusionConfig(t *testing.T) {
 	if cfg.Gateway.CompatibilityExclusionTTLSeconds != DefaultGatewayCompatibilityExclusionTTLSeconds {
 		t.Fatalf("Gateway.CompatibilityExclusionTTLSeconds = %d, want %d", cfg.Gateway.CompatibilityExclusionTTLSeconds, DefaultGatewayCompatibilityExclusionTTLSeconds)
 	}
+	if cfg.Gateway.ModelsListLookupTimeoutSeconds != 8 {
+		t.Fatalf("Gateway.ModelsListLookupTimeoutSeconds = %d, want 8", cfg.Gateway.ModelsListLookupTimeoutSeconds)
+	}
 }
 
 func TestLoadOpenAIWSStickyTTLCompatibility(t *testing.T) {
@@ -1236,6 +1239,11 @@ func TestValidateConfigErrors(t *testing.T) {
 			name:    "gateway models list cache ttl range",
 			mutate:  func(c *Config) { c.Gateway.ModelsListCacheTTLSeconds = 86401 },
 			wantErr: "gateway.models_list_cache_ttl_seconds",
+		},
+		{
+			name:    "gateway models list lookup timeout range",
+			mutate:  func(c *Config) { c.Gateway.ModelsListLookupTimeoutSeconds = 0 },
+			wantErr: "gateway.models_list_lookup_timeout_seconds",
 		},
 		{
 			name:    "gateway scheduling sticky waiting",

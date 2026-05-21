@@ -950,6 +950,83 @@ func (a *Account) GetUpstreamModels() map[string]string {
 	}
 }
 
+func normalizeAccountCapability(capability string) string {
+	switch strings.ToLower(strings.TrimSpace(capability)) {
+	case "", "any":
+		return ""
+	case "chat", "completion", "completions", "chat_completion", "chat_completions", "responses", "response":
+		return "chat"
+	case "message", "messages", "anthropic":
+		return "messages"
+	case "embedding", "embeddings":
+		return "embeddings"
+	default:
+		return strings.ToLower(strings.TrimSpace(capability))
+	}
+}
+
+func (a *Account) GetCapabilities() map[string]struct{} {
+	if a == nil || a.Extra == nil {
+		return nil
+	}
+	raw, ok := a.Extra["capabilities"]
+	if !ok || raw == nil {
+		return nil
+	}
+	out := map[string]struct{}{}
+	add := func(value string) {
+		if capability := normalizeAccountCapability(value); capability != "" {
+			out[capability] = struct{}{}
+		}
+	}
+	switch values := raw.(type) {
+	case string:
+		for _, part := range strings.Split(values, ",") {
+			add(part)
+		}
+	case []string:
+		for _, item := range values {
+			add(item)
+		}
+	case []any:
+		for _, item := range values {
+			if text, ok := item.(string); ok {
+				add(text)
+			}
+		}
+	case map[string]any:
+		for key, enabled := range values {
+			if value, ok := enabled.(bool); ok && !value {
+				continue
+			}
+			add(key)
+		}
+	case map[string]bool:
+		for key, enabled := range values {
+			if enabled {
+				add(key)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (a *Account) SupportsCapability(capability string) bool {
+	normalized := normalizeAccountCapability(capability)
+	if normalized == "" {
+		return true
+	}
+	capabilities := a.GetCapabilities()
+	if len(capabilities) == 0 {
+		return true
+	}
+	_, ok := capabilities[normalized]
+	return ok
+}
+
 func (a *Account) resolveAvailableUpstreamModel(requestedModel string) (string, bool) {
 	upstreamModels := a.GetUpstreamModels()
 	if len(upstreamModels) == 0 {

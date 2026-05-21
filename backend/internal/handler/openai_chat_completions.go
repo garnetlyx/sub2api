@@ -124,7 +124,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			zap.Int("excluded_account_count", len(fs.FailedAccountIDs)),
 			zap.Int("excluded_platform_count", len(fs.ExcludedPlatforms)),
 		)
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
 			c.Request.Context(),
 			currentAPIKey.GroupID,
 			"",
@@ -133,9 +133,12 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			fs.FailedAccountIDs,
 			fs.ExcludedPlatforms,
 			service.OpenAIUpstreamTransportAny,
+			"chat",
 		)
 		if err != nil {
-			diag := h.gatewayService.DiagnoseAccountSelection(c.Request.Context(), currentAPIKey.GroupID, reqModel)
+			diagCtx, diagCancel := openAIAccountSelectionDiagnosticContext(c.Request.Context())
+			diag := h.gatewayService.DiagnoseAccountSelection(diagCtx, currentAPIKey.GroupID, reqModel)
+			diagCancel()
 			_, copilotCompatExcluded := fs.ExcludedPlatforms["copilot"]
 			reqLog.Warn("openai_chat_completions.account_select_failed",
 				zap.Error(err),
@@ -158,7 +161,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 					reqLog.Info("openai_chat_completions.fallback_to_default_model",
 						zap.String("default_mapped_model", defaultModel),
 					)
-					selection, scheduleDecision, err = h.gatewayService.SelectAccountWithScheduler(
+					selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForCapability(
 						c.Request.Context(),
 						currentAPIKey.GroupID,
 						"",
@@ -167,6 +170,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 						fs.FailedAccountIDs,
 						fs.ExcludedPlatforms,
 						service.OpenAIUpstreamTransportAny,
+						"chat",
 					)
 					if err == nil && selection != nil {
 						c.Set("openai_chat_completions_fallback_model", defaultModel)

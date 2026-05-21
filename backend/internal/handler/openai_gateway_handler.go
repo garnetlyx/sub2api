@@ -37,6 +37,12 @@ type OpenAIGatewayHandler struct {
 	cfg                     *config.Config
 }
 
+const openAIAccountSelectionDiagnosticTimeout = 2 * time.Second
+
+func openAIAccountSelectionDiagnosticContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), openAIAccountSelectionDiagnosticTimeout)
+}
+
 func resolveOpenAIForwardDefaultMappedModel(apiKey *service.APIKey, fallbackModel string) string {
 	if fallbackModel = strings.TrimSpace(fallbackModel); fallbackModel != "" {
 		return fallbackModel
@@ -278,7 +284,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			zap.Int("excluded_account_count", len(fs.FailedAccountIDs)),
 			zap.Int("excluded_platform_count", len(fs.ExcludedPlatforms)),
 		)
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
 			c.Request.Context(),
 			currentAPIKey.GroupID,
 			previousResponseID,
@@ -287,9 +293,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			fs.FailedAccountIDs,
 			fs.ExcludedPlatforms,
 			service.OpenAIUpstreamTransportAny,
+			"chat",
 		)
 		if err != nil {
-			diag := h.gatewayService.DiagnoseAccountSelection(c.Request.Context(), currentAPIKey.GroupID, reqModel)
+			diagCtx, diagCancel := openAIAccountSelectionDiagnosticContext(c.Request.Context())
+			diag := h.gatewayService.DiagnoseAccountSelection(diagCtx, currentAPIKey.GroupID, reqModel)
+			diagCancel()
 			_, copilotCompatExcluded := fs.ExcludedPlatforms["copilot"]
 			reqLog.Warn("openai.account_select_failed",
 				zap.Error(err),
@@ -730,7 +739,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			zap.Int("excluded_account_count", len(fs.FailedAccountIDs)),
 			zap.Int("excluded_platform_count", len(fs.ExcludedPlatforms)),
 		)
-		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
+		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
 			c.Request.Context(),
 			currentAPIKey.GroupID,
 			"", // no previous_response_id
@@ -739,9 +748,12 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			fs.FailedAccountIDs,
 			fs.ExcludedPlatforms,
 			service.OpenAIUpstreamTransportAny,
+			"chat",
 		)
 		if err != nil {
-			diag := h.gatewayService.DiagnoseAccountSelection(c.Request.Context(), currentAPIKey.GroupID, routingModel)
+			diagCtx, diagCancel := openAIAccountSelectionDiagnosticContext(c.Request.Context())
+			diag := h.gatewayService.DiagnoseAccountSelection(diagCtx, currentAPIKey.GroupID, routingModel)
+			diagCancel()
 			_, copilotCompatExcluded := fs.ExcludedPlatforms["copilot"]
 			reqLog.Warn("openai_messages.account_select_failed",
 				zap.Error(err),
@@ -765,7 +777,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					reqLog.Info("openai_messages.fallback_to_default_model",
 						zap.String("default_mapped_model", defaultModel),
 					)
-					selection, scheduleDecision, err = h.gatewayService.SelectAccountWithScheduler(
+					selection, scheduleDecision, err = h.gatewayService.SelectAccountWithSchedulerForCapability(
 						c.Request.Context(),
 						currentAPIKey.GroupID,
 						"",
@@ -774,6 +786,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						fs.FailedAccountIDs,
 						fs.ExcludedPlatforms,
 						service.OpenAIUpstreamTransportAny,
+						"chat",
 					)
 					if err == nil && selection != nil {
 						c.Set("openai_messages_fallback_model", defaultModel)
@@ -1360,7 +1373,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		firstMessage,
 		openAIWSIngressFallbackSessionSeed(subject.UserID, apiKey.ID, apiKey.GroupID),
 	)
-	selection, scheduleDecision, err := h.gatewayService.SelectAccountWithScheduler(
+	selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
 		ctx,
 		apiKey.GroupID,
 		previousResponseID,
@@ -1369,6 +1382,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		nil,
 		nil,
 		service.OpenAIUpstreamTransportResponsesWebsocketV2,
+		"chat",
 	)
 	if err != nil {
 		reqLog.Warn("openai.websocket_account_select_failed", zap.Error(err))
@@ -1712,7 +1726,7 @@ func (h *OpenAIGatewayHandler) mapUpstreamError(statusCode int) (int, string, st
 
 // handleStreamingAwareError handles errors that may occur after streaming has started
 func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
-	if streamStarted {
+	if streamStarted || openAIEventStreamResponseStarted(c) {
 		// Stream already started, send error as SSE event then close
 		flusher, ok := c.Writer.(http.Flusher)
 		if ok {
@@ -1732,11 +1746,26 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status 
 
 // ensureForwardErrorResponse 在 Forward 返回错误但尚未写响应时补写统一错误响应。
 func (h *OpenAIGatewayHandler) ensureForwardErrorResponse(c *gin.Context, streamStarted bool) bool {
-	if c == nil || c.Writer == nil || c.Writer.Written() {
+	if c == nil || c.Writer == nil {
+		return false
+	}
+	if c.Writer.Written() {
+		if streamStarted || openAIEventStreamResponseStarted(c) {
+			h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed", true)
+			return true
+		}
 		return false
 	}
 	h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed", streamStarted)
 	return true
+}
+
+func openAIEventStreamResponseStarted(c *gin.Context) bool {
+	if c == nil || c.Writer == nil || !c.Writer.Written() {
+		return false
+	}
+	contentType := strings.ToLower(c.Writer.Header().Get("Content-Type"))
+	return strings.Contains(contentType, "text/event-stream")
 }
 
 func shouldLogOpenAIForwardFailureAsWarn(c *gin.Context, wroteFallback bool) bool {

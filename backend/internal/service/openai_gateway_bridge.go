@@ -103,6 +103,9 @@ func (s *OpenAIGatewayService) FindSchedulableEmbeddingAccount(ctx context.Conte
 		if err != nil || account == nil {
 			continue
 		}
+		if !account.SupportsCapability("embeddings") {
+			continue
+		}
 		if _, matched := account.ResolveUpstreamModel(requestedModel); matched {
 			return account, nil
 		}

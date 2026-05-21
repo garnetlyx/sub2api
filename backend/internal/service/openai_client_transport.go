@@ -63,9 +63,22 @@ func normalizeOpenAIClientTransport(transport OpenAIClientTransport) OpenAIClien
 func resolveOpenAIWSDecisionByClientTransport(
 	decision OpenAIWSProtocolDecision,
 	clientTransport OpenAIClientTransport,
+	account *Account,
+	isCodexCLI bool,
+	reqStream bool,
 ) OpenAIWSProtocolDecision {
 	if clientTransport == OpenAIClientTransportHTTP {
+		if shouldUseOpenAIWSForHTTPClientTransport(account, isCodexCLI, reqStream) {
+			return decision
+		}
 		return openAIWSHTTPDecision("client_protocol_http")
 	}
 	return decision
+}
+
+func shouldUseOpenAIWSForHTTPClientTransport(account *Account, isCodexCLI bool, reqStream bool) bool {
+	return account != nil &&
+		account.IsOpenAIOAuth() &&
+		isCodexCLI &&
+		reqStream
 }

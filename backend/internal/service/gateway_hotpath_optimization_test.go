@@ -1223,6 +1223,42 @@ func TestGatewayHotpathHelpers_CacheTTLAndStickyContext(t *testing.T) {
 		require.Equal(t, 20*time.Second, resolveModelsListCacheTTL(cfg))
 	})
 
+	t.Run("resolve_models_list_lookup_timeout", func(t *testing.T) {
+		require.Equal(t, 8*time.Second, defaultModelsListLookupTimeout)
+		require.Equal(t, defaultModelsListLookupTimeout, resolveModelsListLookupTimeout(nil))
+
+		cfg := &config.Config{
+			Gateway: config.GatewayConfig{
+				ModelsListLookupTimeoutSeconds: 3,
+			},
+		}
+		require.Equal(t, 3*time.Second, resolveModelsListLookupTimeout(cfg))
+	})
+
+	t.Run("live_model_source_lookup_is_bounded", func(t *testing.T) {
+		svc := &GatewayService{
+			cfg: &config.Config{
+				Gateway: config.GatewayConfig{
+					ModelsListCacheTTLSeconds:      60,
+					ModelsListLookupTimeoutSeconds: 1,
+				},
+			},
+			modelsListCache: gocache.New(time.Minute, time.Minute),
+		}
+		startedAt := time.Now()
+		_, err := svc.cachedLiveModelSourceForAccountWithLoader(
+			context.Background(),
+			Account{ID: 101, Name: "slow-live-source", Platform: PlatformOpenAI},
+			func(ctx context.Context, account Account) (LiveModelSource, error) {
+				<-ctx.Done()
+				return LiveModelSource{}, ctx.Err()
+			},
+		)
+		require.Error(t, err)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.Less(t, time.Since(startedAt), 2*time.Second)
+	})
+
 	t.Run("prefetched_sticky_account_id_from_context", func(t *testing.T) {
 		require.Equal(t, int64(0), prefetchedStickyAccountIDFromContext(context.TODO(), nil))
 		require.Equal(t, int64(0), prefetchedStickyAccountIDFromContext(context.Background(), nil))

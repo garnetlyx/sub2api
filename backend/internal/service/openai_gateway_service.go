@@ -2005,6 +2005,16 @@ func (s *OpenAIGatewayService) supportsOpenAIGatewayRequestedModel(ctx context.C
 	if !supportsOpenAIGatewayRequestedModel(account, requestedModel) {
 		return false
 	}
+	if !account.SupportsCapability(capability) {
+		slog.Warn("openai.account_capability_filtered",
+			"account_id", account.ID,
+			"account_name", account.Name,
+			"platform", account.Platform,
+			"requested_model", requestedModel,
+			"capability", capability,
+		)
+		return false
+	}
 	if strings.TrimSpace(requestedModel) == "" {
 		return true
 	}
@@ -2354,8 +2364,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	isCodexCLI := openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
 	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
 	clientTransport := GetOpenAIClientTransport(c)
-	// 仅允许 WS 入站请求走 WS 上游，避免出现 HTTP -> WS 协议混用。
-	wsDecision = resolveOpenAIWSDecisionByClientTransport(wsDecision, clientTransport)
+	wsDecision = resolveOpenAIWSDecisionByClientTransport(wsDecision, clientTransport, account, isCodexCLI, reqStream)
 	if c != nil {
 		c.Set("openai_ws_transport_decision", string(wsDecision.Transport))
 		c.Set("openai_ws_transport_reason", wsDecision.Reason)
@@ -2854,9 +2863,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 
 		// Send request
-		upstreamStart := time.Now()
-		resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+		resp, upstreamDuration, err := s.doUpstreamWithPreResponseKeepalive(ctx, c, account, upstreamReq, proxyURL, reqStream)
+		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, upstreamDuration.Milliseconds())
 		if err != nil {
 			// Ensure the client receives an error response (handlers assume Forward writes on non-failover errors).
 			safeErr := sanitizeUpstreamErrorMessage(err.Error())
@@ -2869,12 +2877,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				Kind:               "request_error",
 				Message:            safeErr,
 			})
-			c.JSON(http.StatusBadGateway, gin.H{
-				"error": gin.H{
-					"type":    "upstream_error",
-					"message": "Upstream request failed",
-				},
-			})
+			writeOpenAIErrorResponse(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
 			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 		}
 
@@ -3099,9 +3102,8 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		c.Set("openai_passthrough", true)
 	}
 
-	upstreamStart := time.Now()
-	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+	resp, upstreamDuration, err := s.doUpstreamWithPreResponseKeepalive(ctx, c, account, upstreamReq, proxyURL, reqStream)
+	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, upstreamDuration.Milliseconds())
 	if err != nil {
 		safeErr := sanitizeUpstreamErrorMessage(err.Error())
 		setOpsUpstreamError(c, 0, safeErr, "")
@@ -3114,12 +3116,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			Kind:               "request_error",
 			Message:            safeErr,
 		})
-		c.JSON(http.StatusBadGateway, gin.H{
-			"error": gin.H{
-				"type":    "upstream_error",
-				"message": "Upstream request failed",
-			},
-		})
+		writeOpenAIErrorResponse(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -3436,6 +3433,16 @@ func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
 		Detail:               upstreamDetail,
 		UpstreamResponseBody: upstreamDetail,
 	})
+	if openAIEventStreamStarted(c) {
+		if upstreamMsg == "" {
+			upstreamMsg = "Upstream request failed"
+		}
+		writeOpenAIStreamingErrorEvent(c, "upstream_error", upstreamMsg)
+		if upstreamMsg == "" {
+			return fmt.Errorf("upstream error: %d", resp.StatusCode)
+		}
+		return fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
+	}
 
 	writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	contentType := resp.Header.Get("Content-Type")
@@ -3471,6 +3478,110 @@ func isOpenAIPassthroughTimeoutHeader(lowerKey string) bool {
 
 func (s *OpenAIGatewayService) isOpenAIPassthroughTimeoutHeadersAllowed() bool {
 	return s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIPassthroughAllowTimeoutHeaders
+}
+
+type openAIUpstreamDoResult struct {
+	resp     *http.Response
+	duration time.Duration
+	err      error
+}
+
+const openAIPreResponseKeepaliveComment = ":\n\n"
+
+func (s *OpenAIGatewayService) doUpstreamWithPreResponseKeepalive(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	req *http.Request,
+	proxyURL string,
+	reqStream bool,
+) (*http.Response, time.Duration, error) {
+	upstreamStart := time.Now()
+	do := func() (*http.Response, error) {
+		if s == nil || s.httpUpstream == nil {
+			return nil, errors.New("http upstream is not configured")
+		}
+		accountID := int64(0)
+		accountConcurrency := 0
+		if account != nil {
+			accountID = account.ID
+			accountConcurrency = account.Concurrency
+		}
+		return s.httpUpstream.Do(req, proxyURL, accountID, accountConcurrency)
+	}
+
+	keepaliveInterval := s.openAIStreamKeepaliveInterval()
+	if !reqStream || keepaliveInterval <= 0 || c == nil || c.Writer == nil {
+		resp, err := do()
+		return resp, time.Since(upstreamStart), err
+	}
+
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		resp, err := do()
+		return resp, time.Since(upstreamStart), err
+	}
+
+	resultCh := make(chan openAIUpstreamDoResult, 1)
+	go func() {
+		resp, err := do()
+		resultCh <- openAIUpstreamDoResult{
+			resp:     resp,
+			duration: time.Since(upstreamStart),
+			err:      err,
+		}
+	}()
+
+	ticker := time.NewTicker(keepaliveInterval)
+	defer ticker.Stop()
+	clientDisconnected := false
+	for {
+		select {
+		case result := <-resultCh:
+			return result.resp, result.duration, result.err
+		case <-ticker.C:
+			if clientDisconnected {
+				continue
+			}
+			if err := writeOpenAIPreResponseKeepalive(c, flusher); err != nil {
+				clientDisconnected = true
+				logger.FromContext(ctx).With(
+					zap.String("component", "service.openai_gateway"),
+					zap.Int64("account_id", accountIDForLog(account)),
+					zap.Error(err),
+				).Info("OpenAI stream pre-response keepalive failed; continuing upstream drain")
+			}
+		}
+	}
+}
+
+func (s *OpenAIGatewayService) openAIStreamKeepaliveInterval() time.Duration {
+	if s == nil || s.cfg == nil || s.cfg.Gateway.StreamKeepaliveInterval <= 0 {
+		return 0
+	}
+	return time.Duration(s.cfg.Gateway.StreamKeepaliveInterval) * time.Second
+}
+
+func writeOpenAIPreResponseKeepalive(c *gin.Context, flusher http.Flusher) error {
+	if c == nil || c.Writer == nil {
+		return errors.New("missing response writer")
+	}
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	if _, err := fmt.Fprint(c.Writer, openAIPreResponseKeepaliveComment); err != nil {
+		return err
+	}
+	flusher.Flush()
+	return nil
+}
+
+func accountIDForLog(account *Account) int64 {
+	if account == nil {
+		return 0
+	}
+	return account.ID
 }
 
 func collectOpenAIPassthroughTimeoutHeaders(h http.Header) []string {
@@ -3902,12 +4013,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		"upstream_error",
 		"Upstream request failed",
 	); matched {
-		c.JSON(status, gin.H{
-			"error": gin.H{
-				"type":    errType,
-				"message": errMsg,
-			},
-		})
+		writeOpenAIErrorResponse(c, status, errType, errMsg)
 		if upstreamMsg == "" {
 			upstreamMsg = errMsg
 		}
@@ -3929,12 +4035,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 			Message:            upstreamMsg,
 			Detail:             upstreamDetail,
 		})
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": gin.H{
-				"type":    "upstream_error",
-				"message": "Upstream gateway error",
-			},
-		})
+		writeOpenAIErrorResponse(c, http.StatusInternalServerError, "upstream_error", "Upstream gateway error")
 		if upstreamMsg == "" {
 			return nil, fmt.Errorf("upstream error: %d (not in custom error codes)", resp.StatusCode)
 		}
@@ -3995,17 +4096,49 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		errMsg = "Upstream request failed"
 	}
 
-	c.JSON(statusCode, gin.H{
-		"error": gin.H{
-			"type":    errType,
-			"message": errMsg,
-		},
-	})
+	writeOpenAIErrorResponse(c, statusCode, errType, errMsg)
 
 	if upstreamMsg == "" {
 		return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
 	}
 	return nil, fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
+}
+
+func writeOpenAIErrorResponse(c *gin.Context, status int, errType, message string) {
+	if openAIEventStreamStarted(c) {
+		writeOpenAIStreamingErrorEvent(c, errType, message)
+		return
+	}
+	c.JSON(status, gin.H{
+		"error": gin.H{
+			"type":    errType,
+			"message": message,
+		},
+	})
+}
+
+func openAIEventStreamStarted(c *gin.Context) bool {
+	if c == nil || c.Writer == nil || !c.Writer.Written() {
+		return false
+	}
+	contentType := strings.ToLower(c.Writer.Header().Get("Content-Type"))
+	return strings.Contains(contentType, "text/event-stream")
+}
+
+func writeOpenAIStreamingErrorEvent(c *gin.Context, errType, message string) {
+	if c == nil || c.Writer == nil {
+		return
+	}
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		return
+	}
+	errorEvent := "event: error\ndata: " + `{"error":{"type":` + strconv.Quote(errType) + `,"message":` + strconv.Quote(message) + `}}` + "\n\n"
+	if _, err := fmt.Fprint(c.Writer, errorEvent); err != nil {
+		_ = c.Error(err)
+		return
+	}
+	flusher.Flush()
 }
 
 // compatErrorWriter is the signature for format-specific error writers used by

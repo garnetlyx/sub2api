@@ -15,6 +15,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/cespare/xxhash/v2"
 	"github.com/gin-gonic/gin"
 	gocache "github.com/patrickmn/go-cache"
@@ -481,6 +482,38 @@ func TestOpenAIGatewayService_KnownIssuePolicyExcludesModel(t *testing.T) {
 	require.False(t, svc.supportsOpenAIGatewayRequestedModel(context.Background(), account, "claude-opus-4.7", "chat"))
 	require.True(t, svc.supportsOpenAIGatewayRequestedModel(context.Background(), account, "claude-opus-4.7", "messages"))
 	require.True(t, svc.supportsOpenAIGatewayRequestedModel(context.Background(), account, "claude-sonnet-4.6", "chat"))
+}
+
+func TestOpenAIGatewayService_CapabilityFilterPreventsLiveModelBroadening(t *testing.T) {
+	account := Account{
+		ID:          37,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeAPIKey,
+		Status:      StatusActive,
+		Schedulable: true,
+		Extra: map[string]any{
+			"capabilities": []any{"embeddings"},
+		},
+		Credentials: map[string]any{
+			"api_key":  "sk-test",
+			"base_url": "https://openai-compatible.test/v1",
+		},
+	}
+	gateway := &GatewayService{
+		cfg:                &config.Config{},
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+	}
+	gateway.modelsListCache.Set(liveModelSourceCacheKey(account), LiveModelSource{
+		Account:    cloneAccountForLiveSource(account),
+		Endpoint:   "openai-compatible",
+		Capability: "chat",
+		Models:     []string{"glm-5.1"},
+	}, time.Minute)
+	svc := &OpenAIGatewayService{gatewayService: gateway}
+
+	require.False(t, svc.supportsOpenAIGatewayRequestedModel(context.Background(), &account, "glm-5.1", "chat"))
+	require.True(t, account.SupportsCapability("embeddings"))
 }
 
 func TestOpenAIGatewayServiceLiveModelsGateAccountSelection(t *testing.T) {
@@ -1780,6 +1813,50 @@ func TestOpenAIStreamingKeepaliveIgnoresUpstreamCommentPings(t *testing.T) {
 	_ = pw.Close()
 
 	require.NoError(t, <-done)
+}
+
+type delayedOpenAIHTTPUpstream struct {
+	delay time.Duration
+	resp  *http.Response
+	err   error
+}
+
+func (u *delayedOpenAIHTTPUpstream) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	time.Sleep(u.delay)
+	return u.resp, u.err
+}
+
+func (u *delayedOpenAIHTTPUpstream) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	return u.Do(req, proxyURL, accountID, accountConcurrency)
+}
+
+func TestOpenAIPreResponseKeepaliveWhileWaitingForUpstreamHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamKeepaliveInterval: 1,
+		},
+	}
+	upstreamResp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n")),
+		Header:     make(http.Header),
+	}
+	svc := &OpenAIGatewayService{
+		cfg:          cfg,
+		httpUpstream: &delayedOpenAIHTTPUpstream{delay: 1200 * time.Millisecond, resp: upstreamResp},
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	req := httptest.NewRequest(http.MethodPost, "https://example.test/v1/responses", nil)
+
+	resp, _, err := svc.doUpstreamWithPreResponseKeepalive(context.Background(), c, &Account{ID: 1, Concurrency: 1}, req, "", true)
+	require.NoError(t, err)
+	require.Same(t, upstreamResp, resp)
+	require.Contains(t, rec.Body.String(), openAIPreResponseKeepaliveComment)
+	require.Contains(t, rec.Header().Get("Content-Type"), "text/event-stream")
 }
 
 func TestOpenAIStreamingPassthroughMissingTerminalEventReturnsIncompleteError(t *testing.T) {

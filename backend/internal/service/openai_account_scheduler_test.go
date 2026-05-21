@@ -451,7 +451,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_RequiredWSV2_NoAvailabl
 		{
 			ID:          2301,
 			Platform:    PlatformOpenAI,
-			Type:        AccountTypeOAuth,
+			Type:        AccountTypeAPIKey,
 			Status:      StatusActive,
 			Schedulable: true,
 			Concurrency: 1,

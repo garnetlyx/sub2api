@@ -95,13 +95,42 @@ func TestResolveOpenAIWSDecisionByClientTransport(t *testing.T) {
 		Reason:    "ws_v2_enabled",
 	}
 
-	httpDecision := resolveOpenAIWSDecisionByClientTransport(base, OpenAIClientTransportHTTP)
+	oauthCodexStreamDecision := resolveOpenAIWSDecisionByClientTransport(base, OpenAIClientTransportHTTP, &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+	}, true, true)
+	require.Equal(t, base, oauthCodexStreamDecision)
+
+	httpDecision := resolveOpenAIWSDecisionByClientTransport(base, OpenAIClientTransportHTTP, &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+	}, true, true)
 	require.Equal(t, OpenAIUpstreamTransportHTTPSSE, httpDecision.Transport)
 	require.Equal(t, "client_protocol_http", httpDecision.Reason)
 
-	wsDecision := resolveOpenAIWSDecisionByClientTransport(base, OpenAIClientTransportWS)
+	oauthNonCodexDecision := resolveOpenAIWSDecisionByClientTransport(base, OpenAIClientTransportHTTP, &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+	}, false, true)
+	require.Equal(t, OpenAIUpstreamTransportHTTPSSE, oauthNonCodexDecision.Transport)
+	require.Equal(t, "client_protocol_http", oauthNonCodexDecision.Reason)
+
+	oauthNonStreamDecision := resolveOpenAIWSDecisionByClientTransport(base, OpenAIClientTransportHTTP, &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+	}, true, false)
+	require.Equal(t, OpenAIUpstreamTransportHTTPSSE, oauthNonStreamDecision.Transport)
+	require.Equal(t, "client_protocol_http", oauthNonStreamDecision.Reason)
+
+	wsDecision := resolveOpenAIWSDecisionByClientTransport(base, OpenAIClientTransportWS, &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+	}, true, true)
 	require.Equal(t, base, wsDecision)
 
-	unknownDecision := resolveOpenAIWSDecisionByClientTransport(base, OpenAIClientTransportUnknown)
+	unknownDecision := resolveOpenAIWSDecisionByClientTransport(base, OpenAIClientTransportUnknown, &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+	}, true, true)
 	require.Equal(t, base, unknownDecision)
 }

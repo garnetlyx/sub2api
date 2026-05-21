@@ -52,10 +52,11 @@ const (
 	claudeCodeSystemPrompt = "You are Claude Code, Anthropic's official CLI for Claude."
 	maxCacheControlBlocks  = 4 // Anthropic API 允许的最大 cache_control 块数量
 
-	defaultUserGroupRateCacheTTL = 30 * time.Second
-	defaultModelsListCacheTTL    = 60 * time.Second
-	postUsageBillingTimeout      = 15 * time.Second
-	debugGatewayBodyEnv          = "SUB2API_DEBUG_GATEWAY_BODY"
+	defaultUserGroupRateCacheTTL   = 30 * time.Second
+	defaultModelsListCacheTTL      = 60 * time.Second
+	defaultModelsListLookupTimeout = 8 * time.Second
+	postUsageBillingTimeout        = 15 * time.Second
+	debugGatewayBodyEnv            = "SUB2API_DEBUG_GATEWAY_BODY"
 )
 
 const (
@@ -419,6 +420,13 @@ func resolveModelsListCacheTTL(cfg *config.Config) time.Duration {
 		return defaultModelsListCacheTTL
 	}
 	return time.Duration(cfg.Gateway.ModelsListCacheTTLSeconds) * time.Second
+}
+
+func resolveModelsListLookupTimeout(cfg *config.Config) time.Duration {
+	if cfg == nil || cfg.Gateway.ModelsListLookupTimeoutSeconds <= 0 {
+		return defaultModelsListLookupTimeout
+	}
+	return time.Duration(cfg.Gateway.ModelsListLookupTimeoutSeconds) * time.Second
 }
 
 func modelsListCacheKey(groupID *int64, platform string) string {

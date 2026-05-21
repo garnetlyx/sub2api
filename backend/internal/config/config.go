@@ -393,6 +393,8 @@ type GatewayConfig struct {
 	UserGroupRateCacheTTLSeconds int `mapstructure:"user_group_rate_cache_ttl_seconds"`
 	// ModelsListCacheTTLSeconds: /v1/models 模型列表短缓存 TTL（秒）
 	ModelsListCacheTTLSeconds int `mapstructure:"models_list_cache_ttl_seconds"`
+	// ModelsListLookupTimeoutSeconds: 单个上游 live model discovery 请求超时（秒）
+	ModelsListLookupTimeoutSeconds int `mapstructure:"models_list_lookup_timeout_seconds"`
 
 	// UserMessageQueue: 用户消息串行队列配置
 	// 对 role:"user" 的真实用户消息实施账号级串行化 + RPM 自适应延迟
@@ -1337,7 +1339,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.client_idle_ttl_seconds", 900)
 	viper.SetDefault("gateway.concurrency_slot_ttl_minutes", 30) // 并发槽位过期时间（支持超长请求）
 	viper.SetDefault("gateway.stream_data_interval_timeout", 180)
-	viper.SetDefault("gateway.stream_keepalive_interval", 10)
+	viper.SetDefault("gateway.stream_keepalive_interval", 5)
 	viper.SetDefault("gateway.max_line_size", 500*1024*1024)
 	viper.SetDefault("gateway.scheduling.sticky_session_max_waiting", 3)
 	viper.SetDefault("gateway.scheduling.sticky_session_wait_timeout", 120*time.Second)
@@ -1371,6 +1373,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.usage_record.auto_scale_cooldown_seconds", 10)
 	viper.SetDefault("gateway.user_group_rate_cache_ttl_seconds", 30)
 	viper.SetDefault("gateway.models_list_cache_ttl_seconds", 86400)
+	viper.SetDefault("gateway.models_list_lookup_timeout_seconds", 8)
 	// TLS指纹伪装配置（默认关闭，需要账号级别单独启用）
 	// 用户消息串行队列默认值
 	viper.SetDefault("gateway.user_message_queue.enabled", false)
@@ -1996,6 +1999,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.ModelsListCacheTTLSeconds < 10 || c.Gateway.ModelsListCacheTTLSeconds > 86400 {
 		return fmt.Errorf("gateway.models_list_cache_ttl_seconds must be between 10-86400")
+	}
+	if c.Gateway.ModelsListLookupTimeoutSeconds < 1 || c.Gateway.ModelsListLookupTimeoutSeconds > 60 {
+		return fmt.Errorf("gateway.models_list_lookup_timeout_seconds must be between 1-60")
 	}
 	if c.Gateway.Scheduling.StickySessionMaxWaiting <= 0 {
 		return fmt.Errorf("gateway.scheduling.sticky_session_max_waiting must be positive")

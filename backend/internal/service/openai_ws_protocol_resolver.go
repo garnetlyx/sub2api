@@ -97,6 +97,34 @@ func (r *defaultOpenAIWSProtocolResolver) Resolve(account *Account) OpenAIWSProt
 		}
 		return openAIWSHTTPDecision("feature_disabled")
 	}
+	if account.IsOpenAIOAuth() && !account.IsOpenAIResponsesWebSocketV2Enabled() {
+		mode := account.ResolveOpenAIResponsesWebSocketV2Mode(wsCfg.IngressModeDefault)
+		switch mode {
+		case OpenAIWSIngressModeOff:
+			return openAIWSHTTPDecision("account_disabled")
+		case OpenAIWSIngressModeCtxPool, OpenAIWSIngressModePassthrough:
+			// OpenAI OAuth accounts support native Responses WebSocket. Defaulting
+			// OAuth to WS avoids requiring every refreshed OAuth account to carry
+			// duplicated transport flags, while API-key providers remain opt-in.
+		case OpenAIWSIngressModeShared, OpenAIWSIngressModeDedicated:
+			// Historical values are equivalent to ctx_pool.
+		default:
+			return openAIWSHTTPDecision("account_disabled")
+		}
+		if wsCfg.ResponsesWebsocketsV2 {
+			return OpenAIWSProtocolDecision{
+				Transport: OpenAIUpstreamTransportResponsesWebsocketV2,
+				Reason:    "ws_v2_oauth_default",
+			}
+		}
+		if wsCfg.ResponsesWebsockets {
+			return OpenAIWSProtocolDecision{
+				Transport: OpenAIUpstreamTransportResponsesWebsocket,
+				Reason:    "ws_v1_oauth_default",
+			}
+		}
+		return openAIWSHTTPDecision("feature_disabled")
+	}
 	if !account.IsOpenAIResponsesWebSocketV2Enabled() {
 		return openAIWSHTTPDecision("account_disabled")
 	}

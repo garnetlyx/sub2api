@@ -22,6 +22,10 @@ func TestOpenAIWSProtocolResolver_Resolve(t *testing.T) {
 			"openai_oauth_responses_websockets_v2_enabled": true,
 		},
 	}
+	openAIOAuthDefault := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+	}
 
 	t.Run("v2优先", func(t *testing.T) {
 		decision := NewOpenAIWSProtocolResolver(baseCfg).Resolve(openAIOAuthEnabled)
@@ -79,14 +83,20 @@ func TestOpenAIWSProtocolResolver_Resolve(t *testing.T) {
 		require.Equal(t, "account_disabled", decision.Reason)
 	})
 
+	t.Run("OAuth账号缺少显式WS开关时默认使用WSv2", func(t *testing.T) {
+		decision := NewOpenAIWSProtocolResolver(baseCfg).Resolve(openAIOAuthDefault)
+		require.Equal(t, OpenAIUpstreamTransportResponsesWebsocketV2, decision.Transport)
+		require.Equal(t, "ws_v2_oauth_default", decision.Reason)
+	})
+
 	t.Run("OAuth账号不会读取API Key专用开关", func(t *testing.T) {
 		account := *openAIOAuthEnabled
 		account.Extra = map[string]any{
-			"openai_apikey_responses_websockets_v2_enabled": true,
+			"openai_apikey_responses_websockets_v2_enabled": false,
 		}
 		decision := NewOpenAIWSProtocolResolver(baseCfg).Resolve(&account)
-		require.Equal(t, OpenAIUpstreamTransportHTTPSSE, decision.Transport)
-		require.Equal(t, "account_disabled", decision.Reason)
+		require.Equal(t, OpenAIUpstreamTransportResponsesWebsocketV2, decision.Transport)
+		require.Equal(t, "ws_v2_oauth_default", decision.Reason)
 	})
 
 	t.Run("兼容旧键openai_ws_enabled", func(t *testing.T) {
@@ -120,6 +130,16 @@ func TestOpenAIWSProtocolResolver_Resolve(t *testing.T) {
 		decision := NewOpenAIWSProtocolResolver(&cfg).Resolve(account)
 		require.Equal(t, OpenAIUpstreamTransportHTTPSSE, decision.Transport)
 		require.Equal(t, "apikey_disabled", decision.Reason)
+	})
+
+	t.Run("API Key账号缺少显式WS开关时保持HTTP", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+		}
+		decision := NewOpenAIWSProtocolResolver(baseCfg).Resolve(account)
+		require.Equal(t, OpenAIUpstreamTransportHTTPSSE, decision.Transport)
+		require.Equal(t, "account_disabled", decision.Reason)
 	})
 
 	t.Run("未知认证类型回退HTTP", func(t *testing.T) {

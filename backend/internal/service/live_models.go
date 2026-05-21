@@ -407,6 +407,13 @@ func (s *GatewayService) liveModelSourceCacheTTL() time.Duration {
 	return resolveModelsListCacheTTL(s.cfg)
 }
 
+func (s *GatewayService) liveModelSourceLookupTimeout() time.Duration {
+	if s == nil {
+		return defaultModelsListLookupTimeout
+	}
+	return resolveModelsListLookupTimeout(s.cfg)
+}
+
 func (s *GatewayService) cachedLiveModelSourceForAccountWithLoader(ctx context.Context, account Account, loader liveModelSourceLoader) (LiveModelSource, error) {
 	if s == nil {
 		return LiveModelSource{}, errors.New("gateway service is nil")
@@ -439,9 +446,19 @@ func (s *GatewayService) cachedLiveModelSourceForAccountWithLoader(ctx context.C
 			cache.Delete(key)
 		}
 
-		source, err := loader(ctx, account)
+		lookupCtx := ctx
+		cancel := func() {}
+		timeout := s.liveModelSourceLookupTimeout()
+		if timeout > 0 {
+			lookupCtx, cancel = context.WithTimeout(ctx, timeout)
+		}
+		defer cancel()
+
+		startedAt := time.Now()
+		source, err := loader(lookupCtx, account)
 		if err != nil {
-			return LiveModelSource{}, err
+			duration := time.Since(startedAt).Truncate(time.Millisecond)
+			return LiveModelSource{}, fmt.Errorf("live model source lookup failed after %s (timeout %s): %w", duration, timeout, err)
 		}
 		source = cloneLiveModelSource(source)
 		cache.Set(key, source, ttl)
@@ -797,7 +814,7 @@ func (s *GatewayService) GetLiveModelSources(ctx context.Context, groupID *int64
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, s.liveModelSourceLookupTimeout())
 	defer cancel()
 
 	var wg sync.WaitGroup
@@ -1120,7 +1137,7 @@ func (s *OpenAIGatewayService) GetLiveModelSources(ctx context.Context, groupID 
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, s.liveModelCacheGatewayService().liveModelSourceLookupTimeout())
 	defer cancel()
 
 	var wg sync.WaitGroup
