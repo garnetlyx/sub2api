@@ -166,6 +166,33 @@ func openAIWSIngressTurnRetryReason(err error) string {
 	return turnErr.stage
 }
 
+// IsOpenAIWSIngressAccountFailoverCandidate reports whether an ingress WS turn
+// failed before any downstream event was written, so the handler can safely
+// retry the first turn on another account without duplicating client events.
+func IsOpenAIWSIngressAccountFailoverCandidate(err error) bool {
+	var turnErr *openAIWSIngressTurnError
+	if !errors.As(err, &turnErr) || turnErr == nil {
+		return false
+	}
+	if turnErr.wroteDownstream {
+		return false
+	}
+	if errors.Is(turnErr.cause, context.Canceled) {
+		return false
+	}
+	switch turnErr.stage {
+	case "write_upstream", "read_upstream":
+		return true
+	default:
+		return false
+	}
+}
+
+// OpenAIWSIngressAccountFailoverReason returns a compact stage label for logs.
+func OpenAIWSIngressAccountFailoverReason(err error) string {
+	return openAIWSIngressTurnRetryReason(err)
+}
+
 func isOpenAIWSIngressPreviousResponseNotFound(err error) bool {
 	var turnErr *openAIWSIngressTurnError
 	if !errors.As(err, &turnErr) || turnErr == nil {
@@ -3409,7 +3436,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				hooks.AfterTurn(turn, nil, finalErr)
 			}
 			sessionLease.MarkBroken()
-			return finalErr
+			return relayErr
 		}
 		turnRetry = 0
 		turnPrevRecoveryTried = false

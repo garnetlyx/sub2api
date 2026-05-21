@@ -61,6 +61,31 @@ func TestIsOpenAIWSIngressPreviousResponseNotFound(t *testing.T) {
 	))
 }
 
+func TestIsOpenAIWSIngressAccountFailoverCandidate(t *testing.T) {
+	t.Parallel()
+
+	require.False(t, IsOpenAIWSIngressAccountFailoverCandidate(nil))
+	require.False(t, IsOpenAIWSIngressAccountFailoverCandidate(errors.New("plain error")))
+	require.False(t, IsOpenAIWSIngressAccountFailoverCandidate(
+		wrapOpenAIWSIngressTurnError("read_upstream", context.Canceled, false),
+	))
+	require.False(t, IsOpenAIWSIngressAccountFailoverCandidate(
+		wrapOpenAIWSIngressTurnError("read_upstream", errors.New("after downstream"), true),
+	))
+	require.False(t, IsOpenAIWSIngressAccountFailoverCandidate(
+		wrapOpenAIWSIngressTurnError(openAIWSIngressStagePreviousResponseNotFound, errors.New("previous response not found"), false),
+	))
+	require.True(t, IsOpenAIWSIngressAccountFailoverCandidate(
+		wrapOpenAIWSIngressTurnError("read_upstream", errors.New("upstream read failed"), false),
+	))
+	require.True(t, IsOpenAIWSIngressAccountFailoverCandidate(
+		wrapOpenAIWSIngressTurnError("write_upstream", errors.New("upstream write failed"), false),
+	))
+	require.Equal(t, "read_upstream", OpenAIWSIngressAccountFailoverReason(
+		wrapOpenAIWSIngressTurnError("read_upstream", errors.New("upstream read failed"), false),
+	))
+}
+
 func TestOpenAIWSIngressPreviousResponseRecoveryEnabled(t *testing.T) {
 	t.Parallel()
 
