@@ -1,6 +1,9 @@
 package openai
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+)
 
 func TestIsCodexCLIRequest(t *testing.T) {
 	tests := []struct {
@@ -9,6 +12,7 @@ func TestIsCodexCLIRequest(t *testing.T) {
 		want bool
 	}{
 		{name: "codex_cli_rs 前缀", ua: "codex_cli_rs/0.1.0", want: true},
+		{name: "codex-cli 前缀", ua: "codex-cli/0.132.0", want: true},
 		{name: "codex_vscode 前缀", ua: "codex_vscode/1.2.3", want: true},
 		{name: "大小写混合", ua: "Codex_CLI_Rs/0.1.0", want: true},
 		{name: "复合 UA 包含 codex", ua: "Mozilla/5.0 codex_cli_rs/0.1.0", want: true},
@@ -34,6 +38,7 @@ func TestIsCodexOfficialClientRequest(t *testing.T) {
 		want bool
 	}{
 		{name: "codex_cli_rs 前缀", ua: "codex_cli_rs/0.98.0", want: true},
+		{name: "codex-cli 前缀", ua: "codex-cli/0.132.0", want: true},
 		{name: "codex_vscode 前缀", ua: "codex_vscode/1.0.0", want: true},
 		{name: "codex_app 前缀", ua: "codex_app/0.1.0", want: true},
 		{name: "codex_chatgpt_desktop 前缀", ua: "codex_chatgpt_desktop/1.0.0", want: true},
@@ -104,6 +109,54 @@ func TestIsCodexOfficialClientByHeaders(t *testing.T) {
 			got := IsCodexOfficialClientByHeaders(tt.ua, tt.originator)
 			if got != tt.want {
 				t.Fatalf("IsCodexOfficialClientByHeaders(%q, %q) = %v, want %v", tt.ua, tt.originator, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsCodexOfficialClientByRequestHeaders(t *testing.T) {
+	tests := []struct {
+		name   string
+		header http.Header
+		want   bool
+	}{
+		{
+			name: "ua 命中",
+			header: http.Header{
+				"User-Agent": {"codex-cli/0.132.0"},
+			},
+			want: true,
+		},
+		{
+			name: "x-codex-turn-state 命中",
+			header: http.Header{
+				"User-Agent":         {"curl/8.0.1"},
+				"X-Codex-Turn-State": {"state"},
+			},
+			want: true,
+		},
+		{
+			name: "x-codex-turn-metadata 命中",
+			header: http.Header{
+				"User-Agent":            {"curl/8.0.1"},
+				"X-Codex-Turn-Metadata": {"metadata"},
+			},
+			want: true,
+		},
+		{
+			name: "无 Codex 信号",
+			header: http.Header{
+				"User-Agent": {"curl/8.0.1"},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IsCodexOfficialClientByRequestHeaders(tt.header)
+			if got != tt.want {
+				t.Fatalf("IsCodexOfficialClientByRequestHeaders(%v) = %v, want %v", tt.header, got, tt.want)
 			}
 		})
 	}

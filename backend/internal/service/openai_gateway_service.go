@@ -865,6 +865,13 @@ func (s *OpenAIGatewayService) detectCodexClientRestriction(c *gin.Context, acco
 	return s.getCodexClientRestrictionDetector().Detect(c, account)
 }
 
+func isOpenAICodexOfficialClientRequest(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	return openai.IsCodexOfficialClientByRequestHeaders(c.Request.Header)
+}
+
 func getAPIKeyIDFromContext(c *gin.Context) int64 {
 	if c == nil {
 		return 0
@@ -982,6 +989,58 @@ func hashSensitiveValueForLog(raw string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
+func (s *OpenAIGatewayService) logOpenAIResponsesClientClassification(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	reqModel string,
+	reqStream bool,
+	isCodexCLI bool,
+	clientTransport OpenAIClientTransport,
+	wsDecision OpenAIWSProtocolDecision,
+) {
+	if c == nil || c.Request == nil || account == nil || !reqStream {
+		return
+	}
+	if !account.IsOpenAIOAuth() || !strings.Contains(strings.TrimSpace(c.Request.URL.Path), "/responses") {
+		return
+	}
+	codexHeaderMatch := openai.HasCodexOfficialClientRequestHeader(c.Request.Header)
+	if isCodexCLI && wsDecision.Transport == OpenAIUpstreamTransportResponsesWebsocketV2 && !codexHeaderMatch {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req := c.Request
+	fields := []zap.Field{
+		zap.String("component", "service.openai_gateway"),
+		zap.Int64("account_id", account.ID),
+		zap.String("account_type", strings.TrimSpace(account.Type)),
+		zap.String("account_platform", strings.TrimSpace(account.Platform)),
+		zap.String("request_model", strings.TrimSpace(reqModel)),
+		zap.Bool("request_stream", reqStream),
+		zap.String("client_transport", string(clientTransport)),
+		zap.String("upstream_transport", string(wsDecision.Transport)),
+		zap.String("upstream_transport_reason", strings.TrimSpace(wsDecision.Reason)),
+		zap.Bool("codex_official_client_match", isCodexCLI),
+		zap.Bool("codex_header_match", codexHeaderMatch),
+		zap.String("request_user_agent", truncateString(strings.TrimSpace(req.Header.Get("User-Agent")), codexCLIOnlyHeaderValueMaxBytes)),
+		zap.String("request_originator", truncateString(strings.TrimSpace(req.Header.Get("originator")), codexCLIOnlyHeaderValueMaxBytes)),
+		zap.String("request_accept", truncateString(strings.TrimSpace(req.Header.Get("Accept")), codexCLIOnlyHeaderValueMaxBytes)),
+		zap.String("request_openai_beta", truncateString(strings.TrimSpace(req.Header.Get("OpenAI-Beta")), codexCLIOnlyHeaderValueMaxBytes)),
+		zap.String("request_content_type", truncateString(strings.TrimSpace(req.Header.Get("Content-Type")), codexCLIOnlyHeaderValueMaxBytes)),
+		zap.Bool("has_session_id", strings.TrimSpace(req.Header.Get("Session_ID")) != ""),
+		zap.Bool("has_conversation_id", strings.TrimSpace(req.Header.Get("Conversation_ID")) != ""),
+		zap.Bool("has_x_codex_turn_state", strings.TrimSpace(req.Header.Get("X-Codex-Turn-State")) != ""),
+		zap.Bool("has_x_codex_turn_metadata", strings.TrimSpace(req.Header.Get("X-Codex-Turn-Metadata")) != ""),
+		zap.String("request_host", strings.TrimSpace(req.Host)),
+		zap.String("request_client_ip", strings.TrimSpace(c.ClientIP())),
+		zap.String("request_remote_addr", strings.TrimSpace(req.RemoteAddr)),
+	}
+	logger.FromContext(ctx).With(fields...).Info("openai.responses_client_classification")
+}
+
 func logOpenAIInstructionsRequiredDebug(
 	ctx context.Context,
 	c *gin.Context,
@@ -1007,10 +1066,8 @@ func logOpenAIInstructionsRequiredDebug(
 	}
 
 	userAgent := ""
-	originator := ""
 	if c != nil {
 		userAgent = strings.TrimSpace(c.GetHeader("User-Agent"))
-		originator = strings.TrimSpace(c.GetHeader("originator"))
 	}
 
 	fields := []zap.Field{
@@ -1020,7 +1077,8 @@ func logOpenAIInstructionsRequiredDebug(
 		zap.Int("upstream_status_code", upstreamStatusCode),
 		zap.String("upstream_error_message", msg),
 		zap.String("request_user_agent", userAgent),
-		zap.Bool("codex_official_client_match", openai.IsCodexOfficialClientByHeaders(userAgent, originator)),
+		zap.Bool("codex_official_client_match", isOpenAICodexOfficialClientRequest(c)),
+		zap.Bool("codex_header_match", c != nil && c.Request != nil && openai.HasCodexOfficialClientRequestHeader(c.Request.Header)),
 	}
 	fields = appendCodexCLIOnlyRejectedRequestFields(fields, c, requestBody)
 
@@ -2361,10 +2419,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	reqModel, reqStream, promptCacheKey := extractOpenAIRequestMetaFromBody(body)
 	originalModel := reqModel
 
-	isCodexCLI := openai.IsCodexOfficialClientByHeaders(c.GetHeader("User-Agent"), c.GetHeader("originator")) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
+	isCodexCLI := isOpenAICodexOfficialClientRequest(c) || (s.cfg != nil && s.cfg.Gateway.ForceCodexCLI)
 	wsDecision := s.getOpenAIWSProtocolResolver().Resolve(account)
 	clientTransport := GetOpenAIClientTransport(c)
 	wsDecision = resolveOpenAIWSDecisionByClientTransport(wsDecision, clientTransport, account, isCodexCLI, reqStream)
+	s.logOpenAIResponsesClientClassification(ctx, c, account, reqModel, reqStream, isCodexCLI, clientTransport, wsDecision)
 	if c != nil {
 		c.Set("openai_ws_transport_decision", string(wsDecision.Transport))
 		c.Set("openai_ws_transport_reason", wsDecision.Reason)

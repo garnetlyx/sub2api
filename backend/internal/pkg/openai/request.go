@@ -1,12 +1,16 @@
 package openai
 
-import "strings"
+import (
+	"net/http"
+	"strings"
+)
 
 // CodexCLIUserAgentPrefixes matches Codex CLI User-Agent patterns
 // Examples: "codex_vscode/1.0.0", "codex_cli_rs/0.1.2"
 var CodexCLIUserAgentPrefixes = []string{
 	"codex_vscode/",
 	"codex_cli_rs/",
+	"codex-cli/",
 }
 
 // CodexOfficialClientUserAgentPrefixes matches Codex 官方客户端家族 User-Agent 前缀。
@@ -19,6 +23,7 @@ var CodexOfficialClientUserAgentPrefixes = []string{
 	"codex_atlas/",
 	"codex_exec/",
 	"codex_sdk_ts/",
+	"codex-cli/",
 	"codex ",
 }
 
@@ -28,6 +33,13 @@ var CodexOfficialClientUserAgentPrefixes = []string{
 var CodexOfficialClientOriginatorPrefixes = []string{
 	"codex_",
 	"codex ",
+}
+
+// CodexOfficialClientHeaderNames matches protocol-level headers emitted by
+// Codex Responses clients. These are client-family signals, not model names.
+var CodexOfficialClientHeaderNames = []string{
+	"X-Codex-Turn-State",
+	"X-Codex-Turn-Metadata",
 }
 
 // IsCodexCLIRequest checks if the User-Agent indicates a Codex CLI request
@@ -62,6 +74,30 @@ func IsCodexOfficialClientOriginator(originator string) bool {
 // official Codex client family request.
 func IsCodexOfficialClientByHeaders(userAgent, originator string) bool {
 	return IsCodexOfficialClientRequest(userAgent) || IsCodexOfficialClientOriginator(originator)
+}
+
+// HasCodexOfficialClientRequestHeader checks whether the request carries
+// Codex-specific Responses protocol headers.
+func HasCodexOfficialClientRequestHeader(header http.Header) bool {
+	if len(header) == 0 {
+		return false
+	}
+	for _, key := range CodexOfficialClientHeaderNames {
+		if strings.TrimSpace(header.Get(key)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// IsCodexOfficialClientByRequestHeaders checks the complete HTTP header set for
+// official Codex client-family signals.
+func IsCodexOfficialClientByRequestHeaders(header http.Header) bool {
+	if len(header) == 0 {
+		return false
+	}
+	return IsCodexOfficialClientByHeaders(header.Get("User-Agent"), header.Get("originator")) ||
+		HasCodexOfficialClientRequestHeader(header)
 }
 
 func normalizeCodexClientHeader(value string) string {

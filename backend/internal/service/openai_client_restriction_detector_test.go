@@ -23,6 +23,16 @@ func newCodexDetectorTestContext(ua string, originator string) *gin.Context {
 	return c
 }
 
+func newCodexDetectorTestContextWithHeaders(ua string, originator string, headers http.Header) *gin.Context {
+	c := newCodexDetectorTestContext(ua, originator)
+	for key, values := range headers {
+		for _, value := range values {
+			c.Request.Header.Add(key, value)
+		}
+	}
+	return c
+}
+
 func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -90,6 +100,22 @@ func TestOpenAICodexClientRestrictionDetector_Detect(t *testing.T) {
 		require.True(t, result.Enabled)
 		require.True(t, result.Matched)
 		require.Equal(t, CodexClientRestrictionReasonMatchedOriginator, result.Reason)
+	})
+
+	t.Run("开启后 Codex Responses 协议头命中", func(t *testing.T) {
+		detector := NewOpenAICodexClientRestrictionDetector(nil)
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Extra:    map[string]any{"codex_cli_only": true},
+		}
+
+		result := detector.Detect(newCodexDetectorTestContextWithHeaders("curl/8.0", "", http.Header{
+			"X-Codex-Turn-State": {"state"},
+		}), account)
+		require.True(t, result.Enabled)
+		require.True(t, result.Matched)
+		require.Equal(t, CodexClientRestrictionReasonMatchedCodexHeader, result.Reason)
 	})
 
 	t.Run("开启后非官方客户端拒绝", func(t *testing.T) {
