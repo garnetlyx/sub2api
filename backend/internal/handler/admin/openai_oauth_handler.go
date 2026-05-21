@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -243,7 +244,53 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		name = "OpenAI OAuth Account"
 	}
 
-	// Create account
+	// Check if an account with this name already exists (re-auth flow)
+	existingAccounts, _, listErr := h.adminService.ListAccounts(
+		c.Request.Context(), 1, 1, "", "", "", name, 0, "",
+	)
+	var existing *service.Account
+	if listErr == nil && len(existingAccounts) > 0 {
+		existing = &existingAccounts[0]
+	}
+
+	if existing != nil {
+		// Re-auth: update existing account credentials, clear error, restore schedulable
+		updated, updateErr := h.adminService.UpdateAccount(c.Request.Context(), existing.ID, &service.UpdateAccountInput{
+			Credentials: credentials,
+			Status:      "active",
+		})
+		if updateErr != nil {
+			slog.Warn("openai_oauth_reuse_update_failed",
+				"name", name,
+				"account_id", existing.ID,
+				"error", updateErr,
+			)
+			response.ErrorFrom(c, updateErr)
+			return
+		}
+
+		if _, clearErr := h.adminService.ClearAccountError(c.Request.Context(), existing.ID); clearErr != nil {
+			slog.Warn("openai_oauth_reuse_clear_error_failed",
+				"account_id", existing.ID,
+				"error", clearErr,
+			)
+		}
+		if _, schedErr := h.adminService.SetAccountSchedulable(c.Request.Context(), existing.ID, true); schedErr != nil {
+			slog.Warn("openai_oauth_reuse_set_schedulable_failed",
+				"account_id", existing.ID,
+				"error", schedErr,
+			)
+		}
+
+		slog.Info("openai_oauth_reuse_credentials_updated",
+			"name", name,
+			"account_id", existing.ID,
+		)
+		response.Success(c, dto.AccountFromService(updated))
+		return
+	}
+
+	// New account: create as before
 	account, err := h.adminService.CreateAccount(c.Request.Context(), &service.CreateAccountInput{
 		Name:        name,
 		Platform:    platform,
