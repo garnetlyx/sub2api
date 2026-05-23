@@ -74,6 +74,59 @@ func TestGetTrustedClientIPUsesGinClientIP(t *testing.T) {
 	require.Equal(t, "9.9.9.9", w.Body.String())
 }
 
+func TestObserveRequestSeparatesTrustedAndForwardedIPs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	r := gin.New()
+	require.NoError(t, r.SetTrustedProxies(nil))
+
+	r.GET("/t", func(c *gin.Context) {
+		snapshot := ObserveRequest(c)
+		require.Equal(t, "9.9.9.9:12345", snapshot.RemoteAddr)
+		require.Equal(t, "9.9.9.9", snapshot.RemoteIP)
+		require.Equal(t, "9.9.9.9", snapshot.TrustedClientIP)
+		require.Equal(t, "2.2.2.2", snapshot.HeaderClientIP)
+		require.Equal(t, "2.2.2.2", snapshot.CFConnectingIP)
+		require.Equal(t, "1.2.3.4", snapshot.XRealIP)
+		require.Equal(t, "10.0.0.1, 8.8.8.8", snapshot.XForwardedFor)
+		require.True(t, snapshot.HasForwardedHeaders)
+		require.True(t, snapshot.ForwardedIPMismatch)
+		c.Status(200)
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/t", nil)
+	req.RemoteAddr = "9.9.9.9:12345"
+	req.Header.Set("CF-Connecting-IP", "2.2.2.2")
+	req.Header.Set("X-Real-IP", "1.2.3.4")
+	req.Header.Set("X-Forwarded-For", "10.0.0.1, 8.8.8.8")
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, 200, w.Code)
+}
+
+func TestObserveRequestUsesFirstPublicXForwardedFor(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	r := gin.New()
+	require.NoError(t, r.SetTrustedProxies(nil))
+
+	r.GET("/t", func(c *gin.Context) {
+		snapshot := ObserveRequest(c)
+		require.Equal(t, "8.8.8.8", snapshot.HeaderClientIP)
+		require.True(t, snapshot.ForwardedIPMismatch)
+		c.Status(200)
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/t", nil)
+	req.RemoteAddr = "9.9.9.9:12345"
+	req.Header.Set("X-Forwarded-For", "10.0.0.1, 8.8.8.8")
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, 200, w.Code)
+}
+
 func TestCheckIPRestrictionWithCompiledRules(t *testing.T) {
 	whitelist := CompileIPRules([]string{"10.0.0.0/8", "192.168.1.2"})
 	blacklist := CompileIPRules([]string{"10.1.1.1"})

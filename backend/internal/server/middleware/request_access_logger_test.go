@@ -149,6 +149,9 @@ func TestLogger_AccessLogIncludesCoreFields(t *testing.T) {
 	sink := initMiddlewareTestLogger(t)
 
 	r := gin.New()
+	if err := r.SetTrustedProxies(nil); err != nil {
+		t.Fatalf("set trusted proxies: %v", err)
+	}
 	r.Use(Logger())
 	r.Use(func(c *gin.Context) {
 		ctx := c.Request.Context()
@@ -156,6 +159,8 @@ func TestLogger_AccessLogIncludesCoreFields(t *testing.T) {
 		ctx = context.WithValue(ctx, ctxkey.Platform, "openai")
 		ctx = context.WithValue(ctx, ctxkey.Model, "gpt-5")
 		c.Request = c.Request.WithContext(ctx)
+		c.Set(string(ContextKeyUser), AuthSubject{UserID: 7, Concurrency: 1})
+		c.Set(string(ContextKeyUserRole), "user")
 		c.Next()
 	})
 	r.GET("/api/test", func(c *gin.Context) {
@@ -164,6 +169,10 @@ func TestLogger_AccessLogIncludesCoreFields(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.RemoteAddr = "9.9.9.9:12345"
+	req.Host = "gateway.example.test"
+	req.Header.Set("User-Agent", "monitor-test/1.0")
+	req.Header.Set("X-Forwarded-For", "73.11.128.177")
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status=%d", w.Code)
@@ -205,6 +214,27 @@ func TestLogger_AccessLogIncludesCoreFields(t *testing.T) {
 		}
 		if event.Fields["platform"] != "openai" || event.Fields["model"] != "gpt-5" {
 			t.Fatalf("platform/model mismatch: %+v", event.Fields)
+		}
+		if event.Fields["client_ip"] != "9.9.9.9" || event.Fields["trusted_client_ip"] != "9.9.9.9" {
+			t.Fatalf("trusted client IP fields mismatch: %+v", event.Fields)
+		}
+		if event.Fields["remote_addr"] != "9.9.9.9:12345" || event.Fields["remote_ip"] != "9.9.9.9" {
+			t.Fatalf("remote address fields mismatch: %+v", event.Fields)
+		}
+		if event.Fields["header_client_ip"] != "73.11.128.177" || event.Fields["x_forwarded_for"] != "73.11.128.177" {
+			t.Fatalf("forwarded IP fields mismatch: %+v", event.Fields)
+		}
+		if event.Fields["has_forwarded_headers"] != true || event.Fields["forwarded_ip_mismatch"] != true {
+			t.Fatalf("forwarded header flags mismatch: %+v", event.Fields)
+		}
+		if event.Fields["host"] != "gateway.example.test" || event.Fields["user_agent"] != "monitor-test/1.0" {
+			t.Fatalf("request metadata mismatch: %+v", event.Fields)
+		}
+		if event.Fields["user_id"] != int64(7) && event.Fields["user_id"] != 7 {
+			t.Fatalf("user_id field mismatch: %+v", event.Fields)
+		}
+		if event.Fields["user_role"] != "user" {
+			t.Fatalf("user_role field mismatch: %+v", event.Fields)
 		}
 	}
 	if !found {

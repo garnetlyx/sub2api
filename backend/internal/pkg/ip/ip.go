@@ -8,6 +8,22 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// RequestSnapshot captures the observable client-address signals for a request.
+// It intentionally separates the trusted TCP/proxy-derived address from raw
+// forwarding headers so security logs can distinguish real peers from spoofable
+// metadata.
+type RequestSnapshot struct {
+	RemoteAddr          string
+	RemoteIP            string
+	TrustedClientIP     string
+	HeaderClientIP      string
+	CFConnectingIP      string
+	XRealIP             string
+	XForwardedFor       string
+	HasForwardedHeaders bool
+	ForwardedIPMismatch bool
+}
+
 // GetClientIP 从 Gin Context 中提取客户端真实 IP 地址。
 // 按以下优先级检查 Header：
 // 1. CF-Connecting-IP (Cloudflare)
@@ -42,6 +58,50 @@ func GetClientIP(c *gin.Context) string {
 
 	// 4. Gin 内置方法
 	return normalizeIP(c.ClientIP())
+}
+
+// ObserveRequest returns the client-address signals that are useful for access
+// logging and abuse investigation. HeaderClientIP follows GetClientIP's header
+// precedence but does not fall back to c.ClientIP().
+func ObserveRequest(c *gin.Context) RequestSnapshot {
+	if c == nil || c.Request == nil {
+		return RequestSnapshot{}
+	}
+
+	snapshot := RequestSnapshot{
+		RemoteAddr:      strings.TrimSpace(c.Request.RemoteAddr),
+		TrustedClientIP: normalizeIP(c.ClientIP()),
+		CFConnectingIP:  normalizeIP(c.GetHeader("CF-Connecting-IP")),
+		XRealIP:         normalizeIP(c.GetHeader("X-Real-IP")),
+		XForwardedFor:   strings.TrimSpace(c.GetHeader("X-Forwarded-For")),
+	}
+	snapshot.RemoteIP = normalizeIP(snapshot.RemoteAddr)
+	snapshot.HasForwardedHeaders = snapshot.CFConnectingIP != "" || snapshot.XRealIP != "" || snapshot.XForwardedFor != ""
+	snapshot.HeaderClientIP = forwardedHeaderClientIP(c)
+	snapshot.ForwardedIPMismatch = snapshot.HeaderClientIP != "" && snapshot.TrustedClientIP != "" && snapshot.HeaderClientIP != snapshot.TrustedClientIP
+	return snapshot
+}
+
+func forwardedHeaderClientIP(c *gin.Context) string {
+	if ip := c.GetHeader("CF-Connecting-IP"); ip != "" {
+		return normalizeIP(ip)
+	}
+	if ip := c.GetHeader("X-Real-IP"); ip != "" {
+		return normalizeIP(ip)
+	}
+	if xff := c.GetHeader("X-Forwarded-For"); xff != "" {
+		ips := strings.Split(xff, ",")
+		for _, ip := range ips {
+			ip = strings.TrimSpace(ip)
+			if ip != "" && !isPrivateIP(ip) {
+				return normalizeIP(ip)
+			}
+		}
+		if len(ips) > 0 {
+			return normalizeIP(strings.TrimSpace(ips[0]))
+		}
+	}
+	return ""
 }
 
 // GetTrustedClientIP 从 Gin 的可信代理解析链提取客户端 IP。
