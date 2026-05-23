@@ -240,7 +240,7 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			upstreamMsg,
 			truncateForLog(responseBody, 1024),
 		)
-		shouldDisable = s.handle403(ctx, account, upstreamMsg, responseBody)
+		shouldDisable = s.handle403(ctx, account, upstreamMsg, responseBody, headers)
 	case 429:
 		s.handle429(ctx, account, headers, responseBody)
 		shouldDisable = false
@@ -646,19 +646,20 @@ func (s *RateLimitService) handleAuthError(ctx context.Context, account *Account
 }
 
 // handle403 处理 403 Forbidden 错误
-// Antigravity 平台区分 validation/violation/generic 三种类型，均 SetError 永久禁用；
-// 其他平台保持原有 SetError 行为。
-func (s *RateLimitService) handle403(ctx context.Context, account *Account, upstreamMsg string, responseBody []byte) (shouldDisable bool) {
-	if account.Platform == PlatformAntigravity {
+func (s *RateLimitService) handle403(ctx context.Context, account *Account, upstreamMsg string, responseBody []byte, headers http.Header) (shouldDisable bool) {
+	switch account.Platform {
+	case PlatformAntigravity:
 		return s.handleAntigravity403(ctx, account, upstreamMsg, responseBody)
+	case PlatformOpenAI:
+		return s.handleOpenAI403(ctx, account, upstreamMsg, responseBody, headers)
+	default:
+		msg := "Access forbidden (403): account may be suspended or lack permissions"
+		if upstreamMsg != "" {
+			msg = "Access forbidden (403): " + upstreamMsg
+		}
+		s.handleAuthError(ctx, account, msg)
+		return true
 	}
-	// 非 Antigravity 平台：保持原有行为
-	msg := "Access forbidden (403): account may be suspended or lack permissions"
-	if upstreamMsg != "" {
-		msg = "Access forbidden (403): " + upstreamMsg
-	}
-	s.handleAuthError(ctx, account, msg)
-	return true
 }
 
 // handleAntigravity403 处理 Antigravity 平台的 403 错误
@@ -699,6 +700,40 @@ func (s *RateLimitService) handleAntigravity403(ctx context.Context, account *Ac
 		s.handleAuthError(ctx, account, msg)
 		return true
 	}
+}
+
+func isOpenAICloudflareBlock(headers http.Header, body []byte) bool {
+	ct := strings.ToLower(headers.Get("Content-Type"))
+	if strings.Contains(ct, "text/html") {
+		return true
+	}
+	if headers.Get("Cf-Ray") != "" && len(body) == 0 {
+		return true
+	}
+	return false
+}
+
+func (s *RateLimitService) handleOpenAI403(ctx context.Context, account *Account, upstreamMsg string, responseBody []byte, headers http.Header) (shouldDisable bool) {
+	if isOpenAICloudflareBlock(headers, responseBody) {
+		slog.Warn("openai.cloudflare_403_temp_unschedulable",
+			"account_id", account.ID,
+			"account_name", account.Name,
+			"cf_ray", headers.Get("Cf-Ray"),
+			"content_type", headers.Get("Content-Type"),
+		)
+		until := time.Now().Add(10 * time.Minute)
+		msg := "Cloudflare 403 (temporary): backend-api blocked by Cloudflare challenge"
+		if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, msg); err != nil {
+			slog.Warn("openai_cloudflare_401_set_temp_unschedulable_failed", "account_id", account.ID, "error", err)
+		}
+		return true
+	}
+	msg := "Access forbidden (403): account may be suspended or lack permissions"
+	if upstreamMsg != "" {
+		msg = "Access forbidden (403): " + upstreamMsg
+	}
+	s.handleAuthError(ctx, account, msg)
+	return true
 }
 
 // handleCustomErrorCode 处理自定义错误码，停止账号调度

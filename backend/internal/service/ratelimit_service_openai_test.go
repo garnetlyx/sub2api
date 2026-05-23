@@ -410,3 +410,100 @@ func TestCalculateOpenAI429ResetTime_5MinFallbackWhenNoReset(t *testing.T) {
 		t.Errorf("expected nil when no reset_after_seconds, got %v", resetAt)
 	}
 }
+
+func TestIsOpenAICloudflareBlock_HTMLContentType(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Content-Type", "text/html; charset=UTF-8")
+	body := []byte("<html><head>...</head></html>")
+
+	if !isOpenAICloudflareBlock(headers, body) {
+		t.Error("expected Cloudflare block detection for text/html content type")
+	}
+}
+
+func TestIsOpenAICloudflareBlock_CFrayWithEmptyBody(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Cf-Ray", "some-ray-id")
+	headers.Set("Content-Type", "application/json")
+
+	if !isOpenAICloudflareBlock(headers, nil) {
+		t.Error("expected Cloudflare block detection for Cf-Ray with empty body")
+	}
+}
+
+func TestIsOpenAICloudflareBlock_GenuineOpenAI403(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Content-Type", "application/json")
+	body := []byte(`{"error":{"message":"You do not have access to this model","type":"permission_error"}}`)
+
+	if isOpenAICloudflareBlock(headers, body) {
+		t.Error("expected NO Cloudflare block detection for genuine OpenAI JSON 403")
+	}
+}
+
+func TestIsOpenAICloudflareBlock_NoIndicators(t *testing.T) {
+	headers := http.Header{}
+	body := []byte(`{"detail":"Access forbidden"}`)
+
+	if isOpenAICloudflareBlock(headers, body) {
+		t.Error("expected NO Cloudflare block detection when no indicators present")
+	}
+}
+
+func TestHandleOpenAI403_CloudflareBlock_SetsTempUnschedulable(t *testing.T) {
+	repo := &mockAccountRepoForHandleOpenAI403{}
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
+	account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	headers := http.Header{}
+	headers.Set("Content-Type", "text/html; charset=UTF-8")
+	headers.Set("Cf-Ray", "abc123")
+
+	body := []byte("<html>Error</html>")
+	shouldDisable := svc.handleOpenAI403(context.Background(), account, "", body, headers)
+
+	if !shouldDisable {
+		t.Error("expected shouldDisable=true for Cloudflare 403")
+	}
+	if repo.tempUnschedulableID != account.ID {
+		t.Errorf("expected SetTempUnschedulable called with account ID %d, got %d", account.ID, repo.tempUnschedulableID)
+	}
+}
+
+func TestHandleOpenAI403_GenuineBan_SetsError(t *testing.T) {
+	repo := &mockAccountRepoForHandleOpenAI403{}
+	svc := NewRateLimitService(repo, nil, nil, nil, nil)
+	account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	headers := http.Header{}
+	headers.Set("Content-Type", "application/json")
+
+	body := []byte(`{"error":{"message":"Account suspended","type":"permission_error"}}`)
+	shouldDisable := svc.handleOpenAI403(context.Background(), account, "Account suspended", body, headers)
+
+	if !shouldDisable {
+		t.Error("expected shouldDisable=true for genuine ban")
+	}
+	if repo.errorID != account.ID {
+		t.Errorf("expected SetError called with account ID %d, got %d", account.ID, repo.errorID)
+	}
+	if repo.tempUnschedulableID != 0 {
+		t.Errorf("expected NO SetTempUnschedulable for genuine ban, got ID %d", repo.tempUnschedulableID)
+	}
+}
+
+type mockAccountRepoForHandleOpenAI403 struct {
+	mockAccountRepoForGemini
+	errorID             int64
+	tempUnschedulableID int64
+}
+
+func (r *mockAccountRepoForHandleOpenAI403) SetError(_ context.Context, id int64, _ string) error {
+	r.errorID = id
+	return nil
+}
+
+func (r *mockAccountRepoForHandleOpenAI403) SetTempUnschedulable(_ context.Context, id int64, _ time.Time, _ string) error {
+	r.tempUnschedulableID = id
+	return nil
+}
