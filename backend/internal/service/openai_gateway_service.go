@@ -691,6 +691,34 @@ func resolveOpenAIWSFallbackErrorResponse(err error) (statusCode int, errType st
 	return statusCode, errType, clientMessage, upstreamMessage, true
 }
 
+// isOpenAIWSAuthFailedError checks if the WS error is an auth failure (revoked/expired token).
+func isOpenAIWSAuthFailedError(err error) bool {
+	var fallbackErr *openAIWSFallbackError
+	if !errors.As(err, &fallbackErr) || fallbackErr == nil {
+		return false
+	}
+	reason := strings.TrimSpace(fallbackErr.Reason)
+	return reason == "auth_failed" || strings.TrimPrefix(reason, "prewarm_") == "auth_failed"
+}
+
+// wsFallbackAsFailoverError converts an auth_failed WS fallback error into an
+// UpstreamFailoverError so the handler failover loop can switch to another account.
+func wsFallbackAsFailoverError(err error) *UpstreamFailoverError {
+	var fallbackErr *openAIWSFallbackError
+	if !errors.As(err, &fallbackErr) || fallbackErr == nil {
+		return nil
+	}
+	statusCode := 401
+	var dialErr *openAIWSDialError
+	if errors.As(fallbackErr.Err, &dialErr) && dialErr != nil && dialErr.StatusCode > 0 {
+		statusCode = dialErr.StatusCode
+	}
+	return &UpstreamFailoverError{
+		StatusCode: statusCode,
+		Reason:     "ws_auth_failed",
+	}
+}
+
 func (s *OpenAIGatewayService) writeOpenAIWSFallbackErrorResponse(c *gin.Context, account *Account, wsErr error) bool {
 	if c == nil || c.Writer == nil || c.Writer.Written() {
 		return false
@@ -2898,6 +2926,15 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			)
 			wsResult.UpstreamModel = upstreamModel
 			return wsResult, nil
+		}
+		// auth_failed means the account's OAuth token is revoked/expired upstream.
+		// Convert to UpstreamFailoverError so the handler failover loop can switch accounts.
+		if isOpenAIWSAuthFailedError(wsErr) {
+			failoverErr := wsFallbackAsFailoverError(wsErr)
+			if failoverErr != nil {
+				logger.LegacyPrintf("service.openai_gateway", "[OpenAI WS Mode] auth_failed → failover account_id=%d reason=ws_auth_failed", account.ID)
+				return nil, failoverErr
+			}
 		}
 		s.writeOpenAIWSFallbackErrorResponse(c, account, wsErr)
 		return nil, wsErr
