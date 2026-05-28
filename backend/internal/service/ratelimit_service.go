@@ -150,13 +150,19 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 		}
 		// 其他 400 错误（如参数问题）不处理，不禁用账号
 	case 401:
-		// OpenAI: token_invalidated / token_revoked 表示 token 被永久作废（非过期），直接标记 error
 		openai401Code := extractUpstreamErrorCode(responseBody)
 		if account.Platform == PlatformOpenAI && (openai401Code == "token_invalidated" || openai401Code == "token_revoked") {
 			msg := "Token revoked (401): account authentication permanently revoked"
 			if upstreamMsg != "" {
 				msg = "Token revoked (401): " + upstreamMsg
 			}
+			slog.Warn("openai_token_revoked_detected",
+				"account_id", account.ID,
+				"account_name", account.Name,
+				"upstream_error_code", openai401Code,
+				"upstream_detail", gjson.GetBytes(responseBody, "detail").String(),
+				"response_body_snippet", truncateForLog(responseBody, 512),
+			)
 			s.handleAuthError(ctx, account, msg)
 			shouldDisable = true
 			break
@@ -186,9 +192,9 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			}
 			account.Credentials["expires_at"] = time.Now().Format(time.RFC3339)
 			if err := persistAccountCredentials(ctx, s.accountRepo, account, account.Credentials); err != nil {
-				slog.Warn("oauth_401_force_refresh_update_failed", "account_id", account.ID, "error", err)
+				slog.Warn("oauth_401_force_refresh_update_failed", "account_id", account.ID, "account_name", account.Name, "platform", account.Platform, "error", err)
 			} else {
-				slog.Info("oauth_401_force_refresh_set", "account_id", account.ID, "platform", account.Platform)
+				slog.Info("oauth_401_force_refresh_set", "account_id", account.ID, "account_name", account.Name, "platform", account.Platform)
 			}
 			// 3. 临时不可调度，替代 SetError（保持 status=active 让刷新服务能拾取）
 			msg := "Authentication failed (401): invalid or expired credentials"
@@ -642,7 +648,53 @@ func (s *RateLimitService) handleAuthError(ctx context.Context, account *Account
 		slog.Warn("account_set_error_failed", "account_id", account.ID, "error", err)
 		return
 	}
-	slog.Warn("account_disabled_auth_error", "account_id", account.ID, "error", errorMsg)
+	attr := []any{
+		"account_id", account.ID,
+		"account_name", account.Name,
+		"platform", account.Platform,
+		"account_type", account.Type,
+		"error", errorMsg,
+	}
+	attr = appendAuthDiagnosticAttrs(attr, account)
+	slog.Warn("account_disabled_auth_error", attr...)
+}
+
+func appendAuthDiagnosticAttrs(attr []any, account *Account) []any {
+	if account.Credentials != nil {
+		if planType, ok := account.Credentials["plan_type"].(string); ok && planType != "" {
+			attr = append(attr, "plan_type", planType)
+		}
+		if subExpires, ok := account.Credentials["subscription_expires_at"].(string); ok && subExpires != "" {
+			attr = append(attr, "subscription_expires_at", subExpires)
+			if t, err := time.Parse(time.RFC3339, subExpires); err == nil {
+				attr = append(attr, "subscription_expires_in", time.Until(t).Round(time.Minute).String())
+			}
+		}
+		if tokenExpires, ok := account.Credentials["expires_at"].(string); ok && tokenExpires != "" {
+			attr = append(attr, "token_expires_at", tokenExpires)
+			if t, err := time.Parse(time.RFC3339, tokenExpires); err == nil {
+				attr = append(attr, "token_age", time.Since(t).Round(time.Minute).String())
+			}
+		}
+		if chatgptUID, ok := account.Credentials["chatgpt_user_id"].(string); ok && chatgptUID != "" {
+			attr = append(attr, "chatgpt_user_id_prefix", chatgptUID[:min(len(chatgptUID), 16)])
+		}
+	}
+	if account.Extra != nil {
+		if v, ok := account.Extra["codex_5h_used_percent"]; ok {
+			attr = append(attr, "codex_5h_used_percent", v)
+		}
+		if v, ok := account.Extra["codex_7d_used_percent"]; ok {
+			attr = append(attr, "codex_7d_used_percent", v)
+		}
+		if v, ok := account.Extra["codex_usage_updated_at"]; ok {
+			attr = append(attr, "codex_usage_updated_at", v)
+		}
+	}
+	if account.LastUsedAt != nil && !account.LastUsedAt.IsZero() {
+		attr = append(attr, "last_used_at", account.LastUsedAt.Format(time.RFC3339), "idle_since", time.Since(*account.LastUsedAt).Round(time.Second).String())
+	}
+	return attr
 }
 
 // handle403 处理 403 Forbidden 错误

@@ -719,6 +719,37 @@ func wsFallbackAsFailoverError(err error) *UpstreamFailoverError {
 	}
 }
 
+func buildWSAuthDiagAttrs(account *Account, wsErr error, dialStatus int, upstreamModel string) []any {
+	attr := []any{
+		"account_id", account.ID,
+		"account_name", account.Name,
+		"dial_status", dialStatus,
+		"upstream_model", upstreamModel,
+	}
+	if account.Credentials != nil {
+		if planType, ok := account.Credentials["plan_type"].(string); ok && planType != "" {
+			attr = append(attr, "plan_type", planType)
+		}
+		if tokenExpires, ok := account.Credentials["expires_at"].(string); ok && tokenExpires != "" {
+			if t, err := time.Parse(time.RFC3339, tokenExpires); err == nil {
+				attr = append(attr, "token_age", time.Since(t).Round(time.Minute).String())
+			}
+		}
+	}
+	if account.Extra != nil {
+		if v, ok := account.Extra["codex_5h_used_percent"]; ok {
+			attr = append(attr, "codex_5h_used_percent", v)
+		}
+		if v, ok := account.Extra["codex_7d_used_percent"]; ok {
+			attr = append(attr, "codex_7d_used_percent", v)
+		}
+	}
+	if wsErr != nil {
+		attr = append(attr, "ws_error", wsErr.Error()[:min(len(wsErr.Error()), 256)])
+	}
+	return attr
+}
+
 func (s *OpenAIGatewayService) writeOpenAIWSFallbackErrorResponse(c *gin.Context, account *Account, wsErr error) bool {
 	if c == nil || c.Writer == nil || c.Writer.Written() {
 		return false
@@ -2932,6 +2963,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		if isOpenAIWSAuthFailedError(wsErr) {
 			failoverErr := wsFallbackAsFailoverError(wsErr)
 			if failoverErr != nil {
+				dialStatus := 0
+				var dialErr *openAIWSDialError
+				if errors.As(wsErr, &dialErr) && dialErr != nil {
+					dialStatus = dialErr.StatusCode
+				}
+				authDiagAttrs := buildWSAuthDiagAttrs(account, wsErr, dialStatus, upstreamModel)
+				slog.Warn("openai_ws_auth_failed", authDiagAttrs...)
 				logger.LegacyPrintf("service.openai_gateway", "[OpenAI WS Mode] auth_failed → failover account_id=%d reason=ws_auth_failed", account.ID)
 				return nil, failoverErr
 			}
