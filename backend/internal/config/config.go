@@ -527,6 +527,14 @@ type GatewayOpenAIWSConfig struct {
 	StickyPreviousResponseTTLSeconds int `mapstructure:"sticky_previous_response_ttl_seconds"`
 
 	SchedulerScoreWeights GatewayOpenAIWSSchedulerScoreWeights `mapstructure:"scheduler_score_weights"`
+
+	// SameUserSerializationEnabled: serialize scheduling of OpenAI OAuth accounts
+	// sharing the same chatgpt_user_id. Prevents concurrent-session token revocation.
+	SameUserSerializationEnabled bool `mapstructure:"same_user_serialization_enabled"`
+	// SameUserSerializationCooldownSeconds: cooldown after selecting one account
+	// before another in the same chatgpt_user_id group can be scheduled.
+	// Default 300 (5 minutes). 0 = no cooldown (instant switch allowed).
+	SameUserSerializationCooldownSeconds int `mapstructure:"same_user_serialization_cooldown_seconds"`
 }
 
 // GatewayOpenAIWSSchedulerScoreWeights 账号调度打分权重。
@@ -1323,6 +1331,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.queue", 0.7)
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.error_rate", 0.8)
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.ttft", 0.5)
+	viper.SetDefault("gateway.openai_ws.same_user_serialization_enabled", true)
+	viper.SetDefault("gateway.openai_ws.same_user_serialization_cooldown_seconds", 300)
 	viper.SetDefault("gateway.antigravity_fallback_cooldown_minutes", 1)
 	viper.SetDefault("gateway.antigravity_extra_retries", 10)
 	viper.SetDefault("gateway.max_body_size", int64(256*1024*1024))
@@ -1929,6 +1939,9 @@ func (c *Config) Validate() error {
 		c.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT
 	if weightSum <= 0 {
 		return fmt.Errorf("gateway.openai_ws.scheduler_score_weights must not all be zero")
+	}
+	if c.Gateway.OpenAIWS.SameUserSerializationCooldownSeconds < 0 {
+		return fmt.Errorf("gateway.openai_ws.same_user_serialization_cooldown_seconds must be non-negative")
 	}
 	if c.Gateway.MaxLineSize < 0 {
 		return fmt.Errorf("gateway.max_line_size must be non-negative")

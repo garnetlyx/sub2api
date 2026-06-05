@@ -345,6 +345,9 @@ type OpenAIGatewayService struct {
 	openaiAccountStats            *openAIAccountRuntimeStats
 
 	openaiWSFallbackUntil sync.Map // key: int64(accountID), value: time.Time
+	// sameUserLastScheduled tracks last-selected account per chatgpt_user_id.
+	// key: string(chatgpt_user_id), value: *sameUserScheduleState
+	sameUserLastScheduled sync.Map
 	openaiWSRetryMetrics  openAIWSRetryMetrics
 	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
 	codexSnapshotThrottle *accountWriteThrottle

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"log/slog"
 	"math"
 	"sort"
 	"strconv"
@@ -27,6 +28,15 @@ const (
 	openAIAccountScheduleLayerSessionSticky    = "session_hash"
 	openAIAccountScheduleLayerLoadBalance      = "load_balance"
 )
+
+// sameUserScheduleState tracks which account was last scheduled within a
+// chatgpt_user_id group. Used to serialize access across OpenAI OAuth accounts
+// sharing the same underlying user identity, preventing concurrent-session detection.
+type sameUserScheduleState struct {
+	mu        sync.Mutex
+	accountID int64
+	activeAt  time.Time
+}
 
 type OpenAIAccountScheduleRequest struct {
 	GroupID            *int64
@@ -272,6 +282,7 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			if req.SessionHash != "" {
 				_ = s.service.BindStickySession(ctx, req.GroupID, req.SessionHash, selection.Account.ID)
 			}
+			s.recordSameUserSelection(selection.Account)
 			return selection, decision, nil
 		}
 	}
@@ -357,6 +368,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	result, acquireErr := s.service.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 	if acquireErr == nil && result.Acquired {
 		_ = s.service.refreshStickySessionTTL(ctx, req.GroupID, sessionHash, s.service.openAIWSSessionStickyTTL())
+			s.recordSameUserSelection(account)
 		return &AccountSelectionResult{
 			Account:     account,
 			Acquired:    true,
@@ -581,6 +593,118 @@ func buildOpenAIWeightedSelectionOrder(
 	return order
 }
 
+func (s *defaultOpenAIAccountScheduler) loadOrCreateSameUserState(uid string) *sameUserScheduleState {
+	if val, ok := s.service.sameUserLastScheduled.Load(uid); ok {
+		if st, ok := val.(*sameUserScheduleState); ok && st != nil {
+			return st
+		}
+	}
+	st := &sameUserScheduleState{}
+	actual, _ := s.service.sameUserLastScheduled.LoadOrStore(uid, st)
+	if existing, ok := actual.(*sameUserScheduleState); ok && existing != nil {
+		return existing
+	}
+	return st
+}
+
+// filterSameUserSerialized removes OpenAI OAuth candidates that share a
+// chatgpt_user_id with the currently-active account in their group, when the
+// cooldown has not yet elapsed. This prevents OpenAI from detecting concurrent
+// sessions and revoking tokens.
+func (s *defaultOpenAIAccountScheduler) filterSameUserSerialized(
+	candidates []*Account,
+) []*Account {
+	if s == nil || s.service == nil || !s.service.isOpenAISameUserSerializationEnabled() {
+		return candidates
+	}
+
+	cooldown := s.service.openAISameUserSerializationCooldown()
+	now := time.Now()
+
+	groups := make(map[string][]int)
+	for i, acct := range candidates {
+		uid := acct.GetChatGPTUserID()
+		if uid == "" {
+			continue
+		}
+		groups[uid] = append(groups[uid], i)
+	}
+	if len(groups) == 0 {
+		return candidates
+	}
+
+	exclude := make(map[int64]struct{})
+	for uid, indices := range groups {
+		if len(indices) <= 1 {
+			continue
+		}
+
+		state := s.loadOrCreateSameUserState(uid)
+		state.mu.Lock()
+		lastAccountID := state.accountID
+		lastActiveAt := state.activeAt
+		state.mu.Unlock()
+
+		if lastAccountID <= 0 || lastActiveAt.IsZero() {
+			continue
+		}
+		if !now.Before(lastActiveAt.Add(cooldown)) {
+			continue
+		}
+
+		lastInCandidates := false
+		for _, idx := range indices {
+			if candidates[idx].ID == lastAccountID {
+				lastInCandidates = true
+				break
+			}
+		}
+
+		for _, idx := range indices {
+			acctID := candidates[idx].ID
+			if acctID == lastAccountID && lastInCandidates {
+				continue
+			}
+			exclude[acctID] = struct{}{}
+			slog.Debug("openai.same_user_serialization_excluded",
+				"account_id", acctID,
+				"chatgpt_user_id", uid,
+				"active_account_id", lastAccountID,
+				"cooldown_remaining", lastActiveAt.Add(cooldown).Sub(now).Round(time.Second).String(),
+			)
+		}
+	}
+
+	if len(exclude) == 0 {
+		return candidates
+	}
+
+	filtered := make([]*Account, 0, len(candidates)-len(exclude))
+	for _, acct := range candidates {
+		if _, ok := exclude[acct.ID]; !ok {
+			filtered = append(filtered, acct)
+		}
+	}
+	return filtered
+}
+
+// recordSameUserSelection records that the given account was selected, making it
+// the active account for its chatgpt_user_id group.
+func (s *defaultOpenAIAccountScheduler) recordSameUserSelection(account *Account) {
+	if s == nil || s.service == nil || !s.service.isOpenAISameUserSerializationEnabled() {
+		return
+	}
+	uid := account.GetChatGPTUserID()
+	if uid == "" {
+		return
+	}
+	state := s.loadOrCreateSameUserState(uid)
+	state.mu.Lock()
+	state.accountID = account.ID
+	state.activeAt = time.Now()
+	state.mu.Unlock()
+}
+
 func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
@@ -634,6 +758,11 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	}
 	if len(filtered) == 0 {
 		return nil, 0, 0, 0, errors.New("no available OpenAI accounts")
+	}
+
+	filtered = s.filterSameUserSerialized(filtered)
+	if len(filtered) == 0 {
+		return nil, 0, 0, 0, errors.New("no available OpenAI accounts (same-user serialization)")
 	}
 
 	loadMap := map[int64]*AccountLoadInfo{}
@@ -741,6 +870,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			if req.SessionHash != "" {
 				_ = s.service.BindStickySession(ctx, req.GroupID, req.SessionHash, fresh.ID)
 			}
+				s.recordSameUserSelection(fresh)
 			return &AccountSelectionResult{
 				Account:     fresh,
 				Acquired:    true,
@@ -939,6 +1069,20 @@ func (s *OpenAIGatewayService) openAIWSSessionStickyTTL() time.Duration {
 		return time.Duration(s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds) * time.Second
 	}
 	return openaiStickySessionTTL
+}
+
+func (s *OpenAIGatewayService) isOpenAISameUserSerializationEnabled() bool {
+	if s != nil && s.cfg != nil {
+		return s.cfg.Gateway.OpenAIWS.SameUserSerializationEnabled
+	}
+	return true
+}
+
+func (s *OpenAIGatewayService) openAISameUserSerializationCooldown() time.Duration {
+	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.SameUserSerializationCooldownSeconds > 0 {
+		return time.Duration(s.cfg.Gateway.OpenAIWS.SameUserSerializationCooldownSeconds) * time.Second
+	}
+	return 300 * time.Second
 }
 
 func (s *OpenAIGatewayService) openAICompatibilityExclusionTTL() time.Duration {
