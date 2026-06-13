@@ -73,6 +73,7 @@ type AdminService interface {
 	// ForceAntigravityPrivacy 强制重新设置 Antigravity OAuth 账号隐私，无论当前状态。
 	ForceAntigravityPrivacy(ctx context.Context, account *Account) string
 	SetAccountSchedulable(ctx context.Context, id int64, schedulable bool) (*Account, error)
+	SetAccountTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error
 	BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error)
 	CheckMixedChannelRisk(ctx context.Context, currentAccountID int64, currentAccountPlatform string, groupIDs []int64) error
 
@@ -1923,6 +1924,10 @@ func (s *adminServiceImpl) SetAccountSchedulable(ctx context.Context, id int64, 
 		return nil, err
 	}
 	return updated, nil
+}
+
+func (s *adminServiceImpl) SetAccountTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
+	return s.accountRepo.SetTempUnschedulable(ctx, id, until, reason)
 }
 
 // Proxy management implementations

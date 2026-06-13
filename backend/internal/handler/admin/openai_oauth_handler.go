@@ -284,10 +284,22 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 				"error", clearErr,
 			)
 		}
-		if _, schedErr := h.adminService.SetAccountSchedulable(c.Request.Context(), existingID, true); schedErr != nil {
-			slog.Warn("openai_oauth_reuse_set_schedulable_failed",
+
+		// Set 2-hour temp unschedulable cooldown to let OpenAI's session block expire
+		// before the account enters rotation. Re-auth during an active block window
+		// causes new tokens to be immediately invalidated.
+		reauthCooldownUntil := time.Now().Add(2 * time.Hour)
+		reauthCooldownReason := "post-reauth cooldown: waiting for OpenAI session block to expire"
+		if cooldownErr := h.adminService.SetAccountTempUnschedulable(c.Request.Context(), existingID, reauthCooldownUntil, reauthCooldownReason); cooldownErr != nil {
+			slog.Warn("openai_oauth_reuse_cooldown_failed",
 				"account_id", existingID,
-				"error", schedErr,
+				"error", cooldownErr,
+			)
+		} else {
+			slog.Info("openai_oauth_reuse_cooldown_set",
+				"account_id", existingID,
+				"name", name,
+				"unschedulable_until", reauthCooldownUntil.Format(time.RFC3339),
 			)
 		}
 

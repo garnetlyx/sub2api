@@ -247,6 +247,10 @@ func (s *stubAdminService) SetAccountSchedulable(ctx context.Context, id int64, 
 	return &account, nil
 }
 
+func (s *stubAdminService) SetAccountTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
+	return nil
+}
+
 func (s *stubAdminService) BulkUpdateAccounts(ctx context.Context, input *service.BulkUpdateAccountsInput) (*service.BulkUpdateAccountsResult, error) {
 	if s.bulkUpdateAccountErr != nil {
 		return nil, s.bulkUpdateAccountErr
