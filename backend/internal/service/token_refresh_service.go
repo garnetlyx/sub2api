@@ -15,6 +15,41 @@ import (
 // tokenRefreshTempUnschedDuration token 刷新重试耗尽后临时不可调度的持续时间
 const tokenRefreshTempUnschedDuration = 10 * time.Minute
 
+// terminalRefreshFailureCache prevents repeated refresh attempts on known-dead tokens.
+// Aligned with Codex CLI's permanent_refresh_failure pattern (manager.rs:1604-1616):
+// once a terminal OAuth failure is detected, subsequent refresh attempts for that
+// account fail fast locally without calling OpenAI's token endpoint.
+type terminalRefreshFailureCache struct {
+	mu      sync.RWMutex
+	failsAt map[int64]time.Time // account_id → failure timestamp
+}
+
+func newTerminalRefreshFailureCache() *terminalRefreshFailureCache {
+	return &terminalRefreshFailureCache{failsAt: make(map[int64]time.Time)}
+}
+
+// IsTerminal returns true if the account has a cached terminal refresh failure.
+func (c *terminalRefreshFailureCache) IsTerminal(accountID int64) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	_, ok := c.failsAt[accountID]
+	return ok
+}
+
+// MarkTerminal records a terminal refresh failure for an account.
+func (c *terminalRefreshFailureCache) MarkTerminal(accountID int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.failsAt[accountID] = time.Now()
+}
+
+// Clear removes a terminal failure entry (called after successful re-auth).
+func (c *terminalRefreshFailureCache) Clear(accountID int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.failsAt, accountID)
+}
+
 // TokenRefreshService OAuth token自动刷新服务
 // 定期检查并刷新即将过期的token
 type TokenRefreshService struct {
@@ -27,6 +62,10 @@ type TokenRefreshService struct {
 	schedulerCache   SchedulerCache   // 用于同步更新调度器缓存，解决 token 刷新后缓存不一致问题
 	tempUnschedCache TempUnschedCache // 用于清除 Redis 中的临时不可调度缓存
 	refreshAPI       *OAuthRefreshAPI // 统一刷新 API
+
+	// terminalFailures caches terminal OAuth refresh failures to avoid
+	// re-hitting OpenAI's token endpoint with dead refresh tokens.
+	terminalFailures *terminalRefreshFailureCache
 
 	// OpenAI privacy: 刷新成功后检查并设置 training opt-out
 	privacyClientFactory PrivacyClientFactory
@@ -52,13 +91,14 @@ func NewTokenRefreshService(
 	tempUnschedCache TempUnschedCache,
 ) *TokenRefreshService {
 	s := &TokenRefreshService{
-		accountRepo:      accountRepo,
-		refreshPolicy:    DefaultBackgroundRefreshPolicy(),
-		cfg:              &cfg.TokenRefresh,
-		cacheInvalidator: cacheInvalidator,
-		schedulerCache:   schedulerCache,
-		tempUnschedCache: tempUnschedCache,
-		stopCh:           make(chan struct{}),
+		accountRepo:       accountRepo,
+		refreshPolicy:     DefaultBackgroundRefreshPolicy(),
+		cfg:               &cfg.TokenRefresh,
+		cacheInvalidator:  cacheInvalidator,
+		schedulerCache:    schedulerCache,
+		tempUnschedCache:  tempUnschedCache,
+		terminalFailures:  newTerminalRefreshFailureCache(),
+		stopCh:            make(chan struct{}),
 	}
 
 	openAIRefresher := NewOpenAITokenRefresher(openaiOAuthService, accountRepo)
@@ -251,6 +291,16 @@ func (s *TokenRefreshService) listActiveAccounts(ctx context.Context) ([]Account
 
 // refreshWithRetry 带重试的刷新
 func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Account, refresher TokenRefresher, executor OAuthRefreshExecutor, refreshWindow time.Duration) error {
+	// C7: Terminal failure fast-path — skip immediately if account has a known terminal failure.
+	// Aligned with Codex CLI's permanent_refresh_failure pattern.
+	if s.terminalFailures.IsTerminal(account.ID) {
+		slog.Debug("token_refresh.terminal_failure_skipped",
+			"account_id", account.ID,
+			"platform", account.Platform,
+		)
+		return fmt.Errorf("account %d has terminal refresh failure (cached)", account.ID)
+	}
+
 	var lastErr error
 
 	for attempt := 1; attempt <= s.cfg.MaxRetries; attempt++ {
@@ -285,10 +335,35 @@ func (s *TokenRefreshService) refreshWithRetry(ctx context.Context, account *Acc
 
 		if err == nil {
 			s.postRefreshActions(ctx, account)
+			s.terminalFailures.Clear(account.ID)
 			return nil
 		}
 
-		// 不可重试错误（invalid_grant/invalid_client 等）直接标记 error 状态并返回
+		// C1+C2: Terminal OAuth errors (token_revoked, token_invalidated, refresh_token_reused,
+		// 401 from token endpoint) → immediate SetError + poison cache, zero retries.
+		// Aligned with Codex CLI: any 401 from /oauth/token is RefreshTokenError::Permanent.
+		if isTerminalRefreshError(err) {
+			errorMsg := fmt.Sprintf("Token revoked or invalidated (terminal): %v", err)
+			slog.Warn("token_refresh.terminal_oauth_failure",
+				"account_id", account.ID,
+				"platform", account.Platform,
+				"account_name", account.Name,
+				"error", err,
+				"attempt", attempt,
+			)
+			if setErr := s.accountRepo.SetError(ctx, account.ID, errorMsg); setErr != nil {
+				slog.Error("token_refresh.set_error_status_failed",
+					"account_id", account.ID,
+					"error", setErr,
+				)
+			}
+			s.terminalFailures.MarkTerminal(account.ID)
+			s.ensureOpenAIPrivacy(ctx, account)
+			s.ensureAntigravityPrivacy(ctx, account)
+			return err
+		}
+
+		// Config errors (invalid_client, missing_project_id, etc.)
 		if isNonRetryableRefreshError(err) {
 			errorMsg := fmt.Sprintf("Token refresh failed (non-retryable): %v", err)
 			if setErr := s.accountRepo.SetError(ctx, account.ID, errorMsg); setErr != nil {
@@ -439,7 +514,46 @@ func isNonRetryableRefreshError(err error) bool {
 	return false
 }
 
-// ensureOpenAIPrivacy 检查 OpenAI OAuth 账号是否已设置 privacy_mode，
+// terminalOAuthErrorCodes are upstream error codes that indicate the OAuth
+// session is permanently dead. Aligned with Codex CLI's
+// classify_refresh_token_failure (manager.rs:934-963).
+var terminalOAuthErrorCodes = []string{
+	"token_revoked",
+	"token_invalidated",
+	"refresh_token_reused",
+	"refresh_token_invalidated",
+	"refresh_token_expired",
+	"app_session_terminated",
+}
+
+// isTerminalRefreshError detects permanent OAuth refresh failures.
+// Aligned with Codex CLI rule (manager.rs:922-923):
+//   - Any HTTP 401 from the token endpoint → permanent (no retry)
+//   - Known terminal error codes on any status → permanent
+func isTerminalRefreshError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+
+	if strings.Contains(msg, "401") || strings.Contains(msg, "unauthorized") {
+		return true
+	}
+
+	for _, code := range terminalOAuthErrorCodes {
+		if strings.Contains(msg, code) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ClearTerminalFailureCache clears the terminal failure cache for an account.
+// Called after successful re-authentication (e.g., oauth-openai-finish).
+func (s *TokenRefreshService) ClearTerminalFailureCache(accountID int64) {
+	s.terminalFailures.Clear(accountID)
+}
 // 未设置则调用 disableOpenAITraining 并持久化结果到 Extra。
 func (s *TokenRefreshService) ensureOpenAIPrivacy(ctx context.Context, account *Account) {
 	if account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth {
