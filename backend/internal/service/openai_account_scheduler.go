@@ -275,6 +275,15 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			}
 		}
 		if selection != nil && selection.Account != nil {
+			if s.isSameUserExcluded(selection.Account) {
+				slog.Debug("openai.same_user_previous_response_bypassed",
+					"account_id", selection.Account.ID,
+					"previous_response_id", previousResponseID,
+				)
+				selection = nil
+			}
+		}
+		if selection != nil && selection.Account != nil {
 			decision.Layer = openAIAccountScheduleLayerPreviousResponse
 			decision.StickyPreviousHit = true
 			decision.SelectedAccountID = selection.Account.ID
@@ -356,6 +365,10 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		return nil, nil
 	}
 	if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
+		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+		return nil, nil
+	}
+	if s.isSameUserExcluded(account) {
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, nil
 	}
@@ -686,6 +699,42 @@ func (s *defaultOpenAIAccountScheduler) filterSameUserSerialized(
 		}
 	}
 	return filtered
+}
+
+// isSameUserExcluded checks if a single account would be filtered out by
+// same-user serialization. Used by sticky scheduling paths (previous_response_id,
+// session_hash) that bypass the candidate list filter.
+func (s *defaultOpenAIAccountScheduler) isSameUserExcluded(account *Account) bool {
+	if s == nil || s.service == nil || !s.service.isOpenAISameUserSerializationEnabled() {
+		return false
+	}
+	uid := account.GetChatGPTUserID()
+	if uid == "" {
+		return false
+	}
+	state := s.loadOrCreateSameUserState(uid)
+	state.mu.Lock()
+	lastAccountID := state.accountID
+	lastActiveAt := state.activeAt
+	state.mu.Unlock()
+
+	if lastAccountID <= 0 || lastActiveAt.IsZero() {
+		return false
+	}
+	if account.ID == lastAccountID {
+		return false
+	}
+	cooldown := s.service.openAISameUserSerializationCooldown()
+	if time.Now().Before(lastActiveAt.Add(cooldown)) {
+		slog.Debug("openai.same_user_sticky_excluded",
+			"account_id", account.ID,
+			"chatgpt_user_id", uid,
+			"active_account_id", lastAccountID,
+			"cooldown_remaining", lastActiveAt.Add(cooldown).Sub(time.Now()).Round(time.Second).String(),
+		)
+		return true
+	}
+	return false
 }
 
 // recordSameUserSelection records that the given account was selected, making it

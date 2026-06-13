@@ -27,8 +27,7 @@ const (
 
 	// Scopes
 	DefaultScopes = "openid profile email offline_access"
-	// RefreshScopes - scope for token refresh (without offline_access, aligned with CRS project)
-	RefreshScopes = "openid profile email"
+	RefreshScopes = "openid profile email offline_access"
 
 	// Session TTL
 	SessionTTL = 30 * time.Minute
