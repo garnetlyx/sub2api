@@ -82,9 +82,8 @@ func NewOpenAITokenRefresher(openaiOAuthService *OpenAIOAuthService, accountRepo
 	}
 }
 
-// CacheKey 返回用于分布式锁的缓存键
 func (r *OpenAITokenRefresher) CacheKey(account *Account) string {
-	return OpenAITokenCacheKey(account)
+	return OpenAIUserTokenCacheKey(account)
 }
 
 // CanRefresh 检查是否能处理此账号
