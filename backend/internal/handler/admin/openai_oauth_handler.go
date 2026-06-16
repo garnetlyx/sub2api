@@ -18,6 +18,7 @@ import (
 type OpenAIOAuthHandler struct {
 	openaiOAuthService *service.OpenAIOAuthService
 	adminService       service.AdminService
+	refreshAPI         *service.OAuthRefreshAPI
 }
 
 func oauthPlatformFromPath(c *gin.Context) string {
@@ -25,10 +26,11 @@ func oauthPlatformFromPath(c *gin.Context) string {
 }
 
 // NewOpenAIOAuthHandler creates a new OpenAI OAuth handler
-func NewOpenAIOAuthHandler(openaiOAuthService *service.OpenAIOAuthService, adminService service.AdminService) *OpenAIOAuthHandler {
+func NewOpenAIOAuthHandler(openaiOAuthService *service.OpenAIOAuthService, adminService service.AdminService, refreshAPI *service.OAuthRefreshAPI) *OpenAIOAuthHandler {
 	return &OpenAIOAuthHandler{
 		openaiOAuthService: openaiOAuthService,
 		adminService:       adminService,
+		refreshAPI:         refreshAPI,
 	}
 }
 
@@ -169,6 +171,35 @@ func (h *OpenAIOAuthHandler) RefreshAccountToken(c *gin.Context) {
 	if !account.IsOAuth() {
 		response.BadRequest(c, "Cannot refresh non-OAuth account credentials")
 		return
+	}
+
+	// Acquire the same workspace + user refresh locks the background
+	// TokenRefreshService uses, so admin force-refresh participates in the
+	// same serialization. Without this, a manual probe could race with a
+	// background refresh on a same-workspace sibling and trip OpenAI's
+	// seat-harvesting detection.
+	var release func()
+	if h.refreshAPI != nil {
+		userCacheKey := service.OpenAIUserTokenCacheKey(account)
+		rel, acquired, lockErr := h.refreshAPI.AcquireAccountLocks(c.Request.Context(), account, userCacheKey, 0)
+		if lockErr != nil {
+			response.ErrorFrom(c, lockErr)
+			return
+		}
+		if !acquired {
+			slog.Warn("openai_admin_refresh_lock_held",
+				"account_id", accountID,
+				"account_name", account.Name,
+			)
+			response.ErrorFrom(c, service.ErrOAuthRefreshLockHeld)
+			return
+		}
+		release = rel
+		defer func() {
+			if release != nil {
+				release()
+			}
+		}()
 	}
 
 	// Use OpenAI OAuth service to refresh token

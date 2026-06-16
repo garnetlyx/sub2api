@@ -157,7 +157,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	backupService := service.ProvideBackupService(settingRepository, configConfig, secretEncryptor, backupObjectStoreFactory, dbDumper)
 	backupHandler := admin.NewBackupHandler(backupService, userService)
 	oAuthHandler := admin.NewOAuthHandler(oAuthService)
-	openAIOAuthHandler := admin.NewOpenAIOAuthHandler(openAIOAuthService, adminService)
+	openAIOAuthHandler := admin.NewOpenAIOAuthHandler(openAIOAuthService, adminService, oauthRefreshAPI)
 	copilotOAuthService := service.NewCopilotOAuthService(proxyRepository, accountRepository)
 	copilotOAuthHandler := admin.NewCopilotOAuthHandler(copilotOAuthService, adminService)
 	geminiOAuthHandler := admin.NewGeminiOAuthHandler(geminiOAuthService)

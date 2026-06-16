@@ -348,6 +348,11 @@ type OpenAIGatewayService struct {
 	// sameUserLastScheduled tracks last-selected account per chatgpt_user_id.
 	// key: string(chatgpt_user_id), value: *sameUserScheduleState
 	sameUserLastScheduled sync.Map
+	// sameWorkspaceLastScheduled tracks last-selected account per chatgpt_account_id
+	// (team workspace). Complement to sameUserLastScheduled: catches the
+	// "distinct users sharing one workspace" pattern that user-level
+	// serialization misses. key: string(chatgpt_account_id), value: *sameWorkspaceScheduleState
+	sameWorkspaceLastScheduled sync.Map
 	openaiWSRetryMetrics  openAIWSRetryMetrics
 	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
 	codexSnapshotThrottle *accountWriteThrottle

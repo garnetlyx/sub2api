@@ -535,6 +535,18 @@ type GatewayOpenAIWSConfig struct {
 	// before another in the same chatgpt_user_id group can be scheduled.
 	// Default 300 (5 minutes). 0 = no cooldown (instant switch allowed).
 	SameUserSerializationCooldownSeconds int `mapstructure:"same_user_serialization_cooldown_seconds"`
+
+	// SameWorkspaceSerializationEnabled: serialize scheduling of OpenAI OAuth
+	// accounts sharing the same chatgpt_account_id (team workspace). Complements
+	// same-user serialization. ChatGPT Team/Business mandates min 2 seats, so
+	// multiple distinct users can share one workspace; without serialization
+	// their concurrent refresh/use trips OpenAI's seat-harvesting detection.
+	SameWorkspaceSerializationEnabled bool `mapstructure:"same_workspace_serialization_enabled"`
+	// SameWorkspaceSerializationCooldownSeconds: cooldown for same-workspace
+	// serialization. Shorter than user cooldown because the goal is breaking
+	// tight concurrency, not long serialization (which would cap throughput
+	// at 1-seat-per-workspace). Default 60. 0 = no cooldown.
+	SameWorkspaceSerializationCooldownSeconds int `mapstructure:"same_workspace_serialization_cooldown_seconds"`
 }
 
 // GatewayOpenAIWSSchedulerScoreWeights 账号调度打分权重。
@@ -1333,6 +1345,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.ttft", 0.5)
 	viper.SetDefault("gateway.openai_ws.same_user_serialization_enabled", true)
 	viper.SetDefault("gateway.openai_ws.same_user_serialization_cooldown_seconds", 300)
+	viper.SetDefault("gateway.openai_ws.same_workspace_serialization_enabled", true)
+	viper.SetDefault("gateway.openai_ws.same_workspace_serialization_cooldown_seconds", 60)
 	viper.SetDefault("gateway.antigravity_fallback_cooldown_minutes", 1)
 	viper.SetDefault("gateway.antigravity_extra_retries", 10)
 	viper.SetDefault("gateway.max_body_size", int64(256*1024*1024))
@@ -1942,6 +1956,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.OpenAIWS.SameUserSerializationCooldownSeconds < 0 {
 		return fmt.Errorf("gateway.openai_ws.same_user_serialization_cooldown_seconds must be non-negative")
+	}
+	if c.Gateway.OpenAIWS.SameWorkspaceSerializationCooldownSeconds < 0 {
+		return fmt.Errorf("gateway.openai_ws.same_workspace_serialization_cooldown_seconds must be non-negative")
 	}
 	if c.Gateway.MaxLineSize < 0 {
 		return fmt.Errorf("gateway.max_line_size must be non-negative")

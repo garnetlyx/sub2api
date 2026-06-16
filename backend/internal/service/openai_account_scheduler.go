@@ -38,6 +38,16 @@ type sameUserScheduleState struct {
 	activeAt  time.Time
 }
 
+// sameWorkspaceScheduleState tracks which account was last scheduled within a
+// chatgpt_account_id (team workspace) group. Complement to sameUserScheduleState:
+// catches distinct users sharing one team workspace — the seat-harvesting signal
+// that user-level serialization misses.
+type sameWorkspaceScheduleState struct {
+	mu        sync.Mutex
+	accountID int64
+	activeAt  time.Time
+}
+
 type OpenAIAccountScheduleRequest struct {
 	GroupID            *int64
 	SessionHash        string
@@ -275,10 +285,14 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			}
 		}
 		if selection != nil && selection.Account != nil {
-			if s.isSameUserExcluded(selection.Account) {
+			userExcluded := s.isSameUserExcluded(selection.Account)
+			wsExcluded := s.isSameWorkspaceExcluded(selection.Account)
+			if userExcluded || wsExcluded {
 				slog.Debug("openai.same_user_previous_response_bypassed",
 					"account_id", selection.Account.ID,
 					"previous_response_id", previousResponseID,
+					"same_user_excluded", userExcluded,
+					"same_workspace_excluded", wsExcluded,
 				)
 				selection = nil
 			}
@@ -292,6 +306,7 @@ func (s *defaultOpenAIAccountScheduler) Select(
 				_ = s.service.BindStickySession(ctx, req.GroupID, req.SessionHash, selection.Account.ID)
 			}
 			s.recordSameUserSelection(selection.Account)
+			s.recordSameWorkspaceSelection(selection.Account)
 			return selection, decision, nil
 		}
 	}
@@ -368,7 +383,18 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, nil
 	}
-	if s.isSameUserExcluded(account) {
+	if userExcluded := s.isSameUserExcluded(account); userExcluded {
+		slog.Debug("openai.same_user_session_sticky_bypassed",
+			"account_id", account.ID,
+			"session_hash", sessionHash,
+		)
+		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
+		return nil, nil
+	} else if wsExcluded := s.isSameWorkspaceExcluded(account); wsExcluded {
+		slog.Debug("openai.same_workspace_session_sticky_bypassed",
+			"account_id", account.ID,
+			"session_hash", sessionHash,
+		)
 		_ = s.service.deleteStickySessionAccountID(ctx, req.GroupID, sessionHash)
 		return nil, nil
 	}
@@ -382,6 +408,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	if acquireErr == nil && result.Acquired {
 		_ = s.service.refreshStickySessionTTL(ctx, req.GroupID, sessionHash, s.service.openAIWSSessionStickyTTL())
 			s.recordSameUserSelection(account)
+			s.recordSameWorkspaceSelection(account)
 		return &AccountSelectionResult{
 			Account:     account,
 			Acquired:    true,
@@ -754,6 +781,157 @@ func (s *defaultOpenAIAccountScheduler) recordSameUserSelection(account *Account
 	state.mu.Unlock()
 }
 
+func (s *defaultOpenAIAccountScheduler) loadOrCreateSameWorkspaceState(wsID string) *sameWorkspaceScheduleState {
+	if val, ok := s.service.sameWorkspaceLastScheduled.Load(wsID); ok {
+		if st, ok := val.(*sameWorkspaceScheduleState); ok && st != nil {
+			return st
+		}
+	}
+	st := &sameWorkspaceScheduleState{}
+	actual, _ := s.service.sameWorkspaceLastScheduled.LoadOrStore(wsID, st)
+	if existing, ok := actual.(*sameWorkspaceScheduleState); ok && existing != nil {
+		return existing
+	}
+	return st
+}
+
+// filterSameWorkspaceSerialized removes OpenAI OAuth candidates that share a
+// chatgpt_account_id (team workspace) with the currently-active account in
+// their group, when the cooldown has not yet elapsed. Catches the
+// distinct-users-same-workspace pattern that filterSameUserSerialized misses
+// (ChatGPT Team/Business mandates min 2 seats, so different user_ids can
+// share one workspace_id — without this filter, their concurrent use trips
+// OpenAI's seat-harvesting detection).
+func (s *defaultOpenAIAccountScheduler) filterSameWorkspaceSerialized(
+	candidates []*Account,
+) []*Account {
+	if s == nil || s.service == nil || !s.service.isOpenAISameWorkspaceSerializationEnabled() {
+		return candidates
+	}
+
+	cooldown := s.service.openAISameWorkspaceSerializationCooldown()
+	now := time.Now()
+
+	groups := make(map[string][]int)
+	for i, acct := range candidates {
+		wsID := acct.GetChatGPTAccountID()
+		if wsID == "" {
+			continue
+		}
+		groups[wsID] = append(groups[wsID], i)
+	}
+	if len(groups) == 0 {
+		return candidates
+	}
+
+	exclude := make(map[int64]struct{})
+	for wsID, indices := range groups {
+		if len(indices) <= 1 {
+			continue
+		}
+
+		state := s.loadOrCreateSameWorkspaceState(wsID)
+		state.mu.Lock()
+		lastAccountID := state.accountID
+		lastActiveAt := state.activeAt
+		state.mu.Unlock()
+
+		if lastAccountID <= 0 || lastActiveAt.IsZero() {
+			continue
+		}
+		if !now.Before(lastActiveAt.Add(cooldown)) {
+			continue
+		}
+
+		lastInCandidates := false
+		for _, idx := range indices {
+			if candidates[idx].ID == lastAccountID {
+				lastInCandidates = true
+				break
+			}
+		}
+
+		for _, idx := range indices {
+			acctID := candidates[idx].ID
+			if acctID == lastAccountID && lastInCandidates {
+				continue
+			}
+			exclude[acctID] = struct{}{}
+			slog.Debug("openai.same_workspace_serialization_excluded",
+				"account_id", acctID,
+				"chatgpt_account_id", wsID,
+				"active_account_id", lastAccountID,
+				"cooldown_remaining", lastActiveAt.Add(cooldown).Sub(now).Round(time.Second).String(),
+			)
+		}
+	}
+
+	if len(exclude) == 0 {
+		return candidates
+	}
+
+	filtered := make([]*Account, 0, len(candidates)-len(exclude))
+	for _, acct := range candidates {
+		if _, ok := exclude[acct.ID]; !ok {
+			filtered = append(filtered, acct)
+		}
+	}
+	return filtered
+}
+
+// isSameWorkspaceExcluded checks if a single account would be filtered out by
+// same-workspace serialization. Used by sticky scheduling paths (previous_response_id,
+// session_hash) that bypass the candidate list filter.
+func (s *defaultOpenAIAccountScheduler) isSameWorkspaceExcluded(account *Account) bool {
+	if s == nil || s.service == nil || !s.service.isOpenAISameWorkspaceSerializationEnabled() {
+		return false
+	}
+	wsID := account.GetChatGPTAccountID()
+	if wsID == "" {
+		return false
+	}
+	state := s.loadOrCreateSameWorkspaceState(wsID)
+	state.mu.Lock()
+	lastAccountID := state.accountID
+	lastActiveAt := state.activeAt
+	state.mu.Unlock()
+
+	if lastAccountID <= 0 || lastActiveAt.IsZero() {
+		return false
+	}
+	if account.ID == lastAccountID {
+		return false
+	}
+	cooldown := s.service.openAISameWorkspaceSerializationCooldown()
+	if time.Now().Before(lastActiveAt.Add(cooldown)) {
+		slog.Debug("openai.same_workspace_sticky_excluded",
+			"account_id", account.ID,
+			"chatgpt_account_id", wsID,
+			"active_account_id", lastAccountID,
+			"cooldown_remaining", lastActiveAt.Add(cooldown).Sub(time.Now()).Round(time.Second).String(),
+		)
+		return true
+	}
+	return false
+}
+
+// recordSameWorkspaceSelection records that the given account was selected,
+// making it the active account for its chatgpt_account_id (workspace) group.
+func (s *defaultOpenAIAccountScheduler) recordSameWorkspaceSelection(account *Account) {
+	if s == nil || s.service == nil || !s.service.isOpenAISameWorkspaceSerializationEnabled() {
+		return
+	}
+	wsID := account.GetChatGPTAccountID()
+	if wsID == "" {
+		return
+	}
+	state := s.loadOrCreateSameWorkspaceState(wsID)
+	state.mu.Lock()
+	state.accountID = account.ID
+	state.activeAt = time.Now()
+	state.mu.Unlock()
+}
+
 func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
@@ -812,6 +990,11 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	filtered = s.filterSameUserSerialized(filtered)
 	if len(filtered) == 0 {
 		return nil, 0, 0, 0, errors.New("no available OpenAI accounts (same-user serialization)")
+	}
+
+	filtered = s.filterSameWorkspaceSerialized(filtered)
+	if len(filtered) == 0 {
+		return nil, 0, 0, 0, errors.New("no available OpenAI accounts (same-workspace serialization)")
 	}
 
 	loadMap := map[int64]*AccountLoadInfo{}
@@ -920,6 +1103,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 				_ = s.service.BindStickySession(ctx, req.GroupID, req.SessionHash, fresh.ID)
 			}
 				s.recordSameUserSelection(fresh)
+				s.recordSameWorkspaceSelection(fresh)
 			return &AccountSelectionResult{
 				Account:     fresh,
 				Acquired:    true,
@@ -1132,6 +1316,20 @@ func (s *OpenAIGatewayService) openAISameUserSerializationCooldown() time.Durati
 		return time.Duration(s.cfg.Gateway.OpenAIWS.SameUserSerializationCooldownSeconds) * time.Second
 	}
 	return 300 * time.Second
+}
+
+func (s *OpenAIGatewayService) isOpenAISameWorkspaceSerializationEnabled() bool {
+	if s != nil && s.cfg != nil {
+		return s.cfg.Gateway.OpenAIWS.SameWorkspaceSerializationEnabled
+	}
+	return true
+}
+
+func (s *OpenAIGatewayService) openAISameWorkspaceSerializationCooldown() time.Duration {
+	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.SameWorkspaceSerializationCooldownSeconds > 0 {
+		return time.Duration(s.cfg.Gateway.OpenAIWS.SameWorkspaceSerializationCooldownSeconds) * time.Second
+	}
+	return 60 * time.Second
 }
 
 func (s *OpenAIGatewayService) openAICompatibilityExclusionTTL() time.Duration {

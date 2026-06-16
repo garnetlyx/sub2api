@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -20,6 +21,11 @@ type OAuthRefreshExecutor interface {
 }
 
 const defaultRefreshLockTTL = 60 * time.Second
+
+// ErrOAuthRefreshLockHeld is returned when an admin-initiated refresh cannot
+// acquire the workspace/user lock because another refresh is in flight for the
+// same scope. Callers should surface this as a 409 or retry-after signal.
+var ErrOAuthRefreshLockHeld = errors.New("oauth refresh lock held by another operation")
 
 // OAuthRefreshResult 统一刷新结果
 type OAuthRefreshResult struct {
@@ -66,7 +72,7 @@ func (api *OAuthRefreshAPI) getLocalLock(cacheKey string) *sync.Mutex {
 // RefreshIfNeeded 在分布式锁保护下按需刷新 OAuth token
 //
 // 流程:
-//  1. 获取分布式锁
+//  1. 获取分布式锁（OpenAI OAuth 同时获取 workspace + user 两把锁）
 //  2. 从 DB 重读最新 account（防止使用过时的 refresh_token）
 //  3. 二次检查是否仍需刷新
 //  4. 调用 executor.Refresh() 执行平台特定刷新逻辑
@@ -79,30 +85,40 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 	refreshWindow time.Duration,
 ) (*OAuthRefreshResult, error) {
 	cacheKey := executor.CacheKey(account)
+	lockKeys := refreshLockKeys(account, cacheKey)
 
-	// 0. 获取进程内互斥锁（防止同一进程内的并发刷新竞争）
-	localMu := api.getLocalLock(cacheKey)
-	localMu.Lock()
-	defer localMu.Unlock()
+	// 0. 获取进程内互斥锁（按顺序加锁，defer 以 LIFO 顺序释放）
+	//    workspace 在前、user 在后，跨 goroutine 一致的顺序避免死锁。
+	for _, key := range lockKeys {
+		api.getLocalLock(key).Lock()
+		defer api.getLocalLock(key).Unlock()
+	}
 
-	// 1. 获取分布式锁
-	lockAcquired := false
-	if api.tokenCache != nil {
-		acquired, lockErr := api.tokenCache.AcquireRefreshLock(ctx, cacheKey, api.lockTTL)
+	// 1. 获取分布式锁（同样顺序加锁、逆序释放）
+	for _, key := range lockKeys {
+		if api.tokenCache == nil {
+			break
+		}
+		acquired, lockErr := api.tokenCache.AcquireRefreshLock(ctx, key, api.lockTTL)
 		if lockErr != nil {
 			// Redis 错误，降级为无锁刷新（进程内互斥锁仍生效）
 			slog.Warn("oauth_refresh_lock_failed_degraded",
 				"account_id", account.ID,
-				"cache_key", cacheKey,
+				"cache_key", key,
 				"error", lockErr,
 			)
-		} else if !acquired {
-			// 锁被其他 worker 持有
-			return &OAuthRefreshResult{LockHeld: true}, nil
-		} else {
-			lockAcquired = true
-			defer func() { _ = api.tokenCache.ReleaseRefreshLock(ctx, cacheKey) }()
+			continue
 		}
+		if !acquired {
+			// 锁被其他 worker 持有。已获取的锁通过 defer 释放。
+			slog.Debug("oauth_refresh_lock_held_by_other",
+				"account_id", account.ID,
+				"cache_key", key,
+				"lock_keys", lockKeys,
+			)
+			return &OAuthRefreshResult{LockHeld: true}, nil
+		}
+		defer func(k string) { _ = api.tokenCache.ReleaseRefreshLock(ctx, k) }(key)
 	}
 
 	// 2. 从 DB 重读最新 account（锁保护下，确保使用最新的 refresh_token）
@@ -156,13 +172,108 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 		}
 	}
 
-	_ = lockAcquired // suppress unused warning when tokenCache is nil
-
 	return &OAuthRefreshResult{
 		Refreshed:      true,
 		NewCredentials: newCredentials,
 		Account:        freshAccount,
 	}, nil
+}
+
+// refreshLockKeys 返回给定账号在 RefreshIfNeeded 中需要获取的锁键有序列表。
+//
+// OpenAI OAuth 账号且具有 chatgpt_account_id（团队 workspace）时，
+// 返回 [workspaceKey, userKey] —— workspace 在前确保跨 goroutine 一致加锁顺序，
+// 避免两个不同 user 同 workspace 账号并发刷新时死锁。
+// 这同时让同一 workspace 内的不同 user 串行刷新，防止 OpenAI 检测到
+// seat-harvesting 模式并 revoke 整个 workspace。
+//
+// 其他情况返回 [userCacheKey]，保持原有行为不变。
+func refreshLockKeys(account *Account, userCacheKey string) []string {
+	if !account.IsOpenAIOAuth() {
+		return []string{userCacheKey}
+	}
+	wsID := account.GetChatGPTAccountID()
+	if wsID == "" {
+		return []string{userCacheKey}
+	}
+	wsKey := "openai:ws:" + wsID
+	if wsKey == userCacheKey {
+		return []string{userCacheKey}
+	}
+	return []string{wsKey, userCacheKey}
+}
+
+// AcquireAccountLocks acquires the same set of refresh locks (workspace + user
+// for OpenAI OAuth; user-only for other platforms) that RefreshIfNeeded would,
+// without running any refresh logic. Returns a release function the caller must
+// invoke (typically via defer) when done with the protected work.
+//
+// Used by paths that need to perform refresh-like work outside RefreshIfNeeded
+// (e.g. admin force-refresh endpoint), so they participate in the same
+// serialization as background refresh.
+//
+// Returns:
+//   - release: function that releases all acquired locks (nil if nothing acquired)
+//   - acquired: true if all locks were successfully acquired (or no tokenCache configured)
+//   - err: non-nil only on programming errors
+//
+// When acquired=false, the caller should treat the operation as lock-contented
+// and either retry or return LockHeld to the client.
+func (api *OAuthRefreshAPI) AcquireAccountLocks(
+	ctx context.Context,
+	account *Account,
+	userCacheKey string,
+	ttl time.Duration,
+) (release func(), acquired bool, err error) {
+	if ttl <= 0 {
+		ttl = api.lockTTL
+	}
+	lockKeys := refreshLockKeys(account, userCacheKey)
+
+	// Acquire local mutexes (LIFO release via deferred unlocks in returned func).
+	for _, key := range lockKeys {
+		api.getLocalLock(key).Lock()
+	}
+
+	release = func() {
+		for i := len(lockKeys) - 1; i >= 0; i-- {
+			api.getLocalLock(lockKeys[i]).Unlock()
+		}
+	}
+
+	if api.tokenCache == nil {
+		return release, true, nil
+	}
+
+	acquiredKeys := make([]string, 0, len(lockKeys))
+	for _, key := range lockKeys {
+		ok, lockErr := api.tokenCache.AcquireRefreshLock(ctx, key, ttl)
+		if lockErr != nil {
+			slog.Warn("oauth_refresh_lock_failed_degraded",
+				"account_id", account.ID,
+				"cache_key", key,
+				"error", lockErr,
+			)
+			continue
+		}
+		if !ok {
+			// Release what we have and signal contention.
+			for i := len(acquiredKeys) - 1; i >= 0; i-- {
+				_ = api.tokenCache.ReleaseRefreshLock(ctx, acquiredKeys[i])
+			}
+			return release, false, nil
+		}
+		acquiredKeys = append(acquiredKeys, key)
+	}
+
+	prevRelease := release
+	release = func() {
+		for i := len(acquiredKeys) - 1; i >= 0; i-- {
+			_ = api.tokenCache.ReleaseRefreshLock(ctx, acquiredKeys[i])
+		}
+		prevRelease()
+	}
+	return release, true, nil
 }
 
 // isInvalidGrantError 检查错误是否为 invalid_grant
