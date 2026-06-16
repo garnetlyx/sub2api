@@ -260,14 +260,15 @@ func (s *OpenAIOAuthService) enrichTokenInfo(ctx context.Context, tokenInfo *Ope
 		return
 	}
 
-	// 从 access_token JWT 中提取 orgID（poid），用于匹配正确的账号
-	orgID := tokenInfo.OrganizationID
-	if orgID == "" {
+	// 从 tokenInfo 或 access_token JWT 中提取 chatgpt_account_id，用于匹配正确的账号。
+	// /accounts/check 的 accounts map 以 chatgpt_account_id 为 key。
+	chatgptAccountID := tokenInfo.ChatGPTAccountID
+	if chatgptAccountID == "" {
 		if atClaims, err := openai.DecodeIDToken(tokenInfo.AccessToken); err == nil && atClaims.OpenAIAuth != nil {
-			orgID = atClaims.OpenAIAuth.POID
+			chatgptAccountID = atClaims.OpenAIAuth.ChatGPTAccountID
 		}
 	}
-	if info := fetchChatGPTAccountInfo(ctx, s.privacyClientFactory, tokenInfo.AccessToken, proxyURL, orgID); info != nil {
+	if info := fetchChatGPTAccountInfo(ctx, s.privacyClientFactory, tokenInfo.AccessToken, proxyURL, chatgptAccountID); info != nil {
 		if info.PlanType != "" {
 			tokenInfo.PlanType = info.PlanType
 		}

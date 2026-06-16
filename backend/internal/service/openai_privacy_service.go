@@ -97,9 +97,10 @@ const chatGPTAccountsCheckURL = "https://chatgpt.com/backend-api/accounts/check/
 
 // fetchChatGPTAccountInfo calls ChatGPT backend-api to get account info (plan_type, etc.).
 // Used as fallback when id_token doesn't contain these fields (e.g., Mobile RT).
-// orgID is used to match the correct account when multiple accounts exist (e.g., personal + team).
+// chatgptAccountID is used to match the correct account when multiple accounts exist (e.g., personal + team);
+// the /accounts/check response maps are keyed by chatgpt_account_id (workspace ID), not by org_id/poid.
 // Returns nil on any failure (best-effort, non-blocking).
-func fetchChatGPTAccountInfo(ctx context.Context, clientFactory PrivacyClientFactory, accessToken, proxyURL, orgID string) *ChatGPTAccountInfo {
+func fetchChatGPTAccountInfo(ctx context.Context, clientFactory PrivacyClientFactory, accessToken, proxyURL, chatgptAccountID string) *ChatGPTAccountInfo {
 	if accessToken == "" || clientFactory == nil {
 		return nil
 	}
@@ -141,9 +142,9 @@ func fetchChatGPTAccountInfo(ctx context.Context, clientFactory PrivacyClientFac
 		return nil
 	}
 
-	// 优先匹配 orgID 对应的账号（access_token JWT 中的 poid）
-	if orgID != "" {
-		if acctRaw, ok := accounts[orgID]; ok {
+	// 优先匹配 chatgpt_account_id 对应的账号（accounts map 的 key 即 chatgpt_account_id）
+	if chatgptAccountID != "" {
+		if acctRaw, ok := accounts[chatgptAccountID]; ok {
 			if acct, ok := acctRaw.(map[string]any); ok {
 				fillAccountInfo(info, acct)
 			}
@@ -195,7 +196,7 @@ func fetchChatGPTAccountInfo(ctx context.Context, clientFactory PrivacyClientFac
 		return nil
 	}
 
-	slog.Info("chatgpt_account_check_success", "plan_type", info.PlanType, "subscription_expires_at", info.SubscriptionExpiresAt, "org_id", orgID)
+	slog.Info("chatgpt_account_check_success", "plan_type", info.PlanType, "subscription_expires_at", info.SubscriptionExpiresAt, "chatgpt_account_id", chatgptAccountID)
 	return info
 }
 
