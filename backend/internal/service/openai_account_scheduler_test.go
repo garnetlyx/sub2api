@@ -966,6 +966,99 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceDistributesA
 	require.GreaterOrEqual(t, len(selected), 2)
 }
 
+func TestOpenAIGatewayService_SelectAccountWithScheduler_BalancesAccountPoolProvidersSameModel(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(15001)
+	accounts := []Account{
+		{ID: 150101, Name: "openai-pool", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 3, Priority: 0},
+		{ID: 150102, Name: "copilot-pool", Platform: PlatformCopilot, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 3, Priority: 0},
+		{ID: 150103, Name: "kiro-pool", Platform: PlatformKiro, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 3, Priority: 0},
+	}
+	selected, providerCounts := selectOpenAIAccountsAcrossSessions(t, ctx, groupID, accounts, "shared-model", 120, "pool_provider")
+
+	require.Len(t, selected, len(accounts))
+	require.Equal(t, map[string]int{
+		"account_pool:openai":  1,
+		"account_pool:copilot": 1,
+		"account_pool:kiro":    1,
+	}, providerCounts)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_BalancesAPIProxyProvidersSameModel(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(15002)
+	accounts := []Account{
+		{ID: 150201, Name: "proxy-openai-volces-coding-v3", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 3, Priority: 0, Credentials: map[string]any{"base_url": "https://ark.cn-beijing.volces.com/api/coding/v3", "api_key": "sk-test"}},
+		{ID: 150202, Name: "proxy-openai-opencode-zen-go", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 3, Priority: 0, Credentials: map[string]any{"base_url": "https://opencode.ai/zen/go/v1", "api_key": "sk-test"}},
+	}
+	selected, providerCounts := selectOpenAIAccountsAcrossSessions(t, ctx, groupID, accounts, "kimi-k2.6", 80, "api_proxy_provider")
+
+	require.Len(t, selected, len(accounts))
+	require.Equal(t, map[string]int{
+		"proxy:ark.cn-beijing.volces.com/coding/v3": 1,
+		"proxy:opencode.ai/zen/go":                  1,
+	}, providerCounts)
+}
+
+func TestOpenAIGatewayService_SelectAccountWithScheduler_BalancesPoolProxyAndLocalSameModel(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(15003)
+	accounts := []Account{
+		{ID: 150301, Name: "openai-pool", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 3, Priority: 0},
+		{ID: 150302, Name: "proxy-openai-opencode-zen-go", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 3, Priority: 0, Credentials: map[string]any{"base_url": "https://opencode.ai/zen/go/v1", "api_key": "sk-test"}},
+		{ID: 150303, Name: "omlx-openai-internal", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 3, Priority: 0, Credentials: map[string]any{"base_url": "http://127.0.0.1:8000/v1", "api_key": "sk-test"}},
+	}
+	selected, providerCounts := selectOpenAIAccountsAcrossSessions(t, ctx, groupID, accounts, "shared-model", 120, "pool_proxy_local")
+
+	require.Len(t, selected, len(accounts))
+	require.Equal(t, map[string]int{
+		"account_pool:openai":      1,
+		"proxy:opencode.ai/zen/go": 1,
+		"local:omlx":               1,
+	}, providerCounts)
+}
+
+func selectOpenAIAccountsAcrossSessions(t *testing.T, ctx context.Context, groupID int64, accounts []Account, model string, attempts int, prefix string) (map[int64]int, map[string]int) {
+	t.Helper()
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.LBTopK = len(accounts)
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Priority = 1
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Load = 1
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Queue = 1
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.ErrorRate = 1
+	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT = 1
+
+	loadMap := make(map[int64]*AccountLoadInfo, len(accounts))
+	for _, account := range accounts {
+		loadMap[account.ID] = &AccountLoadInfo{AccountID: account.ID, LoadRate: 20, WaitingCount: 1}
+	}
+	svc := &OpenAIGatewayService{
+		accountRepo:        stubOpenAIAccountRepo{accounts: accounts},
+		cache:              &stubGatewayCache{sessionBindings: map[string]int64{}},
+		cfg:                cfg,
+		concurrencyService: NewConcurrencyService(stubConcurrencyCache{loadMap: loadMap}),
+	}
+	withOpenAILiveModelTestSupport(svc, model)
+
+	selected := make(map[int64]int, len(accounts))
+	var providerCounts map[string]int
+	for i := 0; i < attempts; i++ {
+		selection, decision, err := svc.SelectAccountWithScheduler(ctx, &groupID, "", fmt.Sprintf("session_hash_%s_%d", prefix, i), model, nil, nil, OpenAIUpstreamTransportAny)
+		require.NoError(t, err)
+		require.NotNil(t, selection)
+		require.NotNil(t, selection.Account)
+		require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+		require.Len(t, decision.ProviderCounts, len(accounts))
+		require.NotEmpty(t, decision.SelectedProvider)
+		providerCounts = decision.ProviderCounts
+		selected[selection.Account.ID]++
+		if selection.ReleaseFunc != nil {
+			selection.ReleaseFunc()
+		}
+	}
+	return selected, providerCounts
+}
+
 func TestDeriveOpenAISelectionSeed_NoAffinityAddsEntropy(t *testing.T) {
 	req := OpenAIAccountScheduleRequest{
 		RequestedModel: "gpt-5.1",

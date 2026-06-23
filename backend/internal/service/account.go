@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"hash/fnv"
+	"net/url"
 	"reflect"
 	"sort"
 	"strconv"
@@ -828,6 +829,76 @@ func (a *Account) IsKiro() bool {
 
 func (a *Account) UsesOpenAIGateway() bool {
 	return a.Platform == PlatformOpenAI || a.Platform == PlatformCopilot || a.Platform == PlatformKiro
+}
+
+// ProviderIdentity returns a stable identity for the upstream provider family
+// behind this account. It is used for scheduling diagnostics so operators can
+// tell whether the same public model is balanced across OAuth account pools,
+// direct API proxy providers, and local deployments.
+func (a *Account) ProviderIdentity() string {
+	if a == nil {
+		return "unknown"
+	}
+	name := strings.TrimSpace(a.Name)
+	lowerName := strings.ToLower(name)
+	switch {
+	case strings.HasPrefix(lowerName, "omlx-"):
+		return "local:omlx"
+	case strings.HasPrefix(lowerName, "bridge-") || strings.HasPrefix(lowerName, "litellm-"):
+		return "bridge:litellm"
+	case a.IsCopilot():
+		return "account_pool:copilot"
+	case a.IsKiro():
+		return "account_pool:kiro"
+	case a.IsOpenAIOAuth():
+		if workspace := strings.TrimSpace(a.GetChatGPTAccountID()); workspace != "" {
+			return "account_pool:openai:" + workspace
+		}
+		if user := strings.TrimSpace(a.GetChatGPTUserID()); user != "" {
+			return "account_pool:openai:user:" + user
+		}
+		return "account_pool:openai"
+	}
+
+	baseURL := strings.TrimSpace(a.GetOpenAIBaseURL())
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(a.GetBaseURL())
+	}
+	if baseURL != "" {
+		if parsed, err := url.Parse(baseURL); err == nil {
+			host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+			path := strings.Trim(strings.ToLower(parsed.EscapedPath()), "/")
+			if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+				if parsed.Port() == "4001" {
+					return "bridge:litellm"
+				}
+				return "local:" + host
+			}
+			if host != "" {
+				if path != "" {
+					parts := make([]string, 0, 2)
+					for _, part := range strings.Split(path, "/") {
+						if part == "" || part == "api" {
+							continue
+						}
+						parts = append(parts, part)
+					}
+					if len(parts) > 2 {
+						parts = parts[:2]
+					}
+					if len(parts) == 0 {
+						return "proxy:" + host
+					}
+					return "proxy:" + host + "/" + strings.Join(parts, "/")
+				}
+				return "proxy:" + host
+			}
+		}
+	}
+	if name != "" {
+		return "account:" + name
+	}
+	return "account:" + strconv.FormatInt(a.ID, 10)
 }
 
 func (a *Account) IsAnthropic() bool {

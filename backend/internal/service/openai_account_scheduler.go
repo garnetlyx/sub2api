@@ -65,11 +65,13 @@ type OpenAIAccountScheduleDecision struct {
 	StickyPreviousHit   bool
 	StickySessionHit    bool
 	CandidateCount      int
+	ProviderCounts      map[string]int
 	TopK                int
 	LatencyMs           int64
 	LoadSkew            float64
 	SelectedAccountID   int64
 	SelectedAccountType string
+	SelectedProvider    string
 }
 
 type OpenAIAccountSchedulerMetricsSnapshot struct {
@@ -302,6 +304,7 @@ func (s *defaultOpenAIAccountScheduler) Select(
 			decision.StickyPreviousHit = true
 			decision.SelectedAccountID = selection.Account.ID
 			decision.SelectedAccountType = selection.Account.Type
+			decision.SelectedProvider = selection.Account.ProviderIdentity()
 			if req.SessionHash != "" {
 				_ = s.service.BindStickySession(ctx, req.GroupID, req.SessionHash, selection.Account.ID)
 			}
@@ -320,12 +323,14 @@ func (s *defaultOpenAIAccountScheduler) Select(
 		decision.StickySessionHit = true
 		decision.SelectedAccountID = selection.Account.ID
 		decision.SelectedAccountType = selection.Account.Type
+		decision.SelectedProvider = selection.Account.ProviderIdentity()
 		return selection, decision, nil
 	}
 
-	selection, candidateCount, topK, loadSkew, err := s.selectByLoadBalance(ctx, req)
+	selection, candidateCount, providerCounts, topK, loadSkew, err := s.selectByLoadBalance(ctx, req)
 	decision.Layer = openAIAccountScheduleLayerLoadBalance
 	decision.CandidateCount = candidateCount
+	decision.ProviderCounts = providerCounts
 	decision.TopK = topK
 	decision.LoadSkew = loadSkew
 	if err != nil {
@@ -334,6 +339,7 @@ func (s *defaultOpenAIAccountScheduler) Select(
 	if selection != nil && selection.Account != nil {
 		decision.SelectedAccountID = selection.Account.ID
 		decision.SelectedAccountType = selection.Account.Type
+		decision.SelectedProvider = selection.Account.ProviderIdentity()
 	}
 	return selection, decision, nil
 }
@@ -407,8 +413,8 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	result, acquireErr := s.service.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
 	if acquireErr == nil && result.Acquired {
 		_ = s.service.refreshStickySessionTTL(ctx, req.GroupID, sessionHash, s.service.openAIWSSessionStickyTTL())
-			s.recordSameUserSelection(account)
-			s.recordSameWorkspaceSelection(account)
+		s.recordSameUserSelection(account)
+		s.recordSameWorkspaceSelection(account)
 		return &AccountSelectionResult{
 			Account:     account,
 			Acquired:    true,
@@ -935,13 +941,13 @@ func (s *defaultOpenAIAccountScheduler) recordSameWorkspaceSelection(account *Ac
 func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
-) (*AccountSelectionResult, int, int, float64, error) {
+) (*AccountSelectionResult, int, map[string]int, int, float64, error) {
 	accounts, err := s.service.listSchedulableAccounts(ctx, req.GroupID)
 	if err != nil {
-		return nil, 0, 0, 0, err
+		return nil, 0, nil, 0, 0, err
 	}
 	if len(accounts) == 0 {
-		return nil, 0, 0, 0, errors.New("no available OpenAI accounts")
+		return nil, 0, nil, 0, 0, errors.New("no available OpenAI accounts")
 	}
 
 	// require_privacy_set: 获取分组信息
@@ -984,17 +990,22 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		})
 	}
 	if len(filtered) == 0 {
-		return nil, 0, 0, 0, errors.New("no available OpenAI accounts")
+		return nil, 0, nil, 0, 0, errors.New("no available OpenAI accounts")
 	}
 
 	filtered = s.filterSameUserSerialized(filtered)
 	if len(filtered) == 0 {
-		return nil, 0, 0, 0, errors.New("no available OpenAI accounts (same-user serialization)")
+		return nil, 0, nil, 0, 0, errors.New("no available OpenAI accounts (same-user serialization)")
 	}
 
 	filtered = s.filterSameWorkspaceSerialized(filtered)
 	if len(filtered) == 0 {
-		return nil, 0, 0, 0, errors.New("no available OpenAI accounts (same-workspace serialization)")
+		return nil, 0, nil, 0, 0, errors.New("no available OpenAI accounts (same-workspace serialization)")
+	}
+
+	providerCounts := make(map[string]int, len(filtered))
+	for _, account := range filtered {
+		providerCounts[account.ProviderIdentity()]++
 	}
 
 	loadMap := map[int64]*AccountLoadInfo{}
@@ -1096,19 +1107,19 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		}
 		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
 		if acquireErr != nil {
-			return nil, len(candidates), topK, loadSkew, acquireErr
+			return nil, len(candidates), providerCounts, topK, loadSkew, acquireErr
 		}
 		if result != nil && result.Acquired {
 			if req.SessionHash != "" {
 				_ = s.service.BindStickySession(ctx, req.GroupID, req.SessionHash, fresh.ID)
 			}
-				s.recordSameUserSelection(fresh)
-				s.recordSameWorkspaceSelection(fresh)
+			s.recordSameUserSelection(fresh)
+			s.recordSameWorkspaceSelection(fresh)
 			return &AccountSelectionResult{
 				Account:     fresh,
 				Acquired:    true,
 				ReleaseFunc: result.ReleaseFunc,
-			}, len(candidates), topK, loadSkew, nil
+			}, len(candidates), providerCounts, topK, loadSkew, nil
 		}
 	}
 
@@ -1127,10 +1138,10 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 				Timeout:        cfg.FallbackWaitTimeout,
 				MaxWaiting:     cfg.FallbackMaxWaiting,
 			},
-		}, len(candidates), topK, loadSkew, nil
+		}, len(candidates), providerCounts, topK, loadSkew, nil
 	}
 
-	return nil, len(candidates), topK, loadSkew, ErrNoAvailableAccounts
+	return nil, len(candidates), providerCounts, topK, loadSkew, ErrNoAvailableAccounts
 }
 
 func (s *defaultOpenAIAccountScheduler) isAccountTransportCompatible(account *Account, requiredTransport OpenAIUpstreamTransport) bool {
