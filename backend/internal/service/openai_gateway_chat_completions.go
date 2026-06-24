@@ -588,6 +588,27 @@ func (s *OpenAIGatewayService) forwardNativeAPIKeyChatCompletions(
 		}
 	}
 
+	// Volcengine Ark Coding Plan gateway rejects a strict subset of OpenAI
+	// Chat Completions parameter shapes (forced tool_choice, multimodal
+	// image_url content, string-form thinking). Sanitize proactively before
+	// the request is sent so the account stays a healthy load-balancing
+	// target instead of failing 400 and forcing failover.
+	if isVolcengineCodingAccount(account) {
+		if sanitized, did, sErr := sanitizeBodyForVolcengineCoding(upstreamBody); sErr != nil {
+			logger.L().Warn("openai chat_completions: volcengine coding sanitize failed, forwarding original body",
+				zap.Int64("account_id", account.ID),
+				zap.String("account_name", account.Name),
+				zap.Error(sErr),
+			)
+		} else if did {
+			upstreamBody = sanitized
+			logger.L().Info("openai chat_completions: volcengine coding sanitize applied",
+				zap.Int64("account_id", account.ID),
+				zap.String("account_name", account.Name),
+			)
+		}
+	}
+
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
 		return nil, fmt.Errorf("get access token: %w", err)
