@@ -4687,6 +4687,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	setOpsUpstreamRequestBody(c, input.Body)
 
 	var resp *http.Response
+	forcedToolChoiceRetryTried := false
 	retryStart := time.Now()
 	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {
 		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, input.RequestStream)
@@ -4721,6 +4722,25 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 				},
 			})
 			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+		}
+
+		// Narrow exception to the "no 400 retry on passthrough" rule below:
+		// downgrade forced tool_choice and retry once on the SAME account
+		// before falling into the 400-to-client path. Mirrors the OpenAI-side
+		// reactive pattern; trigger keys on status + body signal, not on
+		// carrier identity.
+		if resp.StatusCode == http.StatusBadRequest &&
+			!forcedToolChoiceRetryTried &&
+			hasAnthropicForcedToolChoice(input.Body) {
+
+			if newBody, did := downgradeAnthropicForcedToolChoiceInBody(input.Body); did {
+				_ = resp.Body.Close()
+				input.Body = newBody
+				forcedToolChoiceRetryTried = true
+				setOpsUpstreamRequestBody(c, input.Body)
+				logger.LegacyPrintf("service.gateway", "[Anthropic Passthrough] Retrying once after forced tool_choice downgrade (account: %s)", account.Name)
+				continue
+			}
 		}
 
 		// 透传分支禁止 400 请求体降级重试（该重试会改写请求体）

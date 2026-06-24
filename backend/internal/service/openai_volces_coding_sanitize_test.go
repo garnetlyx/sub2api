@@ -385,3 +385,115 @@ func TestIsOpenAIUpstreamForcedToolChoiceRejection(t *testing.T) {
 		})
 	}
 }
+
+func TestHasAnthropicForcedToolChoice(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"empty", ``, false},
+		{"no tool_choice", `{"model":"m","messages":[]}`, false},
+		{"type auto", `{"tool_choice":{"type":"auto"}}`, false},
+		{"type any", `{"tool_choice":{"type":"any"}}`, false},
+		{"type none", `{"tool_choice":{"type":"none"}}`, false},
+		{"type tool with name", `{"tool_choice":{"type":"tool","name":"get_time"}}`, true},
+		{"type tool with empty name", `{"tool_choice":{"type":"tool","name":""}}`, false},
+		{"type tool no name field", `{"tool_choice":{"type":"tool"}}`, false},
+		{"malformed json", `{"tool_choice": not json}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasAnthropicForcedToolChoice([]byte(tt.body)); got != tt.want {
+				t.Errorf("hasAnthropicForcedToolChoice(%s) = %v, want %v", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDowngradeAnthropicForcedToolChoiceInBody(t *testing.T) {
+	t.Run("forced tool downgraded to auto", func(t *testing.T) {
+		body := []byte(`{"model":"kimi-k2.6","tool_choice":{"type":"tool","name":"get_time"}}`)
+		out, did := downgradeAnthropicForcedToolChoiceInBody(body)
+		if !did {
+			t.Fatalf("did = false, want true")
+		}
+		var got map[string]any
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("output not valid JSON: %v", err)
+		}
+		tc, ok := got["tool_choice"].(map[string]any)
+		if !ok {
+			t.Fatalf("tool_choice not an object: %v", got["tool_choice"])
+		}
+		if tc["type"] != "auto" {
+			t.Errorf("tool_choice.type = %v, want \"auto\"", tc["type"])
+		}
+		if _, hasName := tc["name"]; hasName {
+			t.Errorf("tool_choice.name should be removed, got %v", tc["name"])
+		}
+	})
+
+	t.Run("type any unchanged", func(t *testing.T) {
+		body := []byte(`{"tool_choice":{"type":"any"}}`)
+		out, did := downgradeAnthropicForcedToolChoiceInBody(body)
+		if did {
+			t.Errorf("did = true for type=any, should pass through")
+		}
+		if string(out) != string(body) {
+			t.Errorf("body mutated unexpectedly")
+		}
+	})
+
+	t.Run("type auto unchanged", func(t *testing.T) {
+		body := []byte(`{"tool_choice":{"type":"auto"}}`)
+		out, did := downgradeAnthropicForcedToolChoiceInBody(body)
+		if did {
+			t.Errorf("did = true for type=auto, should pass through")
+		}
+		if string(out) != string(body) {
+			t.Errorf("body mutated unexpectedly")
+		}
+	})
+
+	t.Run("no tool_choice unchanged", func(t *testing.T) {
+		body := []byte(`{"model":"m","messages":[]}`)
+		out, did := downgradeAnthropicForcedToolChoiceInBody(body)
+		if did {
+			t.Errorf("did = true when no tool_choice field")
+		}
+		if string(out) != string(body) {
+			t.Errorf("body mutated unexpectedly")
+		}
+	})
+
+	t.Run("empty body unchanged", func(t *testing.T) {
+		out, did := downgradeAnthropicForcedToolChoiceInBody(nil)
+		if did {
+			t.Errorf("did = true on empty body")
+		}
+		if out != nil {
+			t.Errorf("expected nil passthrough")
+		}
+	})
+
+	t.Run("idempotent after downgrade", func(t *testing.T) {
+		body := []byte(`{"tool_choice":{"type":"tool","name":"f"}}`)
+		out1, _ := downgradeAnthropicForcedToolChoiceInBody(body)
+		out2, did2 := downgradeAnthropicForcedToolChoiceInBody(out1)
+		if did2 {
+			t.Errorf("second downgrade should be a no-op (already \"auto\")")
+		}
+		if string(out1) != string(out2) {
+			t.Errorf("idempotency violated")
+		}
+	})
+
+	t.Run("type tool with empty name not downgraded", func(t *testing.T) {
+		body := []byte(`{"tool_choice":{"type":"tool","name":""}}`)
+		_, did := downgradeAnthropicForcedToolChoiceInBody(body)
+		if did {
+			t.Errorf("did = true for empty name, should not downgrade")
+		}
+	})
+}

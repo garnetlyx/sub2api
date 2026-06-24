@@ -133,3 +133,70 @@ func isOpenAIUpstreamForcedToolChoiceRejection(statusCode int, upstreamMsg strin
 	}
 	return false
 }
+
+// hasAnthropicForcedToolChoice reports whether body carries an Anthropic
+// forced tool_choice of the shape {type:"tool",name:"..."} that
+// reasoning-model carriers reject while thinking is active. Other Anthropic
+// tool_choice shapes (type:"auto", type:"any", type:"none") are not forced
+// to a specific tool and pass through unchanged.
+func hasAnthropicForcedToolChoice(body []byte) bool {
+	if !strings.Contains(string(body), `"tool_choice"`) {
+		return false
+	}
+	var reqBody map[string]any
+	if err := json.Unmarshal(body, &reqBody); err != nil {
+		return false
+	}
+	tc, ok := reqBody["tool_choice"]
+	if !ok {
+		return false
+	}
+	tcMap, ok := tc.(map[string]any)
+	if !ok {
+		return false
+	}
+	tcType, _ := tcMap["type"].(string)
+	if tcType != "tool" {
+		return false
+	}
+	name, _ := tcMap["name"].(string)
+	return strings.TrimSpace(name) != ""
+}
+
+// downgradeAnthropicForcedToolChoiceInBody rewrites the Anthropic forced
+// {type:"tool",name:"..."} tool_choice to {type:"auto"} (let the model
+// decide). Returns the new body and true when rewritten; the original body
+// and false otherwise. Idempotent: a second call on rewritten body is a
+// no-op (type becomes "auto", not "tool").
+func downgradeAnthropicForcedToolChoiceInBody(body []byte) ([]byte, bool) {
+	if len(body) == 0 || !strings.Contains(string(body), `"tool_choice"`) {
+		return body, false
+	}
+	var reqBody map[string]any
+	if err := json.Unmarshal(body, &reqBody); err != nil {
+		return body, false
+	}
+	tc, ok := reqBody["tool_choice"]
+	if !ok {
+		return body, false
+	}
+	tcMap, ok := tc.(map[string]any)
+	if !ok {
+		return body, false
+	}
+	tcType, _ := tcMap["type"].(string)
+	if tcType != "tool" {
+		return body, false
+	}
+	name, _ := tcMap["name"].(string)
+	if strings.TrimSpace(name) == "" {
+		return body, false
+	}
+	reqBody["tool_choice"] = map[string]any{"type": "auto"}
+	delete(tcMap, "name")
+	out, err := json.Marshal(reqBody)
+	if err != nil {
+		return body, false
+	}
+	return out, true
+}
