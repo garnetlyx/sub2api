@@ -581,6 +581,7 @@ func (s *OpenAIGatewayService) forwardNativeAPIKeyChatCompletions(
 	clientStream bool,
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
+	forcedToolChoiceRetryTried := false
 	upstreamBody := body
 	if upstreamModel != originalModel {
 		if replaced, err := sjson.SetBytes(body, "model", upstreamModel); err == nil {
@@ -646,12 +647,59 @@ func (s *OpenAIGatewayService) forwardNativeAPIKeyChatCompletions(
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+processResponse:
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+
+		// Strip-and-retry-once on the SAME account before failover, mirroring
+		// the existing Copilot service_tier / unsupported-tool retry pattern.
+		// Trigger on HTTP 400 + body carrying forced tool_choice rather than
+		// on upstream message matching: relays often wrap the original error
+		// into a generic envelope, hiding the incompatibility signal.
+		if resp.StatusCode == http.StatusBadRequest &&
+			!forcedToolChoiceRetryTried &&
+			hasForcedToolChoice(upstreamBody) {
+
+			newBody, did := downgradeForcedToolChoiceInBody(upstreamBody)
+			if did {
+				_ = resp.Body.Close()
+				upstreamBody = newBody
+				forcedToolChoiceRetryTried = true
+				setOpsUpstreamRequestBody(c, upstreamBody)
+				logger.L().Info("openai chat_completions: retrying once after forced tool_choice downgrade",
+					zap.Int64("account_id", account.ID),
+					zap.String("account_name", account.Name),
+					zap.Int("upstream_status", resp.StatusCode),
+					zap.String("upstream_message", upstreamMsg),
+				)
+
+				retryReq, rErr := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(upstreamBody))
+				if rErr == nil {
+					ApplySub2APICorrelationHeaders(retryReq)
+					retryReq.Header.Set("Authorization", "Bearer "+token)
+					retryReq.Header.Set("Content-Type", "application/json")
+					if clientStream {
+						retryReq.Header.Set("Accept", "text/event-stream")
+					} else {
+						retryReq.Header.Set("Accept", "application/json")
+					}
+					retryReq.Header.Set("User-Agent", resolveOpenAIUpstreamUserAgent(c, account))
+					resp, err = s.httpUpstream.Do(retryReq, proxyURL, account.ID, account.Concurrency)
+					if err == nil {
+						goto processResponse
+					}
+					safeErr := sanitizeUpstreamErrorMessage(err.Error())
+					setOpsUpstreamError(c, 0, safeErr, "")
+					writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
+					return nil, fmt.Errorf("api-key chat retry request failed: %s", safeErr)
+				}
+			}
+		}
+
 		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,

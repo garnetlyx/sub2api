@@ -271,3 +271,117 @@ func TestSanitizeBodyForVolcengineCoding_EmptyBody(t *testing.T) {
 		t.Errorf("expected nil passthrough, got %v", out)
 	}
 }
+
+func TestHasForcedToolChoice(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"empty", ``, false},
+		{"no tool_choice", `{"model":"m","messages":[]}`, false},
+		{"string tool_choice auto", `{"tool_choice":"auto"}`, false},
+		{"string tool_choice none", `{"tool_choice":"none"}`, false},
+		{"string tool_choice required", `{"tool_choice":"required"}`, false},
+		{"allowed_tools object", `{"tool_choice":{"type":"allowed_tools","tools":["a"]}}`, false},
+		{"forced function call", `{"tool_choice":{"type":"function","function":{"name":"f"}}}`, true},
+		{"forced function call with tools array", `{"tools":[{"type":"function","function":{"name":"f"}}],"tool_choice":{"type":"function","function":{"name":"f"}}}`, true},
+		{"malformed json", `{"tool_choice": not json}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasForcedToolChoice([]byte(tt.body)); got != tt.want {
+				t.Errorf("hasForcedToolChoice(%s) = %v, want %v", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDowngradeForcedToolChoiceInBody(t *testing.T) {
+	t.Run("forced downgraded to auto", func(t *testing.T) {
+		body := []byte(`{"model":"m","tool_choice":{"type":"function","function":{"name":"f"}}}`)
+		out, did := downgradeForcedToolChoiceInBody(body)
+		if !did {
+			t.Fatalf("did = false, want true")
+		}
+		var got map[string]any
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatalf("output not valid JSON: %v", err)
+		}
+		if tc, _ := got["tool_choice"].(string); tc != "auto" {
+			t.Errorf("tool_choice = %v, want \"auto\"", got["tool_choice"])
+		}
+	})
+
+	t.Run("string tool_choice unchanged", func(t *testing.T) {
+		body := []byte(`{"tool_choice":"required"}`)
+		out, did := downgradeForcedToolChoiceInBody(body)
+		if did {
+			t.Errorf("did = true for string tool_choice, should pass through")
+		}
+		if string(out) != string(body) {
+			t.Errorf("body mutated unexpectedly")
+		}
+	})
+
+	t.Run("no tool_choice field unchanged", func(t *testing.T) {
+		body := []byte(`{"model":"m","messages":[]}`)
+		out, did := downgradeForcedToolChoiceInBody(body)
+		if did {
+			t.Errorf("did = true when no tool_choice field")
+		}
+		if string(out) != string(body) {
+			t.Errorf("body mutated unexpectedly")
+		}
+	})
+
+	t.Run("empty body unchanged", func(t *testing.T) {
+		out, did := downgradeForcedToolChoiceInBody(nil)
+		if did {
+			t.Errorf("did = true on empty body")
+		}
+		if out != nil {
+			t.Errorf("expected nil passthrough")
+		}
+	})
+
+	t.Run("idempotent after downgrade", func(t *testing.T) {
+		body := []byte(`{"tool_choice":{"type":"function","function":{"name":"f"}}}`)
+		out1, _ := downgradeForcedToolChoiceInBody(body)
+		out2, did2 := downgradeForcedToolChoiceInBody(out1)
+		if did2 {
+			t.Errorf("second downgrade should be a no-op (already \"auto\")")
+		}
+		if string(out1) != string(out2) {
+			t.Errorf("idempotency violated")
+		}
+	})
+}
+
+func TestIsOpenAIUpstreamForcedToolChoiceRejection(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		msg        string
+		want       bool
+	}{
+		{"200 ok", 200, "anything", false},
+		{"500 server error", 500, "A parameter specified in the request is not valid", false},
+		{"400 empty message", 400, "", false},
+		{"400 volcengine direct", 400, "A parameter specified in the request is not valid Request id: 0217822", true},
+		{"400 volcengine case insensitive", 400, "a parameter specified in the request is not valid", true},
+		{"400 moonshot direct", 400, "tool_choice 'specified' is incompatible with thinking enabled", true},
+		{"400 moonshot case insensitive", 400, "Tool_Choice 'specified' is INCOMPATIBLE with thinking enabled", true},
+		{"400 unrelated bad request", 400, "max_tokens is too large", false},
+		{"400 mentions tool_choice but not incompatible", 400, "tool_choice must be one of auto/none/required", false},
+		{"400 mentions incompatible but not tool_choice", 400, "streaming incompatible with reasoning_effort low", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isOpenAIUpstreamForcedToolChoiceRejection(tt.statusCode, tt.msg); got != tt.want {
+				t.Errorf("isOpenAIUpstreamForcedToolChoiceRejection(%d, %q) = %v, want %v",
+					tt.statusCode, tt.msg, got, tt.want)
+			}
+		})
+	}
+}
