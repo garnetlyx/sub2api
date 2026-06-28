@@ -2219,7 +2219,11 @@ func supportsOpenAIResponsesUpstream(account *Account) bool {
 	if baseURL == "" {
 		return true
 	}
-	if strings.HasSuffix(baseURL, "/responses") || strings.HasSuffix(baseURL, "/v1") {
+	// A /v1 suffix is not enough: many OpenAI-compatible proxies
+	// (e.g. opencode.ai/zen/go/v1) only implement /v1/chat/completions
+	// and 404 on /v1/responses. Require an explicit /responses suffix
+	// or the real api.openai.com host.
+	if strings.HasSuffix(baseURL, "/responses") {
 		return true
 	}
 	return strings.Contains(baseURL, "api.openai.com")
