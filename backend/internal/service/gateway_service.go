@@ -170,6 +170,12 @@ func (s *GatewayService) debugModelRoutingEnabled() bool {
 	return s.debugModelRouting.Load()
 }
 
+// DebugModelRoutingEnabled exposes the debug-model-routing flag for adjacent services
+// (e.g. OpenAIGatewayService) so they can emit the same [SchedDecision] trace.
+func (s *GatewayService) DebugModelRoutingEnabled() bool {
+	return s.debugModelRoutingEnabled()
+}
+
 func (s *GatewayService) debugClaudeMimicEnabled() bool {
 	if s == nil {
 		return false
@@ -3013,6 +3019,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 
 	if selected == nil {
 		stats := s.logDetailedSelectionFailure(ctx, groupID, sessionHash, requestedModel, platform, accounts, excludedIDs, false)
+		s.logSchedulingDecision(ctx, groupID, sessionHash, requestedModel, platform, accounts, excludedIDs, nil, false)
 		if requestedModel != "" {
 			return nil, fmt.Errorf("%w supporting model: %s (%s)", ErrNoAvailableAccounts, requestedModel, summarizeSelectionFailureStats(stats))
 		}
@@ -3025,6 +3032,8 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			logger.LegacyPrintf("service.gateway", "set session account failed: session=%s account_id=%d err=%v", sessionHash, selected.ID, err)
 		}
 	}
+
+	s.logSchedulingDecision(ctx, groupID, sessionHash, requestedModel, platform, accounts, excludedIDs, selected, false)
 
 	return selected, nil
 }
@@ -3338,6 +3347,75 @@ func (s *GatewayService) logDetailedSelectionFailure(
 		stats.SampleRateLimitIDs,
 	)
 	return stats
+}
+
+// logSchedulingDecision emits a per-candidate trace of account scheduling when debug routing is enabled.
+// It complements logDetailedSelectionFailure (which only fires on no-candidate failures) by covering the
+// success path: every loaded candidate is logged with name/type/state/skip-reason, plus the chosen account.
+// This makes multi-provider pool decisions (e.g. glm-5.2 across OpenCode Go #1/#2 + Zhipu) traceable end-to-end.
+func (s *GatewayService) logSchedulingDecision(
+	ctx context.Context,
+	groupID *int64,
+	sessionHash string,
+	requestedModel string,
+	platform string,
+	accounts []Account,
+	excludedIDs map[int64]struct{},
+	selected *Account,
+	stickyHit bool,
+) {
+	if !s.debugModelRoutingEnabled() {
+		// Temporarily also emit when SUB2API_SCHED_TRACE is set, to verify call site.
+		if v := strings.TrimSpace(os.Getenv("SUB2API_SCHED_TRACE")); !parseDebugEnvBool(v) {
+			return
+		}
+	}
+	reqID := ""
+	if ctx != nil {
+		if v, ok := ctx.Value(ctxkey.RequestID).(string); ok {
+			reqID = strings.TrimSpace(v)
+		}
+	}
+	selectedMarker := func(id int64) string {
+		if selected != nil && selected.ID == id {
+			return "*"
+		}
+		return " "
+	}
+	header := fmt.Sprintf("req=%s model=%s group=%v platform=%s session=%s total=%d selected=",
+		reqID, requestedModel, derefGroupID(groupID), platform, shortSessionHash(sessionHash), len(accounts))
+	if selected != nil {
+		header += fmt.Sprintf("%d:%s", selected.ID, selected.Name)
+	} else {
+		header += "<none>"
+	}
+	if stickyHit {
+		header += " reason=sticky_hit"
+	}
+	logger.LegacyPrintf("service.gateway", "[SchedDecision] %s", header)
+	for i := range accounts {
+		acc := &accounts[i]
+		state := "ok"
+		if _, ex := excludedIDs[acc.ID]; ex {
+			state = "skip:excluded"
+		} else if !s.isAccountSchedulableForSelection(acc) {
+			state = "skip:unschedulable"
+		} else if requestedModel != "" && !s.isModelSupportedByAccountWithContext(ctx, acc, requestedModel) {
+			state = "skip:model_unsupported"
+		} else if !s.isAccountSchedulableForQuota(acc) {
+			state = "skip:quota"
+		} else if !s.isAccountSchedulableForWindowCost(ctx, acc, false) {
+			state = "skip:window_cost"
+		} else if !s.isAccountSchedulableForRPM(ctx, acc, false) {
+			state = "skip:rpm"
+		}
+		lastUsed := "never"
+		if acc.LastUsedAt != nil {
+			lastUsed = fmt.Sprintf("%ds ago", int(time.Since(*acc.LastUsedAt).Seconds()))
+		}
+		logger.LegacyPrintf("service.gateway", "[SchedDecision]   %s id=%d name=%s type=%s platform=%s priority=%d state=%s last_used=%s",
+			selectedMarker(acc.ID), acc.ID, acc.Name, acc.Type, acc.Platform, acc.Priority, state, lastUsed)
+	}
 }
 
 func (s *GatewayService) collectSelectionFailureStats(

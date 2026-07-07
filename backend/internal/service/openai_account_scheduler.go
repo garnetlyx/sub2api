@@ -12,6 +12,7 @@ import (
 	"hash/fnv"
 	"log/slog"
 	"math"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +21,8 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/tidwall/gjson"
 )
 
@@ -1092,6 +1095,10 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	if topK <= 0 {
 		topK = 1
 	}
+
+	// Emit per-candidate scoring trace for debugging multi-provider load balancing.
+	s.logLoadBalanceCandidates(ctx, req, candidates, weights, minPriority, maxPriority, maxWaiting, minTTFT, maxTTFT, hasTTFTSample)
+
 	rankedCandidates := selectTopKOpenAICandidates(candidates, topK)
 	selectionOrder := buildOpenAIWeightedSelectionOrder(rankedCandidates, req)
 
@@ -1115,6 +1122,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			}
 			s.recordSameUserSelection(fresh)
 			s.recordSameWorkspaceSelection(fresh)
+			s.logLoadBalancePick(ctx, req, fresh, "acquired", len(candidates), topK)
 			return &AccountSelectionResult{
 				Account:     fresh,
 				Acquired:    true,
@@ -1130,6 +1138,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
 			continue
 		}
+		s.logLoadBalancePick(ctx, req, fresh, "wait_plan", len(candidates), topK)
 		return &AccountSelectionResult{
 			Account: fresh,
 			WaitPlan: &AccountWaitPlan{
@@ -1153,6 +1162,92 @@ func (s *defaultOpenAIAccountScheduler) isAccountTransportCompatible(account *Ac
 		return false
 	}
 	return s.service.getOpenAIWSProtocolResolver().Resolve(account).Transport == requiredTransport
+}
+
+// logLoadBalanceCandidates emits a [SchedDecision] trace covering every OpenAI candidate that
+// passed filtering, with its priority/load/queue/error/TTFT factors and final weighted score.
+// Useful for verifying multi-provider aggregation, e.g. glm-5.2 across OpenCode Go #1/#2 + Zhipu.
+func (s *defaultOpenAIAccountScheduler) logLoadBalanceCandidates(
+	ctx context.Context,
+	req OpenAIAccountScheduleRequest,
+	candidates []openAIAccountCandidateScore,
+	weights GatewayOpenAIWSSchedulerScoreWeightsView,
+	minPriority, maxPriority int,
+	maxWaiting int,
+	minTTFT, maxTTFT float64,
+	hasTTFTSample bool,
+) {
+	if !s.debugTraceEnabled() {
+		return
+	}
+	reqID := ""
+	if ctx != nil {
+		if v, ok := ctx.Value(ctxkey.RequestID).(string); ok {
+			reqID = strings.TrimSpace(v)
+		}
+	}
+	logger.LegacyPrintf("service.openai_scheduler",
+		"[SchedDecision] req=%s layer=load_balance model=%s group=%v session=%s candidates=%d weights(priority=%.2f load=%.2f queue=%.2f errrate=%.2f ttft=%.2f)",
+		reqID, req.RequestedModel, derefGroupID(req.GroupID), shortSessionHash(req.SessionHash), len(candidates),
+		weights.Priority, weights.Load, weights.Queue, weights.ErrorRate, weights.TTFT)
+	for i := range candidates {
+		c := &candidates[i]
+		priorityFactor := 1.0
+		if maxPriority > minPriority {
+			priorityFactor = 1 - float64(c.account.Priority-minPriority)/float64(maxPriority-minPriority)
+		}
+		loadFactor := 1 - clamp01(float64(c.loadInfo.LoadRate)/100.0)
+		queueFactor := 1.0
+		if maxWaiting > 0 {
+			queueFactor = 1 - clamp01(float64(c.loadInfo.WaitingCount)/float64(maxWaiting))
+		}
+		errorFactor := 1 - clamp01(c.errorRate)
+		ttftFactor := 0.5
+		if c.hasTTFT && hasTTFTSample && maxTTFT > minTTFT {
+			ttftFactor = 1 - clamp01((c.ttft-minTTFT)/(maxTTFT-minTTFT))
+		}
+		lastUsed := "never"
+		if c.account.LastUsedAt != nil {
+			lastUsed = fmt.Sprintf("%ds ago", int(time.Since(*c.account.LastUsedAt).Seconds()))
+		}
+		logger.LegacyPrintf("service.openai_scheduler",
+			"[SchedDecision]   id=%d name=%s provider=%s priority=%d load=%d%% queue=%d err=%.2f ttft=%.0fms score=%.3f factors(p=%.2f l=%.2f q=%.2f e=%.2f t=%.2f) last_used=%s",
+			c.account.ID, c.account.Name, c.account.ProviderIdentity(), c.account.Priority,
+			c.loadInfo.LoadRate, c.loadInfo.WaitingCount, c.errorRate, c.ttft*1000, c.score,
+			priorityFactor, loadFactor, queueFactor, errorFactor, ttftFactor, lastUsed)
+	}
+}
+
+// logLoadBalancePick emits a one-line trace of the final load-balance pick.
+func (s *defaultOpenAIAccountScheduler) logLoadBalancePick(
+	ctx context.Context,
+	req OpenAIAccountScheduleRequest,
+	picked *Account,
+	mode string,
+	candidateCount, topK int,
+) {
+	if !s.debugTraceEnabled() {
+		return
+	}
+	reqID := ""
+	if ctx != nil {
+		if v, ok := ctx.Value(ctxkey.RequestID).(string); ok {
+			reqID = strings.TrimSpace(v)
+		}
+	}
+	logger.LegacyPrintf("service.openai_scheduler",
+		"[SchedDecision] req=%s model=%s PICK id=%d name=%s provider=%s priority=%d mode=%s candidates=%d topK=%d",
+		reqID, req.RequestedModel, picked.ID, picked.Name, picked.ProviderIdentity(), picked.Priority, mode, candidateCount, topK)
+}
+
+// debugTraceEnabled returns true when either the SUB2API_DEBUG_MODEL_ROUTING flag (via GatewayService)
+// or SUB2API_SCHED_TRACE env var is enabled. Decoupled from the OpenAI scheduler so traces can be
+// toggled even when GatewayService.debugModelRouting is not initialized.
+func (s *defaultOpenAIAccountScheduler) debugTraceEnabled() bool {
+	if s != nil && s.service != nil && s.service.gatewayService != nil && s.service.gatewayService.DebugModelRoutingEnabled() {
+		return true
+	}
+	return parseDebugEnvBool(os.Getenv("SUB2API_SCHED_TRACE"))
 }
 
 func (s *defaultOpenAIAccountScheduler) ReportResult(accountID int64, success bool, firstTokenMs *int) {

@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
@@ -1449,26 +1451,35 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 	var selected *Account
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
 
+	// Capture per-candidate state for the SchedDecision trace.
+	traces := make([]openAICandidateTrace, 0, len(accounts))
+
 	for i := range accounts {
 		acc := &accounts[i]
 
 		// 跳过被排除的账号
 		// Skip excluded accounts
 		if _, excluded := excludedIDs[acc.ID]; excluded {
+			traces = append(traces, openAICandidateTrace{acc, "skip:excluded"})
 			continue
 		}
 
 		fresh := s.resolveFreshSchedulableOpenAIAccount(ctx, acc, requestedModel)
 		if fresh == nil {
+			traces = append(traces, openAICandidateTrace{acc, "skip:model_unsupported"})
 			continue
 		}
 		fresh = s.recheckSelectedOpenAIAccountFromDB(ctx, fresh, requestedModel)
 		if fresh == nil {
+			traces = append(traces, openAICandidateTrace{acc, "skip:model_unsupported_recheck"})
 			continue
 		}
 		if needsUpstreamCheck && s.isUpstreamModelRestrictedByChannel(ctx, *groupID, fresh, requestedModel) {
+			traces = append(traces, openAICandidateTrace{acc, "skip:channel_restricted"})
 			continue
 		}
+
+		traces = append(traces, openAICandidateTrace{fresh, "ok"})
 
 		// 选择优先级最高且最久未使用的账号
 		// Select highest priority and least recently used
@@ -1482,7 +1493,136 @@ func (s *OpenAIGatewayService) selectBestAccount(ctx context.Context, groupID *i
 		}
 	}
 
+	s.logOpenAISchedulingDecision(ctx, groupID, accounts, requestedModel, excludedIDs, traces, selected)
+
 	return selected
+}
+
+// openAICandidateTrace captures per-candidate scheduling state for the SchedDecision trace.
+type openAICandidateTrace struct {
+	acc   *Account
+	state string // "ok" | "skip:excluded" | "skip:unschedulable" | "skip:model_unsupported" | "skip:channel_restricted"
+}
+
+// logOpenAILoadAwareDecision is invoked via defer from SelectAccountWithLoadAwareness to emit
+// one [SchedDecision] trace per request, covering every loaded OpenAI candidate with its
+// scheduling state and the finally selected account (or error). This makes multi-provider
+// pool decisions traceable end-to-end.
+func (s *OpenAIGatewayService) logOpenAILoadAwareDecision(
+	ctx context.Context,
+	groupID *int64,
+	sessionHash string,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+	accounts []Account,
+	result *AccountSelectionResult,
+	resultErr error,
+) {
+	enabled := false
+	if s.gatewayService != nil {
+		enabled = s.gatewayService.DebugModelRoutingEnabled()
+	}
+	if !enabled {
+		if v := strings.TrimSpace(os.Getenv("SUB2API_SCHED_TRACE")); !parseDebugEnvBool(v) {
+			return
+		}
+	}
+	reqID := ""
+	if ctx != nil {
+		if v, ok := ctx.Value(ctxkey.RequestID).(string); ok {
+			reqID = strings.TrimSpace(v)
+		}
+	}
+	var selected *Account
+	if result != nil {
+		selected = result.Account
+	}
+	outcome := "selected"
+	if resultErr != nil {
+		outcome = "error=" + resultErr.Error()
+	} else if selected == nil {
+		outcome = "no_pick"
+	}
+	header := fmt.Sprintf("req=%s model=%s group=%v platform=openai session=%s total=%d outcome=%s selected=",
+		reqID, requestedModel, derefGroupID(groupID), shortSessionHash(sessionHash), len(accounts), outcome)
+	if selected != nil {
+		header += fmt.Sprintf("%d:%s", selected.ID, selected.Name)
+	} else {
+		header += "<none>"
+	}
+	logger.LegacyPrintf("service.openai_gateway", "[SchedDecision] %s", header)
+	for i := range accounts {
+		acc := &accounts[i]
+		state := "ok"
+		if _, ex := excludedIDs[acc.ID]; ex {
+			state = "skip:excluded"
+		} else if !s.supportsOpenAIGatewayRequestedModel(ctx, acc, requestedModel, "") {
+			state = "skip:model_unsupported"
+		}
+		marker := " "
+		if selected != nil && selected.ID == acc.ID {
+			marker = "*"
+		}
+		lastUsed := "never"
+		if acc.LastUsedAt != nil {
+			lastUsed = fmt.Sprintf("%ds ago", int(time.Since(*acc.LastUsedAt).Seconds()))
+		}
+		logger.LegacyPrintf("service.openai_gateway", "[SchedDecision]   %s id=%d name=%s type=%s priority=%d state=%s last_used=%s",
+			marker, acc.ID, acc.Name, acc.Type, acc.Priority, state, lastUsed)
+	}
+}
+
+// logOpenAISchedulingDecision emits a per-candidate trace of OpenAI account scheduling when debug routing is enabled.
+// Each candidate is logged with name/type/state/skip-reason plus the chosen account, so multi-provider pool
+// decisions (e.g. glm-5.2 across OpenCode Go #1/#2 + Zhipu) are traceable end-to-end.
+func (s *OpenAIGatewayService) logOpenAISchedulingDecision(
+	ctx context.Context,
+	groupID *int64,
+	accounts []Account,
+	requestedModel string,
+	excludedIDs map[int64]struct{},
+	traces []openAICandidateTrace,
+	selected *Account,
+) {
+	enabled := false
+	if s.gatewayService != nil {
+		enabled = s.gatewayService.DebugModelRoutingEnabled()
+	}
+	if !enabled {
+		if v := strings.TrimSpace(os.Getenv("SUB2API_SCHED_TRACE")); !parseDebugEnvBool(v) {
+			return
+		}
+	}
+	reqID := ""
+	if ctx != nil {
+		if v, ok := ctx.Value(ctxkey.RequestID).(string); ok {
+			reqID = strings.TrimSpace(v)
+		}
+	}
+	header := fmt.Sprintf("req=%s model=%s group=%v platform=openai total=%d selected=",
+		reqID, requestedModel, derefGroupID(groupID), len(accounts))
+	if selected != nil {
+		header += fmt.Sprintf("%d:%s", selected.ID, selected.Name)
+	} else {
+		header += "<none>"
+	}
+	logger.LegacyPrintf("service.openai_gateway", "[SchedDecision] %s", header)
+	for _, t := range traces {
+		marker := " "
+		if selected != nil && t.acc != nil && selected.ID == t.acc.ID {
+			marker = "*"
+		}
+		lastUsed := "never"
+		if t.acc != nil && t.acc.LastUsedAt != nil {
+			lastUsed = fmt.Sprintf("%ds ago", int(time.Since(*t.acc.LastUsedAt).Seconds()))
+		}
+		name, id, typ, priority := "(nil)", int64(0), "", 0
+		if t.acc != nil {
+			name, id, typ, priority = t.acc.Name, t.acc.ID, t.acc.Type, t.acc.Priority
+		}
+		logger.LegacyPrintf("service.openai_gateway", "[SchedDecision]   %s id=%d name=%s type=%s priority=%d state=%s last_used=%s",
+			marker, id, name, typ, priority, t.state, lastUsed)
+	}
 }
 
 // isBetterAccount 判断 candidate 是否比 current 更优。
@@ -1519,13 +1659,20 @@ func (s *OpenAIGatewayService) isBetterAccount(candidate, current *Account) bool
 }
 
 // SelectAccountWithLoadAwareness selects an account with load-awareness and wait plan.
-func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*AccountSelectionResult, error) {
+func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (result *AccountSelectionResult, err error) {
 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
 		slog.Warn("channel pricing restriction blocked request",
 			"group_id", derefGroupID(groupID),
 			"model", requestedModel)
 		return nil, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
 	}
+
+	// Defer a single SchedDecision trace covering all loaded candidates + final result.
+	// accountsSnap captures whatever was loaded for this attempt (nil if scheduling failed early).
+	var accountsSnap []Account
+	defer func() {
+		s.logOpenAILoadAwareDecision(ctx, groupID, sessionHash, requestedModel, excludedIDs, accountsSnap, result, err)
+	}()
 
 	cfg := s.schedulingConfig()
 	needsUpstreamCheck := s.needsUpstreamChannelRestrictionCheck(ctx, groupID)
@@ -1577,6 +1724,7 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 	if err != nil {
 		return nil, err
 	}
+	accountsSnap = accounts
 	if len(accounts) == 0 {
 		return nil, ErrNoAvailableAccounts
 	}
