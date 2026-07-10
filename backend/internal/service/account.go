@@ -1607,6 +1607,59 @@ func (a *Account) getExtraTime(key string) time.Time {
 }
 
 // getExtraString 从 Extra 中读取指定 key 的字符串值
+// parseExtraBool coerces an extra-field value to bool.
+// Supports native bool, json.Number/float64/int/int64 (non-zero → true), and
+// strings parsed via strconv.ParseBool ("true"/"false"/"1"/"0"/...) after trim.
+// Unrecognised values, nil, and missing keys resolve to false.
+func parseExtraBool(value any) bool {
+	switch v := value.(type) {
+	case bool:
+		return v
+	case float64:
+		return v != 0
+	case float32:
+		return v != 0
+	case int:
+		return v != 0
+	case int64:
+		return v != 0
+	case int32:
+		return v != 0
+	case json.Number:
+		if f, err := v.Float64(); err == nil {
+			return f != 0
+		}
+		if b, err := strconv.ParseBool(string(v)); err == nil {
+			return b
+		}
+	case string:
+		if b, err := strconv.ParseBool(strings.TrimSpace(v)); err == nil {
+			return b
+		}
+	}
+	return false
+}
+
+// getExtraBool reads a bool-valued key from Extra, coercing common types.
+func (a *Account) getExtraBool(key string) bool {
+	if a == nil || a.Extra == nil {
+		return false
+	}
+	if v, ok := a.Extra[key]; ok && v != nil {
+		return parseExtraBool(v)
+	}
+	return false
+}
+
+// PublicModelsExplicitOnly reports whether the account's live-model catalog
+// must expose only public names declared explicitly via upstream_models /
+// model_mapping. When true, raw runtime /v1/models IDs are never added as
+// public models (they remain usable only as upstream-resolution targets for
+// explicit public keys). Default false preserves the union behavior.
+func (a *Account) PublicModelsExplicitOnly() bool {
+	return a.getExtraBool("public_models_explicit_only")
+}
+
 func (a *Account) getExtraString(key string) string {
 	if a.Extra == nil {
 		return ""

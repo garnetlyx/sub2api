@@ -337,3 +337,159 @@ func TestPublicizeLiveModelCatalogLiveOverridesConfig(t *testing.T) {
 	require.Contains(t, catalog.Models, "glm-5.1")
 	require.Equal(t, "glm-5.1", catalog.UpstreamModels["glm-5.1"])
 }
+
+func TestPublicModelsExplicitOnlyAccessorCoercion(t *testing.T) {
+	tests := []struct {
+		name string
+		extra map[string]any
+		want bool
+	}{
+		{"nil extra", nil, false},
+		{"missing key", map[string]any{}, false},
+		{"bool true", map[string]any{"public_models_explicit_only": true}, true},
+		{"bool false", map[string]any{"public_models_explicit_only": false}, false},
+		{"string true", map[string]any{"public_models_explicit_only": "true"}, true},
+		{"string false", map[string]any{"public_models_explicit_only": "false"}, false},
+		{"string 1", map[string]any{"public_models_explicit_only": "1"}, true},
+		{"string 0", map[string]any{"public_models_explicit_only": "0"}, false},
+		{"int 1", map[string]any{"public_models_explicit_only": 1}, true},
+		{"int 0", map[string]any{"public_models_explicit_only": 0}, false},
+		{"float64 1", map[string]any{"public_models_explicit_only": float64(1)}, true},
+		{"float64 0", map[string]any{"public_models_explicit_only": float64(0)}, false},
+		{"json.Number 1", map[string]any{"public_models_explicit_only": json.Number("1")}, true},
+		{"json.Number 0", map[string]any{"public_models_explicit_only": json.Number("0")}, false},
+		{"garbage string", map[string]any{"public_models_explicit_only": "banana"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			acc := &Account{Extra: tc.extra}
+			require.Equal(t, tc.want, acc.PublicModelsExplicitOnly())
+		})
+	}
+}
+
+func TestPublicizeLiveModelCatalogExplicitOnly(t *testing.T) {
+	rawModels := []string{
+		"deepseek-v4-flash",
+		"deepseek-v4-pro",
+		"glm-5.2",
+		"qwen3.5-9b",
+	}
+
+	tests := []struct {
+		name        string
+		account     *Account
+		raw         []string
+		wantModels  []string
+		forbidden   []string
+		wantMapping map[string]string
+	}{
+		{
+			name:       "flag_absent_preserves_union",
+			account:    &Account{},
+			raw:        []string{"raw-a", "raw-b"},
+			wantModels: []string{"raw-a", "raw-b"},
+		},
+		{
+			name: "flag_false_preserves_union",
+			account: &Account{Extra: map[string]any{
+				"public_models_explicit_only": false,
+				"upstream_models":             map[string]any{"public-x": "raw-a"},
+			}},
+			raw:        []string{"raw-a", "raw-b"},
+			wantModels: []string{"public-x", "raw-a", "raw-b"},
+			wantMapping: map[string]string{
+				"public-x": "raw-a",
+				"raw-a":    "raw-a",
+				"raw-b":    "raw-b",
+			},
+		},
+		{
+			name: "flag_true_hides_raw_ids_exposes_explicit",
+			account: &Account{Extra: map[string]any{
+				"public_models_explicit_only": true,
+				"upstream_models": map[string]any{
+					"Deepseek-V4-Flash-q2-imatrix": "deepseek-v4-flash",
+					"glm-5.2-q2":                   "glm-5.2",
+				},
+			}},
+			raw:        rawModels,
+			wantModels: []string{"Deepseek-V4-Flash-q2-imatrix", "glm-5.2-q2"},
+			forbidden:  []string{"deepseek-v4-flash", "deepseek-v4-pro", "glm-5.2", "qwen3.5-9b"},
+			wantMapping: map[string]string{
+				"Deepseek-V4-Flash-q2-imatrix": "deepseek-v4-flash",
+				"glm-5.2-q2":                   "glm-5.2",
+			},
+		},
+		{
+			name: "flag_true_explicit_fallback_when_upstream_not_in_raw",
+			account: &Account{Extra: map[string]any{
+				"public_models_explicit_only": true,
+				"upstream_models": map[string]any{
+					"public-not-listed": "some-remote-model",
+				},
+			}},
+			raw:        rawModels,
+			wantModels: []string{"public-not-listed"},
+			forbidden:  append([]string{}, rawModels...),
+			wantMapping: map[string]string{
+				"public-not-listed": "some-remote-model",
+			},
+		},
+		{
+			name: "flag_true_empty_explicit_fail_closed",
+			account: &Account{Extra: map[string]any{
+				"public_models_explicit_only": true,
+			}},
+			raw:         rawModels,
+			wantModels:  []string{},
+			forbidden:   rawModels,
+			wantMapping: map[string]string{},
+		},
+		{
+			name: "flag_true_model_mapping_explicit_counts_too",
+			account: &Account{
+				Extra: map[string]any{
+					"public_models_explicit_only": true,
+				},
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{
+						"Qwen3.5-9B-MLX-4bit": "qwen3.5-9b",
+					},
+				},
+			},
+			raw:        rawModels,
+			wantModels: []string{"Qwen3.5-9B-MLX-4bit"},
+			forbidden:  []string{"deepseek-v4-flash", "deepseek-v4-pro", "glm-5.2", "qwen3.5-9b"},
+			wantMapping: map[string]string{
+				"Qwen3.5-9B-MLX-4bit": "qwen3.5-9b",
+			},
+		},
+		{
+			name: "flag_true_string_coercion",
+			account: &Account{Extra: map[string]any{
+				"public_models_explicit_only": "true",
+				"upstream_models": map[string]any{
+					"explicit-only": "deepseek-v4-flash",
+				},
+			}},
+			raw:        rawModels,
+			wantModels: []string{"explicit-only"},
+			forbidden:  rawModels,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog := publicizeLiveModelCatalog(tc.account, tc.raw)
+			require.ElementsMatch(t, tc.wantModels, catalog.Models)
+			for _, bad := range tc.forbidden {
+				require.NotContains(t, catalog.Models, bad, "raw ID %q must not be public under explicit-only", bad)
+			}
+			for publicModel, upstreamModel := range tc.wantMapping {
+				require.Equal(t, upstreamModel, catalog.UpstreamModels[publicModel],
+					"upstream mapping for %q", publicModel)
+			}
+		})
+	}
+}

@@ -146,8 +146,11 @@ func publicizeLiveModelCatalog(account *Account, rawModels []string) liveModelCa
 		}
 	}
 
-	for _, rawModel := range rawModels {
-		add(rawModel, rawModel, false)
+	explicitOnly := account != nil && account.PublicModelsExplicitOnly()
+	if !explicitOnly {
+		for _, rawModel := range rawModels {
+			add(rawModel, rawModel, false)
+		}
 	}
 
 	for publicModel, upstreamModel := range buildExplicitUpstreamMappings(account) {
