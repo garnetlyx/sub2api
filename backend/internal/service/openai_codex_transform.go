@@ -478,6 +478,17 @@ func normalizeCodexModel(model string) string {
 
 	normalized := strings.ToLower(modelID)
 	if strings.HasPrefix(normalized, "gpt-") {
+		// ChatGPT's /backend-api/models catalog advertises "-wm" suffixed slugs
+		// (e.g. gpt-5.6-sol-wm, gpt-5.5-wm) for the conversation endpoint, but
+		// the Codex Responses endpoint (chatgpt.com/backend-api/codex/responses)
+		// rejects them with "model is not supported when using Codex with a
+		// ChatGPT account". The Codex endpoint accepts the bare sub-variant name
+		// (gpt-5.6-sol) instead. Strip a trailing "-wm" before any other
+		// normalization so OAuth Codex requests reach a usable slug.
+		if strings.HasSuffix(normalized, "-wm") && len(modelID) > len("-wm") {
+			modelID = modelID[:len(modelID)-len("-wm")]
+			normalized = strings.ToLower(modelID)
+		}
 		for _, suffix := range []string{"-none", "-minimal", "-low", "-medium", "-high", "-xhigh"} {
 			if strings.HasSuffix(normalized, suffix) && len(modelID) > len(suffix) {
 				modelID = modelID[:len(modelID)-len(suffix)]

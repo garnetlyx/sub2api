@@ -19,3 +19,9 @@
 ## Current Example
 
 - Provider-family compatibility exclusion cache TTL is configured as `gateway.compatibility_exclusion_ttl_seconds`, not hardcoded in the failover path.
+
+## Codex Responses slug normalization
+
+- ChatGPT OAuth (`platform=openai`, `type=oauth`, non-Copilot) accounts call `chatgpt.com/backend-api/codex/responses`.
+- The conversation-endpoint model catalog (`/backend-api/models`) advertises `-wm` suffixed slugs (`gpt-5.6-sol-wm`, `gpt-5.5-wm`) that the Codex Responses endpoint rejects with `model is not supported when using Codex with a ChatGPT account`.
+- `normalizeCodexModel` strips a trailing `-wm` for `gpt-*` models so the bare sub-variant slug (`gpt-5.6-sol`) reaches upstream. This is a protocol-shape rule; do not replace it with a per-model map.
