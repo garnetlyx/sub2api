@@ -226,13 +226,13 @@ func extractTextFromContent(raw json.RawMessage) string {
 // content field into Anthropic content blocks JSON.
 func convertResponsesUserToAnthropicContent(raw json.RawMessage) (json.RawMessage, error) {
 	if len(raw) == 0 {
-		return json.Marshal("") // empty string content
+		return json.Marshal([]AnthropicContentBlock{{Type: "text", Text: ""}})
 	}
 
 	// Try plain string.
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		return json.Marshal(s)
+		return json.Marshal([]AnthropicContentBlock{{Type: "text", Text: s}})
 	}
 
 	// Array of content parts → Anthropic content blocks.
@@ -264,7 +264,7 @@ func convertResponsesUserToAnthropicContent(raw json.RawMessage) (json.RawMessag
 	}
 
 	if len(blocks) == 0 {
-		return json.Marshal("")
+		return json.Marshal([]AnthropicContentBlock{{Type: "text", Text: ""}})
 	}
 	return json.Marshal(blocks)
 }
