@@ -466,6 +466,21 @@ func (s *GatewayService) cachedLiveModelSourceForAccountWithLoader(ctx context.C
 		source = cloneLiveModelSource(source)
 		cache.Set(key, source, ttl)
 		modelsListCacheStoreTotal.Add(1)
+		if source.Account != nil {
+			logFields := []any{
+				"account_id", source.Account.ID,
+				"account_name", source.Account.Name,
+				"platform", source.Account.Platform,
+				"account_type", source.Account.Type,
+				"endpoint", source.Endpoint,
+				"models_count", len(source.Models),
+			}
+			if strings.TrimSpace(source.Endpoint) == "" {
+				slog.Warn("gateway.live_model_source_cache_store_empty_endpoint", logFields...)
+			} else {
+				slog.Debug("gateway.live_model_source_cache_store", logFields...)
+			}
+		}
 		return source, nil
 	})
 	if err != nil {
@@ -771,6 +786,13 @@ func (s *GatewayService) liveAccountModels(ctx context.Context, account Account)
 		capability = "generateContent"
 	case acc.IsGemini() && acc.Type == AccountTypeOAuth:
 		if acc.IsGeminiCodeAssist() {
+			slog.Debug("gateway.live_model_source_empty_endpoint_path",
+				"path", "gemini_code_assist_early_return",
+				"account_id", acc.ID,
+				"account_name", acc.Name,
+				"platform", acc.Platform,
+				"account_type", acc.Type,
+			)
 			return nil, "", "", nil
 		}
 		models, err = s.liveGeminiOAuthModels(ctx, acc)
@@ -781,6 +803,13 @@ func (s *GatewayService) liveAccountModels(ctx context.Context, account Account)
 		endpoint = "antigravity"
 		capability = "messages"
 	default:
+		slog.Warn("gateway.live_model_source_empty_endpoint_path",
+			"path", "default_branch_no_loader_match",
+			"account_id", acc.ID,
+			"account_name", acc.Name,
+			"platform", acc.Platform,
+			"account_type", acc.Type,
+		)
 		return nil, "", "", nil
 	}
 	if err != nil {
@@ -1112,6 +1141,13 @@ func (s *OpenAIGatewayService) liveModelSourceForAccount(ctx context.Context, ac
 		models, err = s.liveOpenAICompatibleModels(ctx, acc)
 		endpoint = "openai-compatible"
 	default:
+		slog.Warn("openai.live_model_source_empty_endpoint_path",
+			"path", "openai_default_branch_no_loader_match",
+			"account_id", acc.ID,
+			"account_name", acc.Name,
+			"platform", acc.Platform,
+			"account_type", acc.Type,
+		)
 		return LiveModelSource{Account: acc}, nil
 	}
 	if err != nil {

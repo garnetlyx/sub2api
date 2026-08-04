@@ -2316,7 +2316,22 @@ func (s *OpenAIGatewayService) supportsOpenAIGatewayRequestedModel(ctx context.C
 		return false
 	}
 	if strings.TrimSpace(source.Endpoint) == "" {
-		return true
+		// Only setup-token accounts intentionally lack a model list endpoint
+		// (inference-only scope). For oauth/apikey accounts, an empty endpoint
+		// means the live model resolver is in a broken state — routing to it
+		// produces upstream "model is not supported" errors.
+		if account.Type == AccountTypeSetupToken {
+			return true
+		}
+		slog.Warn("openai.supports_model_endpoint_empty_rejected",
+			"account_id", account.ID,
+			"account_name", account.Name,
+			"platform", account.Platform,
+			"account_type", account.Type,
+			"requested_model", requestedModel,
+			"capability", capability,
+		)
+		return false
 	}
 	if len(source.Models) == 0 {
 		slog.Warn("openai.account_model_empty_list_filtered",

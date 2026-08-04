@@ -3577,7 +3577,21 @@ func (s *GatewayService) isModelSupportedByLiveSource(ctx context.Context, accou
 		return false, true
 	}
 	if strings.TrimSpace(source.Endpoint) == "" {
-		return false, false
+		// Only setup-token accounts intentionally lack a model list endpoint.
+		// For oauth/apikey accounts, an empty endpoint means the live model
+		// resolver is broken — falling back to IsModelSupported (which returns
+		// true) would let any model route to the account.
+		if account.Type == AccountTypeSetupToken {
+			return false, false
+		}
+		slog.Warn("gateway.live_model_source_endpoint_empty_rejected",
+			"account_id", account.ID,
+			"account_name", account.Name,
+			"platform", account.Platform,
+			"account_type", account.Type,
+			"requested_model", requestedModel,
+		)
+		return false, true
 	}
 	if len(source.Models) == 0 {
 		slog.Warn("gateway.account_model_empty_list_filtered",
