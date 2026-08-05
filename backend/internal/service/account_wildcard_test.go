@@ -550,6 +550,34 @@ func TestModelListContainsRequestedModel_DotHyphenEquivalence(t *testing.T) {
 	}
 }
 
+func TestModelListContainsRequestedModel_CodexWMStrip(t *testing.T) {
+	// codex/models manifest lists bare slugs (gpt-5.6-luna) but clients
+	// request the -wm conversation variant. Matching must succeed so the
+	// account is not filtered out of scheduling.
+	tests := []struct {
+		modelIDs       []string
+		requestedModel string
+		want           bool
+	}{
+		{[]string{"gpt-5.6-luna"}, "gpt-5.6-luna-wm", true},
+		{[]string{"gpt-5.6-terra"}, "gpt-5.6-terra-wm", true},
+		{[]string{"gpt-5.5"}, "gpt-5.5-wm", true},
+		{[]string{"gpt-5.6-sol", "gpt-5.6-sol-wm"}, "gpt-5.6-sol-wm", true},
+		{[]string{"gpt-5.6-sol"}, "gpt-5.6-sol", true},
+		// Non-wm models still match normally
+		{[]string{"gpt-5.5"}, "gpt-5.5", true},
+		// Genuinely absent
+		{[]string{"gpt-5.4"}, "gpt-5.6-luna-wm", false},
+	}
+	for _, tt := range tests {
+		got := modelListContainsRequestedModel(tt.modelIDs, tt.requestedModel)
+		if got != tt.want {
+			t.Errorf("modelListContainsRequestedModel(%v, %q) = %v, want %v",
+				tt.modelIDs, tt.requestedModel, got, tt.want)
+		}
+	}
+}
+
 func TestRequestedModelLookupCandidates_DotHyphen(t *testing.T) {
 	candidates := requestedModelLookupCandidates("", "gpt-5.5")
 	has := func(target string) bool {

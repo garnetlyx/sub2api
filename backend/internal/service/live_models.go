@@ -41,10 +41,23 @@ type liveModelCatalog struct {
 	UpstreamModels map[string]string
 }
 
+// chatGPTLiveModelEndpoints is the fallback list for OAuth model discovery.
+// The Codex manifest endpoint (backend-api/codex/models) is preferred and
+// constructed dynamically in liveOpenAIOAuthModels because it requires a
+// client_version query parameter. The legacy browser-facing endpoints below
+// are kept as last-resort fallbacks; they are increasingly Cloudflare-challenged
+// on residential egress IPs.
 var chatGPTLiveModelEndpoints = []string{
 	"https://chatgpt.com/backend-api/models?history_and_training_disabled=false",
 	"https://chatgpt.com/backend-api/models",
 }
+
+// codexModelsManifestURL is the Codex CLI models manifest endpoint. Unlike the
+// browser-facing /backend-api/models, Cloudflare does not challenge this path
+// (it shares the same edge policy as /backend-api/codex/responses), so it is
+// stable on residential egress IPs that get cf-mitigated: challenge on the
+// browser endpoints.
+const codexModelsManifestURL = "https://chatgpt.com/backend-api/codex/models"
 
 func canonicalLiveModelList(models []string) []string {
 	seen := make(map[string]struct{}, len(models))
@@ -1089,27 +1102,43 @@ func (s *OpenAIGatewayService) liveOpenAIOAuthModels(ctx context.Context, accoun
 		client.SetProxyURL(proxyURL)
 	}
 
+	// Codex manifest endpoint first: it is not Cloudflare-challenged on
+	// residential egress (same edge policy as codex/responses), while the
+	// browser-facing /backend-api/models increasingly is. The manifest
+	// requires a client_version query parameter and a matching Version header.
+	codexManifestEndpoint := fmt.Sprintf("%s?client_version=%s", codexModelsManifestURL, codexCLIVersion)
+	endpoints := append([]string{codexManifestEndpoint}, chatGPTLiveModelEndpoints...)
+
 	var lastErr error
-	for _, endpoint := range chatGPTLiveModelEndpoints {
-		req := client.R().
+	for i, endpoint := range endpoints {
+		isCodexManifest := i == 0
+		r := client.R().
 			SetContext(ctx).
 			SetHeader("Authorization", "Bearer "+token).
-			SetHeader("Origin", "https://chatgpt.com").
-			SetHeader("Referer", "https://chatgpt.com/").
-			SetHeader("Accept", "application/json").
-			SetHeader("sec-fetch-mode", "cors").
-			SetHeader("sec-fetch-site", "same-origin").
-			SetHeader("sec-fetch-dest", "empty")
-		if chatGPTAccountID := strings.TrimSpace(account.GetChatGPTAccountID()); chatGPTAccountID != "" {
-			req.SetHeader("chatgpt-account-id", chatGPTAccountID)
+			SetHeader("Accept", "application/json")
+		if isCodexManifest {
+			// Codex CLI identity headers — the manifest rejects requests
+			// without a client_version query parameter (HTTP 400).
+			r.SetHeader("Version", codexCLIVersion).
+				SetHeader("User-Agent", codexCLIUserAgent)
+		} else {
+			// Legacy browser-facing endpoints use ChatGPT web context headers.
+			r.SetHeader("Origin", "https://chatgpt.com").
+				SetHeader("Referer", "https://chatgpt.com/").
+				SetHeader("sec-fetch-mode", "cors").
+				SetHeader("sec-fetch-site", "same-origin").
+				SetHeader("sec-fetch-dest", "empty")
 		}
-		resp, err := req.Get(endpoint)
+		if chatGPTAccountID := strings.TrimSpace(account.GetChatGPTAccountID()); chatGPTAccountID != "" {
+			r.SetHeader("chatgpt-account-id", chatGPTAccountID)
+		}
+		resp, err := r.Get(endpoint)
 		if err != nil {
 			lastErr = err
 			continue
 		}
 		if !resp.IsSuccessState() {
-			lastErr = fmt.Errorf("models lookup failed: status %d", resp.StatusCode)
+			lastErr = fmt.Errorf("models lookup failed: %s status %d", endpoint, resp.StatusCode)
 			continue
 		}
 		models := cleanLiveModelList(decodeChatGPTModelIDs([]byte(resp.String())))

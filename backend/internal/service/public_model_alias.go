@@ -141,6 +141,17 @@ func requestedModelLookupCandidates(platform, requestedModel string) []string {
 		add(publicModelStyleAlternate(canonical))
 	}
 
+	// Codex manifest endpoint (backend-api/codex/models) lists bare slugs
+	// (gpt-5.6-luna) while clients request the -wm conversation variant
+	// (gpt-5.6-luna-wm). normalizeCodexModel strips -wm at inference time;
+	// mirror that here so live-model list matching stays consistent with
+	// the inference path. -wm is an OpenAI-only slug suffix.
+	for _, model := range []string{requestedModel, normalized} {
+		if strings.HasSuffix(model, "-wm") && len(model) > len("-wm") {
+			add(model[:len(model)-len("-wm")])
+		}
+	}
+
 	return candidates
 }
 
