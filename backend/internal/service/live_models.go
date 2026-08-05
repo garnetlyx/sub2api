@@ -464,22 +464,29 @@ func (s *GatewayService) cachedLiveModelSourceForAccountWithLoader(ctx context.C
 			return LiveModelSource{}, fmt.Errorf("live model source lookup failed after %s (timeout %s): %w", duration, timeout, err)
 		}
 		source = cloneLiveModelSource(source)
+		if strings.TrimSpace(source.Endpoint) == "" {
+			if source.Account != nil {
+				slog.Warn("gateway.live_model_source_cache_skip_empty_endpoint",
+					"account_id", source.Account.ID,
+					"account_name", source.Account.Name,
+					"platform", source.Account.Platform,
+					"account_type", source.Account.Type,
+					"models_count", len(source.Models),
+				)
+			}
+			return source, nil
+		}
 		cache.Set(key, source, ttl)
 		modelsListCacheStoreTotal.Add(1)
 		if source.Account != nil {
-			logFields := []any{
+			slog.Debug("gateway.live_model_source_cache_store",
 				"account_id", source.Account.ID,
 				"account_name", source.Account.Name,
 				"platform", source.Account.Platform,
 				"account_type", source.Account.Type,
 				"endpoint", source.Endpoint,
 				"models_count", len(source.Models),
-			}
-			if strings.TrimSpace(source.Endpoint) == "" {
-				slog.Warn("gateway.live_model_source_cache_store_empty_endpoint", logFields...)
-			} else {
-				slog.Debug("gateway.live_model_source_cache_store", logFields...)
-			}
+			)
 		}
 		return source, nil
 	})

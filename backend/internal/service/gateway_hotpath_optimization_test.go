@@ -762,7 +762,7 @@ func TestGatewayLiveModelSourceCacheCoversAllLiveAccountTypes(t *testing.T) {
 	}
 }
 
-func TestGatewayLiveModelSourceNoEndpointAccountsUseSharedCache(t *testing.T) {
+func TestGatewayLiveModelSourceNoEndpointAccountsNotCached(t *testing.T) {
 	resetGatewayHotpathStatsForTest()
 
 	account := Account{
@@ -783,6 +783,8 @@ func TestGatewayLiveModelSourceNoEndpointAccountsUseSharedCache(t *testing.T) {
 		modelsListCacheTTL:  time.Minute,
 	}
 
+	// Empty-endpoint sources must not be cached so a recovered endpoint
+	// is picked up on the next request instead of waiting for TTL.
 	source1, err := svc.LiveModelSourceForAccount(context.Background(), account)
 	require.NoError(t, err)
 	require.Empty(t, source1.Endpoint)
@@ -794,9 +796,9 @@ func TestGatewayLiveModelSourceNoEndpointAccountsUseSharedCache(t *testing.T) {
 	require.Empty(t, source2.Models)
 
 	hit, miss, store := GatewayModelsListCacheStats()
-	require.Equal(t, int64(1), hit)
-	require.Equal(t, int64(1), miss)
-	require.Equal(t, int64(1), store)
+	require.Equal(t, int64(0), hit)
+	require.Equal(t, int64(2), miss)
+	require.Equal(t, int64(0), store)
 
 	account.Credentials["project_id"] = "different-code-assist-project"
 	source3, err := svc.LiveModelSourceForAccount(context.Background(), account)
@@ -805,12 +807,12 @@ func TestGatewayLiveModelSourceNoEndpointAccountsUseSharedCache(t *testing.T) {
 	require.Empty(t, source3.Models)
 
 	hit, miss, store = GatewayModelsListCacheStats()
-	require.Equal(t, int64(1), hit)
-	require.Equal(t, int64(2), miss)
-	require.Equal(t, int64(2), store)
+	require.Equal(t, int64(0), hit)
+	require.Equal(t, int64(3), miss)
+	require.Equal(t, int64(0), store)
 }
 
-func TestLiveModelSourceCacheStoresAccountsWithoutLiveEndpoint(t *testing.T) {
+func TestLiveModelSourceCacheSkipsAccountsWithoutLiveEndpoint(t *testing.T) {
 	resetGatewayHotpathStatsForTest()
 
 	account := Account{
@@ -826,6 +828,9 @@ func TestLiveModelSourceCacheStoresAccountsWithoutLiveEndpoint(t *testing.T) {
 	}
 	var calls atomic.Int64
 
+	// Empty-endpoint sources must NOT be cached: a transient Cloudflare
+	// challenge or live-models endpoint failure should not poison the cache
+	// and lock the account out of scheduling until TTL expires.
 	source1, err := svc.cachedLiveModelSourceForAccountWithLoader(context.Background(), account, func(context.Context, Account) (LiveModelSource, error) {
 		calls.Add(1)
 		return LiveModelSource{Account: &account}, nil
@@ -833,23 +838,25 @@ func TestLiveModelSourceCacheStoresAccountsWithoutLiveEndpoint(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, source1.Endpoint)
 
+	// Second call must re-invoke the loader (empty endpoint was not cached)
+	// so a recovered endpoint can flow through immediately.
 	source2, err := svc.cachedLiveModelSourceForAccountWithLoader(context.Background(), account, func(context.Context, Account) (LiveModelSource, error) {
-		calls.Add(1)
-		return LiveModelSource{Account: &account, Endpoint: "copilot", Capability: "chat", Models: []string{"gpt-5.5"}}, nil
-	})
-	require.NoError(t, err)
-	require.Empty(t, source2.Endpoint)
-	require.Empty(t, source2.Models)
-	require.Equal(t, int64(1), calls.Load())
-
-	svc.InvalidateLiveModelSourceCache(account.ID)
-	source3, err := svc.cachedLiveModelSourceForAccountWithLoader(context.Background(), account, func(context.Context, Account) (LiveModelSource, error) {
 		calls.Add(1)
 		return LiveModelSource{Account: &account, Endpoint: "copilot", Capability: "chat", Models: []string{"gpt-5.6"}}, nil
 	})
 	require.NoError(t, err)
-	require.Equal(t, []string{"gpt-5.6"}, source3.Models)
+	require.Equal(t, "copilot", source2.Endpoint)
+	require.Equal(t, []string{"gpt-5.6"}, source2.Models)
 	require.Equal(t, int64(2), calls.Load())
+
+	// Third call should hit cache (valid endpoint cached).
+	source3, err := svc.cachedLiveModelSourceForAccountWithLoader(context.Background(), account, func(context.Context, Account) (LiveModelSource, error) {
+		calls.Add(1)
+		return LiveModelSource{Account: &account, Endpoint: "copilot", Capability: "chat", Models: []string{"gpt-5.5"}}, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"gpt-5.6"}, source3.Models) // cached value, not gpt-5.5
+	require.Equal(t, int64(2), calls.Load())              // loader not called again
 }
 
 func TestOpenAIGatewayLiveModelSourceUsesSharedAccountCache(t *testing.T) {
