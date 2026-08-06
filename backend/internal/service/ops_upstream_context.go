@@ -192,20 +192,15 @@ func requestCorrelationFromContext(ctx context.Context) (string, string) {
 	return strings.TrimSpace(requestID), strings.TrimSpace(clientRequestID)
 }
 
+// ApplySub2APICorrelationHeaders is intentionally a no-op on the outbound request.
+// Sub2API-prefixed headers on the wire to upstream providers expose the gateway
+// and trigger upstream anti-abuse / risk-control responses (e.g. ChatGPT account
+// logout). Correlation IDs remain available internally via the request context
+// (requestCorrelationFromContext) and on the client-facing response headers via
+// ApplySub2APICorrelationResponseHeaders, but they MUST NOT be attached to any
+// outbound request to an upstream provider.
 func ApplySub2APICorrelationHeaders(req *http.Request) {
-	if req == nil {
-		return
-	}
-	requestID, clientRequestID := requestCorrelationFromContext(req.Context())
-	if requestID != "" {
-		req.Header.Set(Sub2APIRequestIDHeader, requestID)
-	}
-	if clientRequestID != "" {
-		req.Header.Set(Sub2APIClientRequestIDHeader, clientRequestID)
-	}
-	if requestID != "" || clientRequestID != "" {
-		req.Header.Set(Sub2APITraceOriginHeader, Sub2APITraceOriginGateway)
-	}
+	_ = req
 }
 
 func ApplySub2APICorrelationResponseHeaders(h http.Header, ctx context.Context) {
