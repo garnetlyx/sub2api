@@ -112,7 +112,6 @@ func StartDeviceCodeFlow(ctx context.Context, httpClient *http.Client) (*DeviceC
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", "sub2api-copilot/1.0")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -150,7 +149,6 @@ func PollDeviceCodeAccessToken(ctx context.Context, httpClient *http.Client, dev
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", "sub2api-copilot/1.0")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -172,7 +170,6 @@ func GetGitHubUser(ctx context.Context, httpClient *http.Client, accessToken str
 	}
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(accessToken))
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "sub2api-copilot/1.0")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -201,7 +198,6 @@ func ExchangeCopilotToken(ctx context.Context, httpClient *http.Client, githubAc
 	}
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(githubAccessToken))
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "sub2api-copilot/1.0")
 	req.Header.Set("Editor-Version", "vscode/1.99.3")
 	req.Header.Set("Editor-Plugin-Version", "copilot-chat/0.26.7")
 	req.Header.Set("Copilot-Integration-Id", "vscode-chat")
@@ -265,7 +261,6 @@ func RefreshGitHubToken(ctx context.Context, httpClient *http.Client, refreshTok
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", "sub2api-copilot/1.0")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -293,7 +288,6 @@ func ListModels(ctx context.Context, httpClient *http.Client, copilotToken strin
 	}
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(copilotToken))
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "sub2api-copilot/1.0")
 	req.Header.Set("Editor-Version", "vscode/1.99.3")
 	req.Header.Set("Editor-Plugin-Version", "copilot-chat/0.26.7")
 	req.Header.Set("Copilot-Integration-Id", "vscode-chat")

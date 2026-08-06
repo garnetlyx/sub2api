@@ -176,7 +176,7 @@ func (s *KiroOAuthService) StartDeviceFlow(ctx context.Context, region string, p
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadRequest, "KIRO_PROXY_INVALID", "invalid proxy: %v", err)
 	}
-	clientReg, err := kiro.RegisterOIDCClient(ctx, httpClient, region, "Sub2API Kiro")
+	clientReg, err := kiro.RegisterOIDCClient(ctx, httpClient, region, "Kiro")
 	if err != nil {
 		return nil, infraerrors.Newf(http.StatusBadGateway, "KIRO_DEVICE_CLIENT_REGISTER_FAILED", "oidc client registration failed: %v", err)
 	}
