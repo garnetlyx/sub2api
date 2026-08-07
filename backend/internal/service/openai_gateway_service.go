@@ -2283,6 +2283,7 @@ func (s *OpenAIGatewayService) supportsOpenAIGatewayRequestedModel(ctx context.C
 			"account_id", account.ID,
 			"account_name", account.Name,
 			"platform", account.Platform,
+			"account_kind", account.AccountKind(),
 			"requested_model", requestedModel,
 			"capability", capability,
 		)
@@ -2298,6 +2299,7 @@ func (s *OpenAIGatewayService) supportsOpenAIGatewayRequestedModel(ctx context.C
 			"account_id", account.ID,
 			"account_name", account.Name,
 			"platform", account.Platform,
+			"account_kind", account.AccountKind(),
 			"requested_model", requestedModel,
 			"capability", capability,
 		)
@@ -2309,6 +2311,7 @@ func (s *OpenAIGatewayService) supportsOpenAIGatewayRequestedModel(ctx context.C
 			"account_id", account.ID,
 			"account_name", account.Name,
 			"platform", account.Platform,
+			"account_kind", account.AccountKind(),
 			"requested_model", requestedModel,
 			"capability", capability,
 			"error", err,
@@ -2327,6 +2330,7 @@ func (s *OpenAIGatewayService) supportsOpenAIGatewayRequestedModel(ctx context.C
 			"account_id", account.ID,
 			"account_name", account.Name,
 			"platform", account.Platform,
+			"account_kind", account.AccountKind(),
 			"account_type", account.Type,
 			"requested_model", requestedModel,
 			"capability", capability,
@@ -2338,6 +2342,7 @@ func (s *OpenAIGatewayService) supportsOpenAIGatewayRequestedModel(ctx context.C
 			"account_id", account.ID,
 			"account_name", account.Name,
 			"platform", account.Platform,
+			"account_kind", account.AccountKind(),
 			"requested_model", requestedModel,
 			"capability", capability,
 		)
@@ -2352,6 +2357,7 @@ func (s *OpenAIGatewayService) supportsOpenAIGatewayRequestedModel(ctx context.C
 			"account_id", account.ID,
 			"account_name", account.Name,
 			"platform", account.Platform,
+			"account_kind", account.AccountKind(),
 			"requested_model", requestedModel,
 			"model_list_sample", modelSample,
 			"model_list_total", len(source.Models),

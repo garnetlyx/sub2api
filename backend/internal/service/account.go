@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"hash/fnv"
+	"net"
 	"net/url"
 	"reflect"
 	"sort"
@@ -868,7 +869,7 @@ func (a *Account) ProviderIdentity() string {
 		if parsed, err := url.Parse(baseURL); err == nil {
 			host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
 			path := strings.Trim(strings.ToLower(parsed.EscapedPath()), "/")
-			if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+			if host == "127.0.0.1" || host == "localhost" || host == "::1" || isTailnetCGNATAddress(host) {
 				if parsed.Port() == "4001" {
 					return "bridge:litellm"
 				}
@@ -899,6 +900,61 @@ func (a *Account) ProviderIdentity() string {
 		return "account:" + name
 	}
 	return "account:" + strconv.FormatInt(a.ID, 10)
+}
+
+// tailnetCGNAT4 is the IPv4 CGNAT block 100.64.0.0/10 used by Tailscale (and
+// other VPNs) for tailnet addresses. Hosts in this range are private and refer
+// to self-managed runtime nodes, not third-party providers.
+var tailnetCGNAT4 = func() *net.IPNet {
+	_, n, err := net.ParseCIDR("100.64.0.0/10")
+	if err != nil {
+		return nil
+	}
+	return n
+}()
+
+// isTailnetCGNATAddress reports whether host is an IPv4 in the CGNAT range
+// 100.64.0.0/10. It returns false for any non-IPv4 (including DNS names) so
+// private DNS names like "m4m-studio.local" are not misclassified here.
+func isTailnetCGNATAddress(host string) bool {
+	if host == "" || tailnetCGNAT4 == nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return tailnetCGNAT4.Contains(ip.To4())
+}
+
+// AccountKind returns a coarse, cross-provider classification of where this
+// account's upstream lives, used by scheduling diagnostics and account_* logs.
+// It collapses ProviderIdentity's finer-grained categories into four broad
+// kinds so a single field is meaningful across OAuth pools, local runtimes,
+// the LiteLLM bridge, and direct API-key providers:
+//
+//   - "oauth-managed"   token-lifecycle-managed account pool (OAuth / setup-token)
+//   - "runtime-local"   self-hosted runtime on localhost or tailnet (omlx/ds4)
+//   - "bridge-internal" LiteLLM protocol-translation bridge (never a real upstream)
+//   - "provider-direct" direct API key against a third-party provider
+func (a *Account) AccountKind() string {
+	if a == nil {
+		return ""
+	}
+	if a.Type == AccountTypeOAuth || a.Type == AccountTypeSetupToken {
+		return "oauth-managed"
+	}
+	if a.Type != AccountTypeAPIKey {
+		return "other"
+	}
+	switch pid := a.ProviderIdentity(); {
+	case strings.HasPrefix(pid, "bridge:"):
+		return "bridge-internal"
+	case strings.HasPrefix(pid, "local:"):
+		return "runtime-local"
+	default:
+		return "provider-direct"
+	}
 }
 
 func (a *Account) IsAnthropic() bool {

@@ -3571,6 +3571,7 @@ func (s *GatewayService) isModelSupportedByLiveSource(ctx context.Context, accou
 			"account_id", account.ID,
 			"account_name", account.Name,
 			"platform", account.Platform,
+			"account_kind", account.AccountKind(),
 			"requested_model", requestedModel,
 			"error", err,
 		)
@@ -3588,6 +3589,7 @@ func (s *GatewayService) isModelSupportedByLiveSource(ctx context.Context, accou
 			"account_id", account.ID,
 			"account_name", account.Name,
 			"platform", account.Platform,
+			"account_kind", account.AccountKind(),
 			"account_type", account.Type,
 			"requested_model", requestedModel,
 		)
@@ -3598,6 +3600,7 @@ func (s *GatewayService) isModelSupportedByLiveSource(ctx context.Context, accou
 			"account_id", account.ID,
 			"account_name", account.Name,
 			"platform", account.Platform,
+			"account_kind", account.AccountKind(),
 			"endpoint", source.Endpoint,
 			"capability", source.Capability,
 			"requested_model", requestedModel,
@@ -3629,6 +3632,7 @@ func (s *GatewayService) isModelSupportedByLiveSource(ctx context.Context, accou
 				"account_id", account.ID,
 				"account_name", account.Name,
 				"platform", account.Platform,
+				"account_kind", account.AccountKind(),
 				"endpoint", source.Endpoint,
 				"capability", source.Capability,
 				"requested_model", model,
