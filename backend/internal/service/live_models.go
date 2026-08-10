@@ -103,6 +103,81 @@ type liveModelBinding struct {
 	Explicit bool
 }
 
+// runtimeAliasBindings derives public->upstream bindings from the live raw
+// model list according to a declarative rule stored in the account's extra
+// metadata (key "runtime_alias"). Self-hosted runtimes that expose
+// capability-split upstream variants (e.g. a bare base name plus -chat and
+// -reasoner siblings) publish a stable, locally-namespaced public contract
+// that is rebuilt on every live-model refresh: a runtime briefly going
+// offline (empty live list) self-heals on the next refresh once models
+// reappear, and a genuinely removed model stops matching its family, so no
+// stale binding survives. The rule carries no model names in this code — it
+// is pure data applied against whatever the runtime currently serves.
+//
+// Rule shape:
+//
+//	"runtime_alias": {
+//	    "suffix": "-q2",
+//	    "families": [
+//	        {"public": "glm-5.2", "prefer": ["glm-5.2-chat", "glm-5.2"]}
+//	    ]
+//	}
+//
+// For each family, the first member of "prefer" present in the live raw list
+// becomes the upstream target, published as <public><suffix>.
+func runtimeAliasBindings(account *Account, rawModels []string) map[string]string {
+	if account == nil || len(rawModels) == 0 {
+		return nil
+	}
+	rule, ok := account.Extra["runtime_alias"]
+	if !ok || rule == nil {
+		return nil
+	}
+	root, ok := rule.(map[string]any)
+	if !ok {
+		return nil
+	}
+	suffix := asString(root["suffix"])
+	families, _ := root["families"].([]any)
+	if suffix == "" || len(families) == 0 {
+		return nil
+	}
+	live := make(map[string]string, len(rawModels))
+	for _, m := range rawModels {
+		m = strings.TrimSpace(m)
+		if m == "" {
+			continue
+		}
+		live[strings.ToLower(m)] = m
+	}
+	out := make(map[string]string)
+	for _, famRaw := range families {
+		fam, ok := famRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		publicBase := asString(fam["public"])
+		if publicBase == "" {
+			continue
+		}
+		prefer, _ := fam["prefer"].([]any)
+		for _, candRaw := range prefer {
+			cand := asString(candRaw)
+			if cand == "" {
+				continue
+			}
+			if upstream, ok := live[strings.ToLower(cand)]; ok {
+				out[publicBase+suffix] = upstream
+				break
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func buildExplicitUpstreamMappings(account *Account) map[string]string {
 	if account == nil {
 		return nil
@@ -164,6 +239,10 @@ func publicizeLiveModelCatalog(account *Account, rawModels []string) liveModelCa
 		for _, rawModel := range rawModels {
 			add(rawModel, rawModel, false)
 		}
+	}
+
+	for publicModel, upstreamModel := range runtimeAliasBindings(account, rawModels) {
+		add(publicModel, upstreamModel, true)
 	}
 
 	for publicModel, upstreamModel := range buildExplicitUpstreamMappings(account) {
