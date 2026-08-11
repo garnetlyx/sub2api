@@ -30,6 +30,15 @@ var (
 	// activateSnapshotScript atomically activates a versioned bucket snapshot.
 	// It prevents version rollback from concurrent writers and expires the old
 	// snapshot after a short grace period instead of deleting it immediately.
+	//
+	// Rollback guard relaxation: when newVersion < curVersion, yield (return 0)
+	// only if the currently active snapshot key still exists. If that key is
+	// gone (expired or missing — e.g. after a deploy that restarts the
+	// per-bucket INCR sequence, a Redis flush of the version key, or a long
+	// idle gap past snapshotGraceTTLSeconds), curVersion is a stale pointer
+	// with nothing for readers to fall back to, so activating the new snapshot
+	// is safe and required. Without this, any bucket whose active version
+	// outruns its INCR counter is permanently frozen out of new snapshots.
 	activateSnapshotScript = redis.NewScript(`
 local currentActive = redis.call('GET', KEYS[1])
 local newVersion = tonumber(ARGV[1])
@@ -37,8 +46,10 @@ local newVersion = tonumber(ARGV[1])
 if currentActive ~= false then
 	local curVersion = tonumber(currentActive)
 	if curVersion and newVersion < curVersion then
-		redis.call('DEL', KEYS[4])
-		return 0
+		if redis.call('EXISTS', ARGV[3] .. currentActive) == 1 then
+			redis.call('DEL', KEYS[4])
+			return 0
+		end
 	end
 end
 
