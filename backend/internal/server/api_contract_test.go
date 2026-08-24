@@ -653,7 +653,7 @@ func newContractDeps(t *testing.T) *contractDeps {
 	apiKeyHandler := handler.NewAPIKeyHandler(apiKeyService)
 	usageHandler := handler.NewUsageHandler(usageService, apiKeyService)
 	adminSettingHandler := adminhandler.NewSettingHandler(settingService, nil, nil, nil)
-	adminAccountHandler := adminhandler.NewAccountHandler(adminService, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	adminAccountHandler := adminhandler.NewAccountHandler(adminService, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	jwtAuth := func(c *gin.Context) {
 		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{
@@ -969,6 +969,14 @@ func (s *stubAccountRepo) ExistsByID(ctx context.Context, id int64) (bool, error
 	return false, errors.New("not implemented")
 }
 
+func (s *stubAccountRepo) ExistsByName(ctx context.Context, name string) (bool, error) {
+	return false, nil
+}
+
+func (s *stubAccountRepo) ExistsByNameExcluding(ctx context.Context, name string, excludeID int64) (bool, error) {
+	return false, nil
+}
+
 func (s *stubAccountRepo) GetByCRSAccountID(ctx context.Context, crsAccountID string) (*service.Account, error) {
 	return nil, errors.New("not implemented")
 }
@@ -999,6 +1007,10 @@ func (s *stubAccountRepo) ListByGroup(ctx context.Context, groupID int64) ([]ser
 
 func (s *stubAccountRepo) ListActive(ctx context.Context) ([]service.Account, error) {
 	return nil, errors.New("not implemented")
+}
+
+func (s *stubAccountRepo) ListOAuthRefreshCandidates(ctx context.Context) ([]service.Account, error) {
+	return nil, nil
 }
 
 func (s *stubAccountRepo) ListByPlatform(ctx context.Context, platform string) ([]service.Account, error) {

@@ -20,6 +20,8 @@ type rateLimitAccountRepoStub struct {
 	updateCredentialsCalls int
 	lastCredentials        map[string]any
 	lastErrorMsg           string
+	lastTempUntil          time.Time
+	lastTempReason         string
 }
 
 func (r *rateLimitAccountRepoStub) SetError(ctx context.Context, id int64, errorMsg string) error {
@@ -30,6 +32,8 @@ func (r *rateLimitAccountRepoStub) SetError(ctx context.Context, id int64, error
 
 func (r *rateLimitAccountRepoStub) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
 	r.tempCalls++
+	r.lastTempUntil = until
+	r.lastTempReason = reason
 	return nil
 }
 
@@ -138,6 +142,37 @@ func TestRateLimitService_HandleUpstreamError_NonOAuth401(t *testing.T) {
 	require.True(t, shouldDisable)
 	require.Equal(t, 1, repo.setErrorCalls)
 	require.Empty(t, invalidator.accounts)
+}
+
+func TestRateLimitService_HandleUpstreamError_AccountStateUsesTemporaryUnschedule(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	cfg := &config.Config{}
+	cfg.RateLimit.AccountStateCooldownMinutes = 17
+	service := NewRateLimitService(repo, nil, cfg, nil, nil)
+	account := &Account{ID: 104, Name: "provider-plan", Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	body := []byte(`{"error":{"code":"InvalidSubscription","message":"subscription has expired"}}`)
+	started := time.Now()
+
+	shouldDisable := service.HandleUpstreamError(context.Background(), account, http.StatusBadRequest, http.Header{}, body)
+
+	require.True(t, shouldDisable)
+	require.Equal(t, 1, repo.tempCalls)
+	require.Equal(t, 0, repo.setErrorCalls)
+	require.Contains(t, repo.lastTempReason, "subscription has expired")
+	require.WithinDuration(t, started.Add(17*time.Minute), repo.lastTempUntil, time.Second)
+}
+
+func TestRateLimitService_HandleUpstreamError_Request400DoesNotUnschedule(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	account := &Account{ID: 105, Name: "provider", Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	body := []byte(`{"error":{"code":"invalid_parameter","message":"invalid temperature"}}`)
+
+	shouldDisable := service.HandleUpstreamError(context.Background(), account, http.StatusBadRequest, http.Header{}, body)
+
+	require.False(t, shouldDisable)
+	require.Equal(t, 0, repo.tempCalls)
+	require.Equal(t, 0, repo.setErrorCalls)
 }
 
 func TestRateLimitService_HandleUpstreamError_OAuth401UsesCredentialsUpdater(t *testing.T) {

@@ -662,7 +662,29 @@ func (s *BillingService) shouldApplySessionLongContextPricing(tokens UsageTokens
 
 func isOpenAIGPT54Model(model string) bool {
 	normalized := normalizeCodexModel(strings.TrimSpace(strings.ToLower(model)))
-	return normalized == "gpt-5.4" || strings.HasPrefix(normalized, "gpt-5.4-")
+	if normalized == "gpt-5.4" {
+		return true
+	}
+	const prefix = "gpt-5.4-"
+	if !strings.HasPrefix(normalized, prefix) {
+		return false
+	}
+	// Only date snapshots inherit base gpt-5.4 long-context policy.
+	// Variants such as gpt-5.4-mini / -nano have independent pricing and
+	// must not be widened by a family-prefix match.
+	suffix := strings.TrimPrefix(normalized, prefix)
+	if len(suffix) != len("2006-01-02") || suffix[4] != '-' || suffix[7] != '-' {
+		return false
+	}
+	for i, ch := range suffix {
+		if i == 4 || i == 7 {
+			continue
+		}
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // CalculateCostWithConfig 使用配置中的默认倍率计算费用

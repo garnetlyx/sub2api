@@ -355,9 +355,9 @@ type OpenAIGatewayService struct {
 	// "distinct users sharing one workspace" pattern that user-level
 	// serialization misses. key: string(chatgpt_account_id), value: *sameWorkspaceScheduleState
 	sameWorkspaceLastScheduled sync.Map
-	openaiWSRetryMetrics  openAIWSRetryMetrics
-	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
-	codexSnapshotThrottle *accountWriteThrottle
+	openaiWSRetryMetrics       openAIWSRetryMetrics
+	responseHeaderFilter       *responseheaders.CompiledHeaderFilter
+	codexSnapshotThrottle      *accountWriteThrottle
 }
 
 // NewOpenAIGatewayService creates a new OpenAIGatewayService
@@ -2503,6 +2503,9 @@ func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(statusCode i
 	if s.shouldFailoverUpstreamError(statusCode) {
 		return true
 	}
+	if isUpstreamAccountStateError(statusCode, upstreamMsg, upstreamBody) {
+		return true
+	}
 	if isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody) {
 		return true
 	}
@@ -2514,6 +2517,10 @@ func buildOpenAIUpstreamFailoverError(account *Account, statusCode int, upstream
 	failoverErr := &UpstreamFailoverError{
 		StatusCode:   statusCode,
 		ResponseBody: upstreamBody,
+	}
+	if reason := accountStateFailoverReason(statusCode, upstreamMsg, upstreamBody); reason != "" {
+		failoverErr.Reason = reason
+		return failoverErr
 	}
 	if category, ok := classifyOpenAICompatibilityMismatch(statusCode, upstreamMsg, upstreamBody); ok {
 		failoverErr.Reason = UpstreamFailoverReasonCompatibilityMismatch
@@ -5908,18 +5915,6 @@ func (s *OpenAIGatewayService) updateCodexUsageSnapshot(ctx context.Context, acc
 			_ = s.accountRepo.ClearRateLimit(updateCtx, accountID)
 		}
 	}()
-}
-
-func getAPIKeyFromGinContext(c *gin.Context) (*APIKey, bool) {
-	if c == nil {
-		return nil, false
-	}
-	v, exists := c.Get("api_key")
-	if !exists {
-		return nil, false
-	}
-	apiKey, ok := v.(*APIKey)
-	return apiKey, ok && apiKey != nil
 }
 
 func (s *OpenAIGatewayService) UpdateCodexUsageSnapshotFromHeaders(ctx context.Context, accountID int64, headers http.Header) {

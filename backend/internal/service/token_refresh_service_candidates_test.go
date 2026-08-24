@@ -131,10 +131,10 @@ func TestTokenRefreshService_ProcessRefreshUsesOAuthRefreshCandidates(t *testing
 		},
 	}
 	svc := &TokenRefreshService{
-		accountRepo:     repo,
-		refreshers:      []TokenRefresher{&tokenRefreshTestRefresher{}},
-		refreshPolicy:   DefaultBackgroundRefreshPolicy(),
-		cfg:             &config.TokenRefreshConfig{RefreshBeforeExpiryHours: 1, MaxRetries: 1},
+		accountRepo:      repo,
+		refreshers:       []TokenRefresher{&tokenRefreshTestRefresher{}},
+		refreshPolicy:    DefaultBackgroundRefreshPolicy(),
+		cfg:              &config.TokenRefreshConfig{RefreshBeforeExpiryHours: 1, MaxRetries: 1},
 		terminalFailures: newTerminalRefreshFailureCache(),
 	}
 
@@ -157,9 +157,9 @@ func TestTokenRefreshService_RefreshFailureDoesNotCallPrivacy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &tokenRefreshCandidateRepo{}
 			svc := &TokenRefreshService{
-				accountRepo:   repo,
-				refreshPolicy: DefaultBackgroundRefreshPolicy(),
-				cfg:           &config.TokenRefreshConfig{MaxRetries: 1, RetryBackoffSeconds: 0},
+				accountRepo:      repo,
+				refreshPolicy:    DefaultBackgroundRefreshPolicy(),
+				cfg:              &config.TokenRefreshConfig{MaxRetries: 1, RetryBackoffSeconds: 0},
 				terminalFailures: newTerminalRefreshFailureCache(),
 				privacyClientFactory: func(string) (*req.Client, error) {
 					t.Fatalf("privacy client factory must not be called on refresh failure")

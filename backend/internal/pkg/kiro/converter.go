@@ -113,7 +113,7 @@ func ConvertOpenAIToKiro(body []byte, profileArn string) (*GenerateAssistantResp
 
 	var history []HistoryItem
 	var lastUserContent string
-	var lastUserIdx int = -1
+	lastUserIdx := -1
 
 	for i, msg := range messages {
 		if msg.Role == "user" || msg.Role == "tool" {

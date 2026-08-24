@@ -124,7 +124,7 @@ func RegisterOIDCClient(ctx context.Context, httpClient *http.Client, region str
 	if err != nil {
 		return nil, fmt.Errorf("oidc client register request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
 	if err != nil {
 		return nil, fmt.Errorf("read oidc register response: %w", err)
@@ -163,7 +163,7 @@ func StartDeviceAuthorization(ctx context.Context, httpClient *http.Client, regi
 	if err != nil {
 		return nil, fmt.Errorf("device authorization request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
 	if err != nil {
 		return nil, fmt.Errorf("read device authorization response: %w", err)
@@ -203,7 +203,7 @@ func PollDeviceAuthorization(ctx context.Context, httpClient *http.Client, regio
 	if err != nil {
 		return nil, fmt.Errorf("device token request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
 	if err != nil {
 		return nil, fmt.Errorf("read device token response: %w", err)
@@ -243,7 +243,7 @@ func RefreshOIDCToken(ctx context.Context, httpClient *http.Client, region, clie
 	if err != nil {
 		return nil, fmt.Errorf("oidc refresh request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
 	if err != nil {
 		return nil, fmt.Errorf("read oidc refresh response: %w", err)
@@ -289,7 +289,7 @@ func ExchangeCode(ctx context.Context, httpClient *http.Client, region string, c
 	if err != nil {
 		return nil, fmt.Errorf("token exchange request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
 	if err != nil {
@@ -335,7 +335,7 @@ func RefreshSocialToken(ctx context.Context, httpClient *http.Client, region str
 	if err != nil {
 		return nil, fmt.Errorf("refresh token request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
 	if err != nil {
@@ -396,7 +396,7 @@ func ListModels(ctx context.Context, httpClient *http.Client, region string, acc
 	if err != nil {
 		return nil, fmt.Errorf("list models request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
 	if err != nil {

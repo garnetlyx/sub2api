@@ -766,7 +766,7 @@ func (s *defaultOpenAIAccountScheduler) isSameUserExcluded(account *Account) boo
 			"account_id", account.ID,
 			"chatgpt_user_id", uid,
 			"active_account_id", lastAccountID,
-			"cooldown_remaining", lastActiveAt.Add(cooldown).Sub(time.Now()).Round(time.Second).String(),
+			"cooldown_remaining", time.Until(lastActiveAt.Add(cooldown)).Round(time.Second).String(),
 		)
 		return true
 	}
@@ -917,7 +917,7 @@ func (s *defaultOpenAIAccountScheduler) isSameWorkspaceExcluded(account *Account
 			"account_id", account.ID,
 			"chatgpt_account_id", wsID,
 			"active_account_id", lastAccountID,
-			"cooldown_remaining", lastActiveAt.Add(cooldown).Sub(time.Now()).Round(time.Second).String(),
+			"cooldown_remaining", time.Until(lastActiveAt.Add(cooldown)).Round(time.Second).String(),
 		)
 		return true
 	}

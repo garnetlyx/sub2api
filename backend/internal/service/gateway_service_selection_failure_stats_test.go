@@ -5,7 +5,27 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	gocache "github.com/patrickmn/go-cache"
 )
+
+func cacheSelectionLiveModels(svc *GatewayService, accounts []Account, model string) {
+	if svc.modelsListCache == nil {
+		svc.modelsListCache = gocache.New(time.Minute, time.Minute)
+		svc.modelsListCacheTTL = time.Minute
+	}
+	for _, account := range accounts {
+		if account.Platform != PlatformOpenAI {
+			continue
+		}
+		svc.modelsListCache.Set(liveModelSourceCacheKey(account), LiveModelSource{
+			Account:    cloneAccountForLiveSource(account),
+			Endpoint:   "openai-compatible",
+			Capability: "chat",
+			Models:     []string{model},
+		}, time.Minute)
+	}
+}
 
 func TestCollectSelectionFailureStats(t *testing.T) {
 	svc := &GatewayService{}
@@ -58,6 +78,7 @@ func TestCollectSelectionFailureStats(t *testing.T) {
 	}
 
 	excluded := map[int64]struct{}{1: {}}
+	cacheSelectionLiveModels(svc, accounts, model)
 	stats := svc.collectSelectionFailureStats(context.Background(), accounts, model, PlatformOpenAI, excluded, false)
 
 	if stats.Total != 5 {
@@ -119,6 +140,7 @@ func TestDiagnoseSelectionFailure_ModelRateLimitedDetail(t *testing.T) {
 		},
 	}
 
+	cacheSelectionLiveModels(svc, []Account{*acc}, model)
 	diagnosis := svc.diagnoseSelectionFailure(context.Background(), acc, model, PlatformOpenAI, map[int64]struct{}{}, false)
 	if diagnosis.Category != "model_rate_limited" {
 		t.Fatalf("category=%s want=model_rate_limited", diagnosis.Category)

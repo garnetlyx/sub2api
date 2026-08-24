@@ -1097,7 +1097,9 @@ func TestGetAvailableModels_AppliesKnownIssuePolicyAfterLiveSourceCache(t *testi
 	delete(settings.values, KnownIssueModelExclusionsSettingKey)
 	models2 := svc.GetAvailableModels(context.Background(), &groupID, PlatformAnthropic)
 	require.Equal(t, []string{"claude-opus-4.7", "claude-sonnet-4.6"}, models2)
-	require.Equal(t, int64(1), svc.httpUpstream.(*liveModelsHTTPUpstreamStub).calls.Load())
+	upstream, ok := svc.httpUpstream.(*liveModelsHTTPUpstreamStub)
+	require.True(t, ok)
+	require.Equal(t, int64(1), upstream.calls.Load())
 }
 
 func TestGetAvailableModels_ErrorAndGlobalListBranches(t *testing.T) {

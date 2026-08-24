@@ -19,6 +19,38 @@ func testConfig() *config.Config {
 	return &config.Config{RunMode: config.RunModeStandard}
 }
 
+func withPlatformTestModelCatalog(account Account) Account {
+	if account.Type == "" {
+		account.Type = AccountTypeAPIKey
+		credentials := make(map[string]any, len(account.Credentials)+2)
+		for key, value := range account.Credentials {
+			credentials[key] = value
+		}
+		credentials["api_key"] = "test-key"
+		credentials["base_url"] = "://invalid-test-upstream"
+		account.Credentials = credentials
+	}
+	extra := make(map[string]any, len(account.Extra)+1)
+	for key, value := range account.Extra {
+		extra[key] = value
+	}
+	models := buildExplicitUpstreamMappings(&account)
+	if len(models) == 0 {
+		models = map[string]string{
+			"claude-3-5-sonnet-20241022": "claude-3-5-sonnet-20241022",
+			"claude-sonnet-4-5":          "claude-sonnet-4-5",
+			"claude-sonnet-4-6":          "claude-sonnet-4-6",
+			"claude-a":                   "claude-a",
+			"claude-b":                   "claude-b",
+			"gemini-2.5-pro":             "gemini-2.5-pro",
+			"gpt-4.1":                    "gpt-4.1",
+		}
+	}
+	extra["upstream_models"] = models
+	account.Extra = extra
+	return account
+}
+
 // mockAccountRepoForPlatform 单平台测试用的 mock
 type mockAccountRepoForPlatform struct {
 	accounts         []Account
@@ -30,7 +62,8 @@ type mockAccountRepoForPlatform struct {
 func (m *mockAccountRepoForPlatform) GetByID(ctx context.Context, id int64) (*Account, error) {
 	m.getByIDCalls++
 	if acc, ok := m.accountsByID[id]; ok {
-		return acc, nil
+		prepared := withPlatformTestModelCatalog(*acc)
+		return &prepared, nil
 	}
 	return nil, errors.New("account not found")
 }
@@ -39,7 +72,8 @@ func (m *mockAccountRepoForPlatform) GetByIDs(ctx context.Context, ids []int64) 
 	var result []*Account
 	for _, id := range ids {
 		if acc, ok := m.accountsByID[id]; ok {
-			result = append(result, acc)
+			prepared := withPlatformTestModelCatalog(*acc)
+			result = append(result, &prepared)
 		}
 	}
 	return result, nil
@@ -68,7 +102,7 @@ func (m *mockAccountRepoForPlatform) ListSchedulableByPlatform(ctx context.Conte
 	var result []Account
 	for _, acc := range m.accounts {
 		if acc.Platform == platform && acc.IsSchedulable() {
-			result = append(result, acc)
+			result = append(result, withPlatformTestModelCatalog(acc))
 		}
 	}
 	return result, nil
@@ -147,7 +181,7 @@ func (m *mockAccountRepoForPlatform) ListSchedulableByPlatforms(ctx context.Cont
 	}
 	for _, acc := range m.accounts {
 		if platformSet[acc.Platform] && acc.IsSchedulable() {
-			result = append(result, acc)
+			result = append(result, withPlatformTestModelCatalog(acc))
 		}
 	}
 	return result, nil
@@ -2271,7 +2305,10 @@ func TestGatewayService_SelectAccountWithLoadAwareness(t *testing.T) {
 			repo.accountsByID[repo.accounts[i].ID] = &repo.accounts[i]
 		}
 		repo.listPlatformFunc = func(ctx context.Context, platform string) ([]Account, error) {
-			return repo.accounts, nil
+			return []Account{
+				withPlatformTestModelCatalog(repo.accounts[0]),
+				withPlatformTestModelCatalog(repo.accounts[1]),
+			}, nil
 		}
 
 		cache := &mockGatewayCacheForPlatform{

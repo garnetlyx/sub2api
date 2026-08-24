@@ -661,7 +661,7 @@ func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_ForcePl
 	require.Equal(t, int64(1), acc.ID)
 }
 
-func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_NoModelSupport(t *testing.T) {
+func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_ModelMappingDoesNotFilter(t *testing.T) {
 	ctx := context.Background()
 
 	repo := &mockAccountRepoForGemini{
@@ -691,9 +691,9 @@ func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_NoModel
 	}
 
 	acc, err := svc.SelectAccountForModelWithExclusions(ctx, nil, "", "gemini-2.5-flash", nil)
-	require.Error(t, err)
-	require.Nil(t, acc)
-	require.Contains(t, err.Error(), "supporting model")
+	require.NoError(t, err)
+	require.NotNil(t, acc)
+	require.Equal(t, int64(1), acc.ID)
 }
 
 func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_StickyMixedScheduling(t *testing.T) {
@@ -980,7 +980,7 @@ func TestGeminiMessagesCompatService_isModelSupportedByAccount(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := svc.isModelSupportedByAccount(tt.account, tt.model)
+			got := svc.isModelSupportedByAccountWithContext(context.Background(), tt.account, tt.model)
 			require.Equal(t, tt.expected, got)
 		})
 	}

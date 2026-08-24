@@ -860,6 +860,12 @@ rate_limit:
   # Cooldown time (in minutes) when upstream returns 529 (overloaded)
   # 上游返回 529（过载）时的冷却时间（分钟）
   overload_cooldown_minutes: 10
+  # Cooldown for account-level upstream 400/402 responses (lapsed
+  # subscription, exhausted quota, billing problems). The account remains
+  # active and is retried automatically after this window.
+  # 账号级 400/402（订阅失效、额度耗尽、计费问题）的临时移出调度时长。
+  # 账号保持 active，并在窗口结束后自动探测恢复。
+  account_state_cooldown_minutes: 30
 
 # =============================================================================
 # Pricing Data Source (Optional)

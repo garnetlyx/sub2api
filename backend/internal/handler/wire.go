@@ -21,7 +21,7 @@ func ProvideAdminHandlers(
 	copilotOAuthHandler *admin.CopilotOAuthHandler,
 	geminiOAuthHandler *admin.GeminiOAuthHandler,
 	antigravityOAuthHandler *admin.AntigravityOAuthHandler,
-	kiroOAuthHandler        *admin.KiroOAuthHandler,
+	kiroOAuthHandler *admin.KiroOAuthHandler,
 	proxyHandler *admin.ProxyHandler,
 	redeemHandler *admin.RedeemHandler,
 	promoHandler *admin.PromoHandler,

@@ -261,7 +261,7 @@ func TestRefreshIfNeeded_WorkspaceLockHeldReturnsLockHeld(t *testing.T) {
 
 	account := openAIOAuthAccount(1, "user-A", "ws-team")
 	executor := &noopRefreshExecutor{
-		cacheKey: OpenAIUserTokenCacheKey(account),
+		cacheKey:      OpenAIUserTokenCacheKey(account),
 		refreshCalled: atomic.Bool{},
 	}
 
@@ -296,8 +296,14 @@ func TestRefreshIfNeeded_NoDeadlockBetweenSameWorkspaceAccounts(t *testing.T) {
 	}
 
 	done := make(chan error, 2)
-	go func() { _, err := api.RefreshIfNeeded(context.Background(), account1, executor1, time.Hour); done <- err }()
-	go func() { _, err := api.RefreshIfNeeded(context.Background(), account2, executor2, time.Hour); done <- err }()
+	go func() {
+		_, err := api.RefreshIfNeeded(context.Background(), account1, executor1, time.Hour)
+		done <- err
+	}()
+	go func() {
+		_, err := api.RefreshIfNeeded(context.Background(), account2, executor2, time.Hour)
+		done <- err
+	}()
 
 	for i := 0; i < 2; i++ {
 		select {
@@ -333,9 +339,9 @@ type noopRefreshExecutor struct {
 	refreshCalled atomic.Bool
 }
 
-func (e *noopRefreshExecutor) CanRefresh(*Account) bool                       { return true }
-func (e *noopRefreshExecutor) NeedsRefresh(*Account, time.Duration) bool      { return true }
-func (e *noopRefreshExecutor) CacheKey(*Account) string                       { return e.cacheKey }
+func (e *noopRefreshExecutor) CanRefresh(*Account) bool                  { return true }
+func (e *noopRefreshExecutor) NeedsRefresh(*Account, time.Duration) bool { return true }
+func (e *noopRefreshExecutor) CacheKey(*Account) string                  { return e.cacheKey }
 func (e *noopRefreshExecutor) Refresh(_ context.Context, _ *Account) (map[string]any, error) {
 	e.refreshCalled.Store(true)
 	if e.refreshResult == nil {

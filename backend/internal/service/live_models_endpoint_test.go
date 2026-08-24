@@ -124,7 +124,7 @@ func TestLiveOpenAICompatibleModelsFallback(t *testing.T) {
 		}
 		if r.URL.Path == "/api/coding/v3/models" {
 			w.Header().Set("Content-Type", "application/json")
-			w.Write(modelsJSON)
+			_, _ = w.Write(modelsJSON)
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -151,7 +151,7 @@ func TestLiveOpenAICompatibleModelsNoFallbackOnSuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(modelsJSON)
+		_, _ = w.Write(modelsJSON)
 	}))
 	defer server.Close()
 
@@ -182,7 +182,7 @@ func TestLiveAnthropicModelsBearerFallback(t *testing.T) {
 		}
 		if r.Header.Get("Authorization") != "" {
 			w.Header().Set("Content-Type", "application/json")
-			w.Write(modelsJSON)
+			_, _ = w.Write(modelsJSON)
 			return
 		}
 		w.WriteHeader(http.StatusUnauthorized)
@@ -209,7 +209,7 @@ func TestLiveAnthropicModelsNoFallbackOnXAPIKeySuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(modelsJSON)
+		_, _ = w.Write(modelsJSON)
 	}))
 	defer server.Close()
 
@@ -266,7 +266,7 @@ func TestLiveAnthropicModelsCrossProtocolFallback(t *testing.T) {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			w.Write(modelsJSON)
+			_, _ = w.Write(modelsJSON)
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -340,9 +340,9 @@ func TestPublicizeLiveModelCatalogLiveOverridesConfig(t *testing.T) {
 
 func TestPublicModelsExplicitOnlyAccessorCoercion(t *testing.T) {
 	tests := []struct {
-		name string
+		name  string
 		extra map[string]any
-		want bool
+		want  bool
 	}{
 		{"nil extra", nil, false},
 		{"missing key", map[string]any{}, false},

@@ -510,9 +510,9 @@ func TestDotHyphenAlternate(t *testing.T) {
 		{"claude-3-5-sonnet-20241022", ""},
 	}
 	for _, tt := range tests {
-		got := dotHyphenAlternate(tt.input)
+		got := publicModelStyleAlternate(tt.input)
 		if got != tt.want {
-			t.Errorf("dotHyphenAlternate(%q) = %q, want %q", tt.input, got, tt.want)
+			t.Errorf("publicModelStyleAlternate(%q) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
 }
@@ -624,7 +624,7 @@ func TestCanonicalizePublicModel_HiddenProxyAliases(t *testing.T) {
 	}
 }
 
-func TestAccountGetModelMapping_AntigravityEnsuresGeminiDefaultPassthroughs(t *testing.T) {
+func TestAccountGetModelMapping_AntigravityUsesOnlyDeclaredMappings(t *testing.T) {
 	account := &Account{
 		Platform: PlatformAntigravity,
 		Credentials: map[string]any{
@@ -635,14 +635,13 @@ func TestAccountGetModelMapping_AntigravityEnsuresGeminiDefaultPassthroughs(t *t
 	}
 
 	mapping := account.GetModelMapping()
-	if mapping["gemini-3-flash"] != "gemini-3-flash" {
-		t.Fatalf("expected gemini-3-flash passthrough to be auto-filled, got: %q", mapping["gemini-3-flash"])
+	if len(mapping) != 1 || mapping["gemini-3-pro-high"] != "gemini-3.1-pro-high" {
+		t.Fatalf("expected only the declared dynamic mapping, got: %#v", mapping)
 	}
-	if mapping["gemini-3.1-pro-high"] != "gemini-3.1-pro-high" {
-		t.Fatalf("expected gemini-3.1-pro-high passthrough to be auto-filled, got: %q", mapping["gemini-3.1-pro-high"])
-	}
-	if mapping["gemini-3.1-pro-low"] != "gemini-3.1-pro-low" {
-		t.Fatalf("expected gemini-3.1-pro-low passthrough to be auto-filled, got: %q", mapping["gemini-3.1-pro-low"])
+	for _, undeclared := range []string{"gemini-3-flash", "gemini-3.1-pro-high", "gemini-3.1-pro-low"} {
+		if _, exists := mapping[undeclared]; exists {
+			t.Fatalf("did not expect hardcoded passthrough for undeclared model %q", undeclared)
+		}
 	}
 }
 

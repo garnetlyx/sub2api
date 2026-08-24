@@ -55,9 +55,8 @@ func (s *GatewayService) ForwardAsResponses(
 	reqStream := true
 
 	// 4. Model mapping
-	mappedModel := originalModel
 	reasoningEffort := ExtractResponsesReasoningEffortFromBody(body)
-	mappedModel, _ = s.ResolveUpstreamModelForAccount(ctx, account, originalModel)
+	mappedModel, _ := s.ResolveUpstreamModelForAccount(ctx, account, originalModel)
 	anthropicReq.Model = mappedModel
 
 	logger.L().Debug("gateway forward_as_responses: model mapping applied",
@@ -137,7 +136,7 @@ func (s *GatewayService) ForwardAsResponses(
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 
-		if s.shouldFailoverUpstreamError(resp.StatusCode) {
+		if s.shouldFailoverUpstreamError(resp.StatusCode) || isUpstreamAccountStateError(resp.StatusCode, upstreamMsg, respBody) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,

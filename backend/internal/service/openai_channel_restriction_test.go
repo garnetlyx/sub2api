@@ -33,6 +33,7 @@ func TestOpenAISelectAccountForModelWithExclusions_ChannelMappedRestrictionRejec
 		channelService: channelSvc,
 	}
 
+	withOpenAILiveModelTestSupport(svc, "gpt-4.1")
 	groupID := int64(10)
 	_, err := svc.SelectAccountForModelWithExclusions(context.Background(), &groupID, "", "gpt-4.1", nil)
 	require.ErrorIs(t, err, ErrNoAvailableAccounts)
@@ -79,6 +80,7 @@ func TestOpenAISelectAccountForModelWithExclusions_UpstreamRestrictionSkipsDisal
 		channelService: channelSvc,
 	}
 
+	withOpenAILiveModelTestSupport(svc, "gpt-4.1")
 	groupID := int64(10)
 	account, err := svc.SelectAccountForModelWithExclusions(context.Background(), &groupID, "", "gpt-4.1", nil)
 	require.NoError(t, err)
@@ -130,6 +132,7 @@ func TestOpenAISelectAccountForModelWithExclusions_StickyRestrictedUpstreamFalls
 		cache:          cache,
 	}
 
+	withOpenAILiveModelTestSupport(svc, "gpt-4.1")
 	groupID := int64(10)
 	account, err := svc.SelectAccountForModelWithExclusions(context.Background(), &groupID, "sticky-session", "gpt-4.1", nil)
 	require.NoError(t, err)

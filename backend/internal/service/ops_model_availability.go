@@ -44,8 +44,8 @@ type ModelAvailabilityAccount struct {
 	// regardless of schedulable state. For a rate_limited account this lets
 	// operators distinguish "has the model but rate-limited" from "rate-limited
 	// AND model absent".
-	ModelInList   bool  `json:"model_in_list"`
-	ModelListSize int   `json:"model_list_size"`
+	ModelInList   bool   `json:"model_in_list"`
+	ModelListSize int    `json:"model_list_size"`
 	Note          string `json:"note,omitempty"`
 
 	// Scheduling timing fields (only set when relevant).
@@ -71,11 +71,11 @@ type ModelAvailabilitySummary struct {
 
 // ModelAvailabilityResult is the response shape of GetModelAvailability.
 type ModelAvailabilityResult struct {
-	Model      string                     `json:"model"`
-	Available  bool                       `json:"available"`
-	Summary    ModelAvailabilitySummary   `json:"summary"`
-	Accounts   []ModelAvailabilityAccount `json:"accounts"`
-	CollectedAt time.Time                 `json:"collected_at"`
+	Model       string                     `json:"model"`
+	Available   bool                       `json:"available"`
+	Summary     ModelAvailabilitySummary   `json:"summary"`
+	Accounts    []ModelAvailabilityAccount `json:"accounts"`
+	CollectedAt time.Time                  `json:"collected_at"`
 }
 
 // GetModelAvailability reports, for a given model, every account's ability to
@@ -237,10 +237,10 @@ func assessSchedulingState(acc *Account, now time.Time) (string, BlockedByReason
 
 // modelFitResult captures model-fit assessment.
 type modelFitResult struct {
-	supported  bool
-	inList     bool
-	listSize   int
-	blockedBy  BlockedByReason
+	supported bool
+	inList    bool
+	listSize  int
+	blockedBy BlockedByReason
 }
 
 // assessModelFit dispatches to the appropriate gateway's supports check,

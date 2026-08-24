@@ -43,8 +43,8 @@ type modelCapabilities struct {
 }
 
 type Model struct {
-	ID           string             `json:"id"`
-	Capabilities modelCapabilities  `json:"capabilities"`
+	ID           string            `json:"id"`
+	Capabilities modelCapabilities `json:"capabilities"`
 }
 
 type modelsResponse struct {
@@ -117,7 +117,7 @@ func StartDeviceCodeFlow(ctx context.Context, httpClient *http.Client) (*DeviceC
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -154,7 +154,7 @@ func PollDeviceCodeAccessToken(ctx context.Context, httpClient *http.Client, dev
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var payload GitHubAccessTokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
@@ -175,7 +175,7 @@ func GetGitHubUser(ctx context.Context, httpClient *http.Client, accessToken str
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("github user lookup failed: status %d", resp.StatusCode)
@@ -206,7 +206,7 @@ func ExchangeCopilotToken(ctx context.Context, httpClient *http.Client, githubAc
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("copilot token exchange failed: status %d", resp.StatusCode)
@@ -266,7 +266,7 @@ func RefreshGitHubToken(ctx context.Context, httpClient *http.Client, refreshTok
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var payload GitHubAccessTokenResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
@@ -296,7 +296,7 @@ func ListModels(ctx context.Context, httpClient *http.Client, copilotToken strin
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("copilot models lookup failed: status %d", resp.StatusCode)

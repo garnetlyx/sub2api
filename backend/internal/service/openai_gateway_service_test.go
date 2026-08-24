@@ -56,9 +56,6 @@ func withOpenAILiveModelTestSupport(svc *OpenAIGatewayService, modelIDs ...strin
 		modelIDs = []string{"gpt-5.1", "gpt-5.2", "gpt-5.4", "gpt-5.5", "gemini-3.1-pro-preview", "deepseek-v4-pro", "model"}
 	}
 	models := canonicalLiveModelList(modelIDs)
-	if svc.cfg == nil {
-		svc.cfg = &config.Config{}
-	}
 	if svc.gatewayService == nil {
 		svc.gatewayService = &GatewayService{cfg: svc.cfg}
 	}
@@ -83,11 +80,17 @@ func withOpenAILiveModelTestSupport(svc *OpenAIGatewayService, modelIDs ...strin
 		case account.IsOpenAIOAuth():
 			endpoint = "chatgpt"
 		}
+		upstreamModels := make(map[string]string, len(models))
+		for _, publicModel := range models {
+			upstreamModel, _ := account.ResolveUpstreamModel(publicModel)
+			upstreamModels[publicModel] = upstreamModel
+		}
 		source := LiveModelSource{
-			Account:    cloneAccountForLiveSource(account),
-			Endpoint:   endpoint,
-			Capability: "chat",
-			Models:     models,
+			Account:        cloneAccountForLiveSource(account),
+			Endpoint:       endpoint,
+			Capability:     "chat",
+			Models:         models,
+			UpstreamModels: upstreamModels,
 		}
 		svc.gatewayService.modelsListCache.Set(liveModelSourceCacheKey(account), source, time.Minute)
 	}
@@ -1088,6 +1091,7 @@ func TestOpenAISelectAccountForModelWithExclusions_StickyUnschedulableClearsSess
 		accountRepo: repo,
 		cache:       cache,
 	}
+	withOpenAILiveModelTestSupport(svc, "gpt-4")
 
 	acc, err := svc.SelectAccountForModelWithExclusions(context.Background(), nil, sessionHash, "gpt-4", nil)
 	if err != nil {
@@ -1122,6 +1126,7 @@ func TestOpenAISelectAccountWithLoadAwareness_StickyUnschedulableClearsSession(t
 		cache:              cache,
 		concurrencyService: NewConcurrencyService(stubConcurrencyCache{}),
 	}
+	withOpenAILiveModelTestSupport(svc, "gpt-4")
 
 	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, sessionHash, "gpt-4", nil)
 	if err != nil {
@@ -1159,6 +1164,7 @@ func TestOpenAISelectAccountForModelWithExclusions_ModelMappingDoesNotFilter(t *
 		accountRepo: repo,
 		cache:       cache,
 	}
+	withOpenAILiveModelTestSupport(svc, "gpt-4")
 
 	acc, err := svc.SelectAccountForModelWithExclusions(context.Background(), nil, "", "gpt-4", nil)
 	if err != nil {
@@ -1187,6 +1193,7 @@ func TestOpenAISelectAccountWithLoadAwareness_LoadBatchErrorFallback(t *testing.
 		cache:              cache,
 		concurrencyService: NewConcurrencyService(concurrencyCache),
 	}
+	withOpenAILiveModelTestSupport(svc, "gpt-4")
 
 	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "fallback", "gpt-4", nil)
 	if err != nil {
@@ -1226,6 +1233,7 @@ func TestOpenAISelectAccountWithLoadAwareness_NoSlotFallbackWait(t *testing.T) {
 		cache:              cache,
 		concurrencyService: NewConcurrencyService(concurrencyCache),
 	}
+	withOpenAILiveModelTestSupport(svc, "gpt-4")
 
 	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-4", nil)
 	if err != nil {
@@ -1252,6 +1260,7 @@ func TestOpenAISelectAccountForModelWithExclusions_SetsStickyBinding(t *testing.
 		accountRepo: repo,
 		cache:       cache,
 	}
+	withOpenAILiveModelTestSupport(svc, "gpt-4")
 
 	acc, err := svc.SelectAccountForModelWithExclusions(context.Background(), nil, sessionHash, "gpt-4", nil)
 	if err != nil {
@@ -1286,6 +1295,7 @@ func TestOpenAISelectAccountWithLoadAwareness_StickyWaitPlan(t *testing.T) {
 		cache:              cache,
 		concurrencyService: NewConcurrencyService(concurrencyCache),
 	}
+	withOpenAILiveModelTestSupport(svc, "gpt-4")
 
 	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, sessionHash, "gpt-4", nil)
 	if err != nil {
@@ -1320,6 +1330,7 @@ func TestOpenAISelectAccountWithLoadAwareness_PrefersLowerLoad(t *testing.T) {
 		cache:              cache,
 		concurrencyService: NewConcurrencyService(concurrencyCache),
 	}
+	withOpenAILiveModelTestSupport(svc, "gpt-4")
 
 	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "load", "gpt-4", nil)
 	if err != nil {
@@ -1349,6 +1360,7 @@ func TestOpenAISelectAccountForModelWithExclusions_StickyExcludedFallback(t *tes
 		accountRepo: repo,
 		cache:       cache,
 	}
+	withOpenAILiveModelTestSupport(svc, "gpt-4")
 
 	excluded := map[int64]struct{}{1: {}}
 	acc, err := svc.SelectAccountForModelWithExclusions(context.Background(), nil, sessionHash, "gpt-4", excluded)
@@ -1376,6 +1388,7 @@ func TestOpenAISelectAccountForModelWithExclusions_StickyNonOpenAI(t *testing.T)
 		accountRepo: repo,
 		cache:       cache,
 	}
+	withOpenAILiveModelTestSupport(svc, "gpt-4")
 
 	acc, err := svc.SelectAccountForModelWithExclusions(context.Background(), nil, sessionHash, "gpt-4", nil)
 	if err != nil {
@@ -1452,6 +1465,7 @@ func TestOpenAISelectAccountWithLoadAwareness_AllFullWaitPlan(t *testing.T) {
 		cache:              cache,
 		concurrencyService: NewConcurrencyService(concurrencyCache),
 	}
+	withOpenAILiveModelTestSupport(svc, "gpt-4")
 
 	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-4", nil)
 	if err != nil {
@@ -1480,6 +1494,7 @@ func TestOpenAISelectAccountWithLoadAwareness_LoadBatchErrorNoAcquire(t *testing
 		cache:              cache,
 		concurrencyService: NewConcurrencyService(concurrencyCache),
 	}
+	withOpenAILiveModelTestSupport(svc, "gpt-4")
 
 	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-4", nil)
 	if err != nil {
@@ -1511,6 +1526,7 @@ func TestOpenAISelectAccountWithLoadAwareness_MissingLoadInfo(t *testing.T) {
 		cache:              cache,
 		concurrencyService: NewConcurrencyService(concurrencyCache),
 	}
+	withOpenAILiveModelTestSupport(svc, "gpt-4")
 
 	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-4", nil)
 	if err != nil {
@@ -1536,6 +1552,7 @@ func TestOpenAISelectAccountForModelWithExclusions_LeastRecentlyUsed(t *testing.
 		accountRepo: repo,
 		cache:       cache,
 	}
+	withOpenAILiveModelTestSupport(svc, "gpt-4")
 
 	acc, err := svc.SelectAccountForModelWithExclusions(context.Background(), nil, "", "gpt-4", nil)
 	if err != nil {
@@ -1568,6 +1585,7 @@ func TestOpenAISelectAccountWithLoadAwareness_PreferNeverUsed(t *testing.T) {
 		cache:              cache,
 		concurrencyService: NewConcurrencyService(concurrencyCache),
 	}
+	withOpenAILiveModelTestSupport(svc, "gpt-4")
 
 	selection, err := svc.SelectAccountWithLoadAwareness(context.Background(), &groupID, "", "gpt-4", nil)
 	if err != nil {

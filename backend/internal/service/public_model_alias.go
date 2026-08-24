@@ -157,10 +157,6 @@ func requestedModelLookupCandidates(platform, requestedModel string) []string {
 
 // dotHyphenAlternate flips the dot/hyphen between major and minor version
 // numbers: "gpt-5.5" -> "gpt-5-5", "minimax-m2-7" -> "minimax-m2.7".
-func dotHyphenAlternate(model string) string {
-	return publicModelStyleAlternate(model)
-}
-
 func modelListContainsRequestedModel(modelIDs []string, requestedModel string) bool {
 	if requestedModel == "" {
 		return false

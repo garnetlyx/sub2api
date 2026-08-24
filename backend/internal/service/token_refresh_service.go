@@ -88,21 +88,21 @@ func NewTokenRefreshService(
 	geminiOAuthService *GeminiOAuthService,
 	antigravityOAuthService *AntigravityOAuthService,
 	copilotOAuthService *CopilotOAuthService,
-	kiroOAuthService    *KiroOAuthService,
+	kiroOAuthService *KiroOAuthService,
 	cacheInvalidator TokenCacheInvalidator,
 	schedulerCache SchedulerCache,
 	cfg *config.Config,
 	tempUnschedCache TempUnschedCache,
 ) *TokenRefreshService {
 	s := &TokenRefreshService{
-		accountRepo:       accountRepo,
-		refreshPolicy:     DefaultBackgroundRefreshPolicy(),
-		cfg:               &cfg.TokenRefresh,
-		cacheInvalidator:  cacheInvalidator,
-		schedulerCache:    schedulerCache,
-		tempUnschedCache:  tempUnschedCache,
-		terminalFailures:  newTerminalRefreshFailureCache(),
-		stopCh:            make(chan struct{}),
+		accountRepo:      accountRepo,
+		refreshPolicy:    DefaultBackgroundRefreshPolicy(),
+		cfg:              &cfg.TokenRefresh,
+		cacheInvalidator: cacheInvalidator,
+		schedulerCache:   schedulerCache,
+		tempUnschedCache: tempUnschedCache,
+		terminalFailures: newTerminalRefreshFailureCache(),
+		stopCh:           make(chan struct{}),
 	}
 
 	openAIRefresher := NewOpenAITokenRefresher(openaiOAuthService, accountRepo)
@@ -548,6 +548,7 @@ func isTerminalRefreshError(err error) bool {
 func (s *TokenRefreshService) ClearTerminalFailureCache(accountID int64) {
 	s.terminalFailures.Clear(accountID)
 }
+
 // 未设置则调用 disableOpenAITraining 并持久化结果到 Extra。
 func (s *TokenRefreshService) ensureOpenAIPrivacy(ctx context.Context, account *Account) {
 	if account.Platform != PlatformOpenAI || account.Type != AccountTypeOAuth {

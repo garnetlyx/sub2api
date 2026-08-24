@@ -59,8 +59,7 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	reqStream := true
 
 	// 4. Model mapping
-	mappedModel := originalModel
-	mappedModel, _ = s.ResolveUpstreamModelForAccount(ctx, account, originalModel)
+	mappedModel, _ := s.ResolveUpstreamModelForAccount(ctx, account, originalModel)
 	anthropicReq.Model = mappedModel
 
 	logger.L().Debug("gateway forward_as_chat_completions: model mapping applied",
@@ -131,7 +130,8 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// 12. Handle error response with failover
+	// 12. Handle error response with failover (status-coded + account-level
+	// 4xx: lapsed subscription / quota / billing)
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 		_ = resp.Body.Close()
@@ -140,7 +140,7 @@ func (s *GatewayService) ForwardAsChatCompletions(
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 
-		if s.shouldFailoverUpstreamError(resp.StatusCode) {
+		if s.shouldFailoverUpstreamError(resp.StatusCode) || isUpstreamAccountStateError(resp.StatusCode, upstreamMsg, respBody) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
 				AccountID:          account.ID,

@@ -66,7 +66,6 @@ type kiroOAuthSession struct {
 type kiroOAuthSessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*kiroOAuthSession
-	stopOnce sync.Once
 	stopCh   chan struct{}
 }
 

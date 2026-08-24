@@ -15,9 +15,6 @@ const (
 	eventStreamHeaderTypeID  = 0x0
 	eventStreamDataTypeID    = 0x05
 	eventStreamMessageTypeID = 0x04
-
-	awsEventStreamVersion     = 0x80
-	awsEventStreamVersionMask = 0xF0
 )
 
 type EventStreamEvent struct {
@@ -175,7 +172,7 @@ func ExtractAssistantContent(events []EventStreamEvent) string {
 	var sb strings.Builder
 	for _, event := range events {
 		if content := extractAssistantContentPayload(event.Payload); content != "" {
-			sb.WriteString(content)
+			_, _ = sb.WriteString(content)
 		}
 	}
 	return sb.String()
@@ -286,7 +283,7 @@ func (c *toolCallCollector) Add(event ToolUseEvent) {
 		call.Function.Name = strings.TrimSpace(event.Name)
 	}
 	if event.Input != "" {
-		c.buffers[id].WriteString(event.Input)
+		_, _ = c.buffers[id].WriteString(event.Input)
 	}
 	if event.Stop {
 		args := strings.TrimSpace(c.buffers[id].String())
@@ -342,7 +339,7 @@ func ExtractStreamingEvents(reader io.Reader) (<-chan ParsedEvent, <-chan error)
 		for {
 			n, err := reader.Read(buf)
 			if n > 0 {
-				buffer.Write(buf[:n])
+				_, _ = buffer.Write(buf[:n])
 
 				for {
 					data := buffer.Bytes()

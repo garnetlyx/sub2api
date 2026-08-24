@@ -155,7 +155,6 @@ type copilotDeviceSession struct {
 type copilotDeviceSessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*copilotDeviceSession
-	stopOnce sync.Once
 	stopCh   chan struct{}
 }
 

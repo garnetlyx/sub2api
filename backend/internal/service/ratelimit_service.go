@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -141,7 +142,50 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 	}
 
 	switch statusCode {
-	case 400:
+	case 400, 402:
+		// Account-level conditions (lapsed subscription, quota, billing)
+		// reported as 400/402: temporarily stop scheduling the account so
+		// live traffic stops probing it, while keeping status=active so it
+		// self-recovers (no manual re-enable) once the state is fixed
+		// upstream — renewal, top-up.
+		if isUpstreamAccountStateError(statusCode, upstreamMsg, responseBody) {
+			cooldownMinutes := 30
+			if s.cfg != nil && s.cfg.RateLimit.AccountStateCooldownMinutes > 0 {
+				cooldownMinutes = s.cfg.RateLimit.AccountStateCooldownMinutes
+			}
+			until := time.Now().Add(time.Duration(cooldownMinutes) * time.Minute)
+			msg := fmt.Sprintf("Account state error (%d): %s", statusCode, upstreamMsg)
+			if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, msg); err != nil {
+				slog.Warn("account_state_set_temp_unschedulable_failed", "account_id", account.ID, "error", err)
+			} else {
+				slog.Info("account_state_temp_unscheduled",
+					"account_id", account.ID,
+					"account_name", account.Name,
+					"status_code", statusCode,
+					"cooldown_minutes", cooldownMinutes,
+					"upstream_detail", upstreamMsg,
+				)
+			}
+			shouldDisable = true
+			break
+		}
+		if statusCode == 402 {
+			// OpenAI: deactivated_workspace 表示工作区已停用，直接标记 error
+			if account.Platform == PlatformOpenAI && gjson.GetBytes(responseBody, "detail.code").String() == "deactivated_workspace" {
+				msg := "Workspace deactivated (402): workspace has been deactivated"
+				s.handleAuthError(ctx, account, msg)
+				shouldDisable = true
+				break
+			}
+			// 支付要求：余额不足或计费问题，停止调度
+			msg := "Payment required (402): insufficient balance or billing issue"
+			if upstreamMsg != "" {
+				msg = "Payment required (402): " + upstreamMsg
+			}
+			s.handleAuthError(ctx, account, msg)
+			shouldDisable = true
+			break
+		}
 		// 只有当错误信息包含 "organization has been disabled" 时才禁用
 		if strings.Contains(strings.ToLower(upstreamMsg), "organization has been disabled") {
 			msg := "Organization disabled (400): " + upstreamMsg
@@ -219,21 +263,6 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			s.handleAuthError(ctx, account, msg)
 			shouldDisable = true
 		}
-	case 402:
-		// OpenAI: deactivated_workspace 表示工作区已停用，直接标记 error
-		if account.Platform == PlatformOpenAI && gjson.GetBytes(responseBody, "detail.code").String() == "deactivated_workspace" {
-			msg := "Workspace deactivated (402): workspace has been deactivated"
-			s.handleAuthError(ctx, account, msg)
-			shouldDisable = true
-			break
-		}
-		// 支付要求：余额不足或计费问题，停止调度
-		msg := "Payment required (402): insufficient balance or billing issue"
-		if upstreamMsg != "" {
-			msg = "Payment required (402): " + upstreamMsg
-		}
-		s.handleAuthError(ctx, account, msg)
-		shouldDisable = true
 	case 403:
 		logger.LegacyPrintf(
 			"service.ratelimit",
