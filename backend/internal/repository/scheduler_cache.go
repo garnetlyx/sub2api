@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -140,6 +141,32 @@ func (c *schedulerCache) SetSnapshot(ctx context.Context, bucket service.Schedul
 		return err
 	}
 
+	// The per-bucket INCR counter can regress below the active pointer (e.g.
+	// the version keys were flushed while active/snapshot keys persisted).
+	// activateSnapshotScript would then refuse every newer snapshot forever,
+	// because the stale active snapshot key carries no TTL — the bucket is
+	// frozen at pre-regression state. Bump the counter past the active
+	// pointer so activation can proceed. Bucket rebuilds are serialized by
+	// TryLockBucket, so this is race-free.
+	activeKey := schedulerBucketKey(schedulerActivePrefix, bucket)
+	for i := 0; i < 1000; i++ {
+		activeStr, err := c.rdb.Get(ctx, activeKey).Result()
+		if err == redis.Nil {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		active, convErr := strconv.ParseInt(strings.TrimSpace(activeStr), 10, 64)
+		if convErr != nil || version > active {
+			break
+		}
+		version, err = c.rdb.Incr(ctx, versionKey).Result()
+		if err != nil {
+			return err
+		}
+	}
+
 	versionStr := strconv.FormatInt(version, 10)
 	snapshotKey := schedulerSnapshotKey(bucket, versionStr)
 
@@ -170,7 +197,6 @@ func (c *schedulerCache) SetSnapshot(ctx context.Context, bucket service.Schedul
 	// Lua 脚本保证：仅当新版本 >= 当前激活版本时才切换 active 指针，
 	// 防止并发写入导致版本回滚。
 	// 旧快照使用 EXPIRE 宽限期而非立即 DEL，避免 reader 竞态。
-	activeKey := schedulerBucketKey(schedulerActivePrefix, bucket)
 	readyKey := schedulerBucketKey(schedulerReadyPrefix, bucket)
 	snapshotKeyPrefix := fmt.Sprintf("%s%d:%s:%s:v", schedulerSnapshotPrefix, bucket.GroupID, bucket.Platform, bucket.Mode)
 

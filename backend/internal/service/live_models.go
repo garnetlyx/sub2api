@@ -917,9 +917,44 @@ func (s *GatewayService) liveAccountModels(ctx context.Context, account Account)
 	return cleanLiveModelList(models), endpoint, capability, nil
 }
 
+// declaredModelsFallbackSource builds a live model source from the account's
+// explicitly declared upstream_models / model_mapping entries. Some
+// provider-direct endpoints expose no /models discovery API at all (e.g.
+// subscription-plan endpoints); for those, live discovery is structurally
+// impossible and the operator-declared catalog is the only available truth.
+// The fallback never widens exposure: only declared public names become
+// schedulable, so a broken lookup cannot let arbitrary models route to the
+// account.
+func declaredModelsFallbackSource(account Account, endpoint string, capability string) (LiveModelSource, bool) {
+	if len(buildExplicitUpstreamMappings(&account)) == 0 {
+		return LiveModelSource{}, false
+	}
+	catalog := publicizeLiveModelCatalog(&account, nil)
+	if len(catalog.Models) == 0 {
+		return LiveModelSource{}, false
+	}
+	return LiveModelSource{
+		Account:        cloneAccountForLiveSource(account),
+		Endpoint:       endpoint,
+		Capability:     capability,
+		Models:         catalog.Models,
+		UpstreamModels: catalog.UpstreamModels,
+	}, true
+}
+
 func (s *GatewayService) liveModelSourceForAccount(ctx context.Context, account Account) (LiveModelSource, error) {
 	models, endpoint, capability, err := s.liveAccountModels(ctx, account)
 	if err != nil {
+		if source, ok := declaredModelsFallbackSource(account, endpoint, capability); ok {
+			slog.Warn("live_models_declared_catalog_fallback",
+				"account_id", account.ID,
+				"account_name", account.Name,
+				"platform", account.Platform,
+				"endpoint", endpoint,
+				"error", err,
+			)
+			return source, nil
+		}
 		return LiveModelSource{}, err
 	}
 	catalog := publicizeLiveModelCatalog(&account, models)
@@ -1266,6 +1301,16 @@ func (s *OpenAIGatewayService) liveModelSourceForAccount(ctx context.Context, ac
 		return LiveModelSource{Account: acc}, nil
 	}
 	if err != nil {
+		if source, ok := declaredModelsFallbackSource(*acc, endpoint, capability); ok {
+			slog.Warn("live_models_declared_catalog_fallback",
+				"account_id", acc.ID,
+				"account_name", acc.Name,
+				"platform", acc.Platform,
+				"endpoint", endpoint,
+				"error", err,
+			)
+			return source, nil
+		}
 		return LiveModelSource{}, err
 	}
 	catalog := publicizeLiveModelCatalog(acc, models)
